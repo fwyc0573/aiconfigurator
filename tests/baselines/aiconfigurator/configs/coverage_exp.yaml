@@ -1,0 +1,67 @@
+# Comprehensive Parallelism Coverage Experiment
+# Covers: Monolithic (Agg), Disaggregated, MoE (Expert Parallelism), and High-Degree Parallelism
+
+exps:
+  - exp_moe_deepseek_agg
+  - exp_moe_deepseek_disagg
+  - exp_dense_high_parallelism_agg
+
+# 1. MoE Experiment: DeepSeek-V3 (Expert Parallelism Focus)
+# Goal: Verify aiconfigurator handles EP and TP/EP combinations correctly
+exp_moe_deepseek_agg:
+  mode: "patch"
+  serving_mode: "agg"
+  model_name: "DEEPSEEK_V3"  # Uses deepseek-ai--DeepSeek-V3_config.json
+  system_name: "h200_sxm"
+  total_gpus: 16  # Requires significant resources
+  isl: 2000
+  osl: 200
+  ttft: 5000.0
+  tpot: 100.0
+  config:
+    worker_config:
+      # Test different MoE configurations
+      # EP=1 (All experts on one GPU), EP=2, EP=8
+      moe_ep_list: [1, 2, 8]
+      moe_tp_list: [1] # Keep MoE TP simple to isolate EP effects
+      tp_list: [1, 2, 4, 8] # Standard TP
+      pp_list: [1]
+
+exp_moe_deepseek_disagg:
+  mode: "patch"
+  serving_mode: "disagg"
+  model_name: "DEEPSEEK_V3"
+  system_name: "h200_sxm"
+  total_gpus: 32 # Need more GPUs for disagg split
+  isl: 2000
+  osl: 200
+  ttft: 5000.0
+  tpot: 100.0
+  config:
+    prefill_worker_config:
+      moe_ep_list: [1, 2, 8]
+      tp_list: [1, 2, 4, 8]
+    decode_worker_config:
+      # Decode usually prefers lower parallelism to minimize latency overhead, 
+      # but EP is crucial for memory capacity
+      moe_ep_list: [1, 2, 8]
+      tp_list: [1, 2, 4, 8]
+
+# 2. Dense Model High Parallelism: QWEN3_32B
+# Goal: Test Pipeline Parallelism (PP) and high Tensor Parallelism (TP)
+exp_dense_high_parallelism_agg:
+  mode: "patch"
+  serving_mode: "agg"
+  model_name: "QWEN3_32B"
+  system_name: "h200_sxm"
+  total_gpus: 32
+  isl: 4000
+  osl: 500
+  config:
+    worker_config:
+      # Force combinations that stress-test the simulation logic
+      # e.g., TP=8, PP=2 -> 16 GPUs per instance
+      tp_list: [8]
+      pp_list: [1, 2, 4]
+      # Also test standard TP scaling
+      num_gpu_per_worker: [8, 16, 32]

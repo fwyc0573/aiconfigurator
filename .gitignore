@@ -21,3 +21,8 @@ env/
 *.pyc
 *.pyo
 *.pyd
+
+# Agent/IDE artifacts
+.task_memory/
+CLAUDE.md
+.kiro/

@@ -8,6 +8,7 @@
 | 2026-07-16 | Reconciled Team decomposition, SOL_FULL, KV-cache, parser-validation, and AFD findings with root-cause resolutions. |
 | 2026-07-16 | Recorded StepCode Claude approval of the bounded SOL_FULL, parser, and AFD resolutions. |
 | 2026-07-16 | Recorded the resolved cached-config block-count defect and focused parser resolution evidence. |
+| 2026-07-16 | Recorded and resolved silent Step4 parallel-geometry truncation. |
 
 # Issues
 
@@ -83,3 +84,11 @@
 - **Root cause:** Manual JSON construction contained `57` identical `moe_swa` entries instead of the authoritative `56`.
 - **Impact:** Offline resolution correctly failed fast rather than accepting an inconsistent operation graph.
 - **Resolution:** Removed the single duplicate entry, independently counted `dense_swa=4`, `moe_full=20`, `moe_swa=56`, and reran the same test file to `5/5 passed`.
+
+## ISSUE-010: Step4 operation construction silently truncates non-divisible parallel geometry
+
+- **Status:** Resolved in focused RED/GREEN tests; full unit regression remains pending.
+- **Symptom:** Non-divisible attention heads reach a shared `assert`, while vocabulary, dense/shared intermediate widths, routed expert count, and routed intermediate width are silently truncated by integer division.
+- **Root cause:** `Step4Model` creates sharded operation dimensions without validating the exact divisibility assumptions of its TP/EP formulas; the shared `BaseModel` checks only attention heads and uses an optimization-removable assertion.
+- **Impact:** Invalid topology can yield a plausible but numerically incomplete graph, and `python -O` can remove the one existing head check.
+- **Resolution:** Added six Step4-specific construction checks in `Step4Model.create()` and field-specific `ValueError` messages. The RED run was `6/6` failed for the expected missing behavior; GREEN was `6/6` passed, and combined new/original Step4 model regression passed `82/82`.

@@ -54,6 +54,32 @@ class Step4Model(BaseModel):
 
     @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
+        step4_config = model_info["extra_params"]
+        if not isinstance(step4_config, common.Step4Config):
+            raise TypeError("Step4Model requires Step4Config extra_params.")
+
+        parallel_geometry = (
+            ("num_attention_heads", model_info["n"], "tp_size", model_config.tp_size),
+            ("vocab_size", model_info["vocab"], "tp_size", model_config.tp_size),
+            ("intermediate_size", step4_config.dense_inter_size, "tp_size", model_config.tp_size),
+            (
+                "shared_expert_intermediate_size",
+                step4_config.shared_expert_inter_size,
+                "tp_size",
+                model_config.tp_size,
+            ),
+            ("n_routed_experts", model_info["num_experts"], "moe_ep_size", model_config.moe_ep_size),
+            (
+                "moe_intermediate_size",
+                model_info["moe_inter_size"],
+                "moe_tp_size",
+                model_config.moe_tp_size,
+            ),
+        )
+        for field, value, parallel_name, parallel_size in parallel_geometry:
+            if value % parallel_size != 0:
+                raise ValueError(f"Step4 {field} ({value}) must be divisible by {parallel_name} ({parallel_size}).")
+
         moe_args = (model_info["topk"], model_info["num_experts"], model_info["moe_inter_size"])
         base_args = (
             model_info["model_path"],

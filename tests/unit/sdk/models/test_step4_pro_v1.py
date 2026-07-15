@@ -38,7 +38,14 @@ def _operations_by_name(operation_list) -> dict[str, object]:
     return {operation._name: operation for operation in operation_list}
 
 
-def _build_synthetic_step4_model(monkeypatch, raw_config: dict, *, tp_size: int) -> Step4Model:
+def _build_synthetic_step4_model(
+    monkeypatch,
+    raw_config: dict,
+    *,
+    tp_size: int,
+    moe_tp_size: int = 1,
+    moe_ep_size: int | None = None,
+) -> Step4Model:
     """Build one synthetic Step4 through the real registry and config parser."""
     model_info = utils._parse_hf_config_json(deepcopy(raw_config))
     model_info["raw_config"] = deepcopy(raw_config)
@@ -47,8 +54,8 @@ def _build_synthetic_step4_model(monkeypatch, raw_config: dict, *, tp_size: int)
         tp_size=tp_size,
         pp_size=1,
         attention_dp_size=1,
-        moe_tp_size=1,
-        moe_ep_size=tp_size,
+        moe_tp_size=moe_tp_size,
+        moe_ep_size=tp_size if moe_ep_size is None else moe_ep_size,
         nextn=0,
         nextn_accept_rates=[0.85, 0.3, 0.0, 0.0, 0.0],
     )
@@ -255,3 +262,48 @@ def test_step4_core_dimensions_reject_boolean_values(field):
 
     with pytest.raises(ValueError, match=f"Step4 {field} must be a positive integer"):
         utils._parse_hf_config_json(raw)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "tp_size", "moe_tp_size", "moe_ep_size", "parallel_name"),
+    [
+        pytest.param("num_attention_heads", 130, 4, 1, 4, "tp_size", id="attention-heads"),
+        pytest.param("vocab_size", 128897, 4, 1, 4, "tp_size", id="vocab"),
+        pytest.param("intermediate_size", 16385, 4, 1, 4, "tp_size", id="dense-intermediate"),
+        pytest.param(
+            "shared_expert_intermediate_size",
+            2049,
+            4,
+            1,
+            4,
+            "tp_size",
+            id="shared-intermediate",
+        ),
+        pytest.param("n_routed_experts", 513, 4, 1, 4, "moe_ep_size", id="routed-experts"),
+        pytest.param("moe_intermediate_size", 2050, 4, 4, 1, "moe_tp_size", id="routed-intermediate"),
+    ],
+)
+def test_step4_model_rejects_non_divisible_parallel_geometry(
+    monkeypatch,
+    field,
+    value,
+    tp_size,
+    moe_tp_size,
+    moe_ep_size,
+    parallel_name,
+):
+    """Step4 must reject geometry that integer sharding would truncate."""
+    raw = _step4_pro_raw_config()
+    raw[field] = value
+
+    with pytest.raises(
+        ValueError,
+        match=rf"Step4 {field} \({value}\) must be divisible by {parallel_name}",
+    ):
+        _build_synthetic_step4_model(
+            monkeypatch,
+            raw,
+            tp_size=tp_size,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+        )

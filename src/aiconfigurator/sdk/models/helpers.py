@@ -28,6 +28,7 @@ _MOE_MODEL_FAMILIES = {
     "DEEPSEEK",
     "DEEPSEEKV32",
     "DEEPSEEKV4",
+    "STEP4",
     "KIMIK25",
     "HYBRIDMOE",
     "QWEN3VL_MOE",

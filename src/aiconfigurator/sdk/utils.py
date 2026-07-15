@@ -4,6 +4,7 @@
 import importlib.resources as pkg_resources
 import json
 import logging
+import math
 import os
 import re
 import tempfile
@@ -26,6 +27,71 @@ from aiconfigurator.sdk.common import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def cluster_normalized_throughput(
+    *,
+    tokens_per_second_per_gpu: float,
+    deployment_gpus: int,
+    total_gpus: int,
+) -> float:
+    """Return per-GPU throughput after allocating complete replicas to a cluster."""
+
+    if isinstance(tokens_per_second_per_gpu, bool) or not isinstance(tokens_per_second_per_gpu, int | float):
+        raise TypeError(f"tokens_per_second_per_gpu must be a finite number; got {tokens_per_second_per_gpu!r}")
+    throughput = float(tokens_per_second_per_gpu)
+    if not math.isfinite(throughput):
+        raise ValueError(f"tokens_per_second_per_gpu must be finite; got {tokens_per_second_per_gpu!r}")
+    if type(deployment_gpus) is not int:
+        raise TypeError(f"deployment_gpus must be a positive integer; got {deployment_gpus!r}")
+    if deployment_gpus < 1:
+        raise ValueError(f"deployment_gpus must be positive; got {deployment_gpus!r}")
+    if type(total_gpus) is not int:
+        raise TypeError(f"total_gpus must be a positive integer; got {total_gpus!r}")
+    if total_gpus < 1:
+        raise ValueError(f"total_gpus must be positive; got {total_gpus!r}")
+    if deployment_gpus > total_gpus:
+        raise ValueError(f"deployment_gpus {deployment_gpus} exceeds total_gpus {total_gpus}")
+
+    replicas = total_gpus // deployment_gpus
+    return throughput * replicas * deployment_gpus / total_gpus
+
+
+def calculate_prefill_tokens_per_second(
+    *,
+    global_batch_size: int,
+    num_workers: int,
+    isl: int,
+    prefix: int,
+    ttft_ms: float,
+) -> float:
+    """Return fresh input-token throughput from batch, workers, and TTFT."""
+
+    for field, value in (
+        ("global_batch_size", global_batch_size),
+        ("num_workers", num_workers),
+        ("isl", isl),
+    ):
+        if type(value) is not int:
+            raise TypeError(f"{field} must be a positive integer; got {value!r}")
+        if value < 1:
+            raise ValueError(f"{field} must be positive; got {value!r}")
+    if type(prefix) is not int:
+        raise TypeError(f"prefix must be a non-negative integer; got {prefix!r}")
+    if prefix < 0:
+        raise ValueError(f"prefix must be non-negative; got {prefix!r}")
+    if isinstance(ttft_ms, bool) or not isinstance(ttft_ms, int | float):
+        raise TypeError(f"ttft_ms must be a finite positive number; got {ttft_ms!r}")
+    ttft = float(ttft_ms)
+    if not math.isfinite(ttft):
+        raise ValueError(f"ttft_ms must be finite; got {ttft_ms!r}")
+    if ttft <= 0:
+        raise ValueError(f"ttft_ms must be positive; got {ttft_ms!r}")
+
+    fresh_tokens = isl - prefix
+    if fresh_tokens <= 0:
+        raise ValueError(f"fresh input tokens must be positive; got isl={isl}, prefix={prefix}")
+    return global_batch_size * num_workers * fresh_tokens / (ttft / 1000.0)
 
 
 _NEMOTRONH_LAYER_BLOCK_PATTERN = {
@@ -717,6 +783,78 @@ def _parse_hf_config_json(config: dict) -> dict:
             f"csa_layers={extra_params.compress_ratios.count(4)}, "
             f"hca_layers={extra_params.compress_ratios.count(128)}, "
             f"hc_mult={extra_params.hc_mult}"
+        )
+    elif architecture == "Step4ForCausalLM":
+        required_fields = (
+            "block_types",
+            "full_num_attention_heads",
+            "full_num_key_value_heads",
+            "sliding_num_attention_heads",
+            "sliding_num_key_value_heads",
+            "attention_head_dim",
+            "sliding_window_size",
+            "q_lora_rank",
+            "kv_lora_rank",
+            "qk_nope_head_dim",
+            "qk_rope_head_dim",
+            "v_head_dim",
+            "shared_expert_intermediate_size",
+        )
+        for field in required_fields:
+            if field not in config:
+                raise ValueError(f"Step4 config missing required field '{field}'")
+
+        positive_fields = (
+            "full_num_attention_heads",
+            "full_num_key_value_heads",
+            "sliding_num_attention_heads",
+            "sliding_num_key_value_heads",
+            "attention_head_dim",
+            "sliding_window_size",
+            "q_lora_rank",
+            "kv_lora_rank",
+            "qk_nope_head_dim",
+            "qk_rope_head_dim",
+            "v_head_dim",
+            "intermediate_size",
+            "shared_expert_intermediate_size",
+        )
+        for field in positive_fields:
+            value = config.get(field)
+            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+                raise ValueError(f"Step4 {field} must be a positive integer, got {value!r}")
+
+        block_types = tuple(config["block_types"])
+        if len(block_types) != layers:
+            raise ValueError(f"Step4 block_types length {len(block_types)} != num_hidden_layers {layers}")
+        supported_block_types = {"dense_swa", "moe_full", "moe_swa"}
+        for block_type in block_types:
+            if block_type not in supported_block_types:
+                raise ValueError(f"Step4 unsupported block type '{block_type}'")
+        if topk > num_experts:
+            raise ValueError(f"Step4 num_experts_per_tok {topk} exceeds n_routed_experts {num_experts}")
+
+        extra_params = common.Step4Config(
+            block_types=block_types,
+            full_num_attention_heads=config["full_num_attention_heads"],
+            full_num_key_value_heads=config["full_num_key_value_heads"],
+            sliding_num_attention_heads=config["sliding_num_attention_heads"],
+            sliding_num_key_value_heads=config["sliding_num_key_value_heads"],
+            attention_head_dim=config["attention_head_dim"],
+            sliding_window_size=config["sliding_window_size"],
+            q_lora_rank=config["q_lora_rank"],
+            kv_lora_rank=config["kv_lora_rank"],
+            qk_nope_head_dim=config["qk_nope_head_dim"],
+            qk_rope_head_dim=config["qk_rope_head_dim"],
+            v_head_dim=config["v_head_dim"],
+            dense_inter_size=config["intermediate_size"],
+            shared_expert_inter_size=config["shared_expert_intermediate_size"],
+        )
+        logger.info(
+            "Step4 config: dense_swa=%d, moe_full=%d, moe_swa=%d, temporary_attention=mla_all_layers",
+            block_types.count("dense_swa"),
+            block_types.count("moe_full"),
+            block_types.count("moe_swa"),
         )
     elif architecture in {"Qwen3ForCausalLM", "Qwen3MoeForCausalLM", "MiniMaxM2ForCausalLM"}:
         # Qwen3-family and MiniMax-M2 attention include per-layer Q/K normalization.

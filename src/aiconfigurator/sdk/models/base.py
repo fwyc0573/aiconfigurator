@@ -74,6 +74,9 @@ class BaseModel:
     Base model class.
     """
 
+    MIXED_STEP_CONTEXT_ATTENTION_KEYS: ClassVar[tuple[str, ...]] = ("context_attention",)
+    MIXED_STEP_GENERATION_ATTENTION_KEYS: ClassVar[tuple[str, ...]] = ("generation_attention",)
+
     def __init__(
         self,
         model_path: str,

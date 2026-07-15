@@ -26,6 +26,7 @@ import logging
 from typing import TYPE_CHECKING, ClassVar
 
 from aiconfigurator.sdk import common
+from aiconfigurator.sdk.communication_evidence import bind_collective_operation
 from aiconfigurator.sdk.operations.base import Operation
 from aiconfigurator.sdk.performance_result import PerformanceResult
 
@@ -152,11 +153,13 @@ class OverlapOp(Operation):
         """
         total_a = PerformanceResult(0.0, energy=0.0, source="empirical")
         for op in self._group_a:
-            total_a += op.query(database, **kwargs)
+            with bind_collective_operation(op._name):
+                total_a += op.query(database, **kwargs)
 
         total_b = PerformanceResult(0.0, energy=0.0, source="empirical")
         for op in self._group_b:
-            total_b += op.query(database, **kwargs)
+            with bind_collective_operation(op._name):
+                total_b += op.query(database, **kwargs)
 
         merged = total_a + total_b
         return PerformanceResult(

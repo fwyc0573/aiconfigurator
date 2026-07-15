@@ -8,9 +8,12 @@ against the legacy CLI; these tests focus on construction, defaulting,
 prefix discipline, and the build_* helpers.
 """
 
+from dataclasses import FrozenInstanceError
+
 import pytest
 
-from aiconfigurator.sdk import common
+from aiconfigurator.sdk import common, task_v2
+from aiconfigurator.sdk.errors import InsufficientMemoryError, KVCacheCapacityError
 from aiconfigurator.sdk.task_v2 import Task
 
 pytestmark = pytest.mark.unit
@@ -19,6 +22,17 @@ pytestmark = pytest.mark.unit
 # ---------------------------------------------------------------------------
 # Construction defaults
 # ---------------------------------------------------------------------------
+
+
+def test_single_point_evaluation_uses_one_communication_evidence_field():
+    evaluation = task_v2.SinglePointEvaluation(
+        row={},
+        per_ops_data={},
+        per_ops_source={},
+    )
+
+    assert evaluation.communication_evidence is None
+    assert not hasattr(evaluation, "collective_evidence")
 
 
 def test_default_task_config_is_agg_with_default_workload():
@@ -338,6 +352,78 @@ def test_sweep_agg_kwargs_shape():
     assert len(kwargs["parallel_config_list"]) > 0
 
 
+def test_batch_sweep_step_and_aggregate_cap_reach_sweep_kwargs():
+    default_task = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3-32B",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+    )
+    default_kwargs = default_task.sweep_agg_kwargs(database=None)
+    assert default_kwargs["max_batch_size"] == 512
+    assert default_kwargs["batch_sweep_step"] is None
+
+    exact_task = Task(
+        serving_mode="agg",
+        model_path="Qwen/Qwen3-32B",
+        system_name="h200_sxm",
+        backend_name="trtllm",
+        batch_sweep_step=1,
+        agg_max_batch_size=1024,
+    )
+    exact_kwargs = exact_task.sweep_agg_kwargs(database=None)
+    assert exact_kwargs["max_batch_size"] == 1024
+    assert exact_kwargs["batch_sweep_step"] == 1
+
+
+def test_batch_sweep_step_reaches_disaggregate_sweep_kwargs():
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="Qwen/Qwen3-32B",
+        prefill_system_name="h200_sxm",
+        prefill_backend_name="trtllm",
+        decode_model_path="Qwen/Qwen3-32B",
+        decode_system_name="h200_sxm",
+        decode_backend_name="trtllm",
+        batch_sweep_step=1,
+    )
+
+    kwargs = task.sweep_disagg_kwargs(prefill_database=None, decode_database=None)
+    assert kwargs["batch_sweep_step"] == 1
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"batch_sweep_step": 0},
+        {"batch_sweep_step": -1},
+        {"agg_max_batch_size": 0},
+        {"agg_max_batch_size": -1},
+    ],
+)
+def test_task_rejects_invalid_batch_sweep_configuration(overrides):
+    with pytest.raises(ValueError, match=r"batch_sweep_step|agg_max_batch_size"):
+        Task(
+            serving_mode="agg",
+            model_path="Qwen/Qwen3-32B",
+            system_name="h200_sxm",
+            backend_name="trtllm",
+            **overrides,
+        )
+
+
+@pytest.mark.parametrize("batch_sweep_step", (True, 1.5, "1"))
+def test_task_rejects_non_exact_integer_batch_sweep_step(batch_sweep_step):
+    with pytest.raises(TypeError, match="batch_sweep_step must be a positive integer"):
+        Task(
+            serving_mode="agg",
+            model_path="Qwen/Qwen3-32B",
+            system_name="h200_sxm",
+            backend_name="trtllm",
+            batch_sweep_step=batch_sweep_step,
+        )
+
+
 def test_sweep_disagg_kwargs_shape():
     t = Task(
         serving_mode="disagg",
@@ -484,6 +570,93 @@ def test_dsv4_pro_sglang_moe_remap():
     assert moe("sglang") == common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
     assert moe("sglang", moe_backend="megamoe") != common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
     assert moe("trtllm") != common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
+
+
+@pytest.mark.parametrize("system_name", ["h100_sxm", "h200_sxm"])
+def test_dsv4_pro_vllm_native_checkpoint_is_supported_on_hopper_sol(system_name):
+    task = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V4-Pro",
+        system_name=system_name,
+        backend_name="vllm",
+        backend_version="0.22.0",
+        database_mode="SOL",
+    )
+
+    task.validate()
+
+    assert task.moe_quant_mode == common.MoEQuantMode.w4a16_mxfp4
+
+
+def test_dsv4_pro_vllm_native_checkpoint_uses_blackwell_moe_quant_on_gb300_sol():
+    task = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V4-Pro",
+        system_name="gb300",
+        backend_name="vllm",
+        backend_version="0.22.0",
+        database_mode="SOL",
+    )
+
+    task.validate()
+
+    assert task.moe_quant_mode == common.MoEQuantMode.w4a8_mxfp4_mxfp8
+
+
+def test_dsv4_pro_vllm_disagg_resolves_moe_quant_per_role_architecture():
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V4-Pro",
+        prefill_system_name="h200_sxm",
+        prefill_backend_name="vllm",
+        prefill_backend_version="0.22.0",
+        decode_model_path="deepseek-ai/DeepSeek-V4-Pro",
+        decode_system_name="gb300",
+        decode_backend_name="vllm",
+        decode_backend_version="0.22.0",
+        database_mode="SOL",
+    )
+
+    task.validate()
+
+    assert task.prefill_moe_quant_mode == common.MoEQuantMode.w4a16_mxfp4
+    assert task.decode_moe_quant_mode == common.MoEQuantMode.w4a8_mxfp4_mxfp8
+
+
+def test_dsv4_pro_vllm_explicit_moe_quant_override_wins_on_hopper():
+    task = Task(
+        serving_mode="agg",
+        model_path="deepseek-ai/DeepSeek-V4-Pro",
+        system_name="h200_sxm",
+        backend_name="vllm",
+        backend_version="0.22.0",
+        database_mode="SOL",
+        moe_quant_mode=common.MoEQuantMode.fp8,
+    )
+
+    assert task.moe_quant_mode == common.MoEQuantMode.fp8
+
+
+def test_dsv4_pro_native_checkpoint_remains_rejected_on_non_vllm_hopper():
+    with pytest.raises(ValueError, match="uses native FP4 routed-expert weights"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V4-Pro",
+            system_name="h200_sxm",
+            backend_name="trtllm",
+            database_mode="SOL",
+        )
+
+
+def test_dsv4_flash_native_checkpoint_remains_rejected_on_vllm_hopper():
+    with pytest.raises(ValueError, match="uses native FP4 routed-expert weights"):
+        Task(
+            serving_mode="agg",
+            model_path="deepseek-ai/DeepSeek-V4-Flash",
+            system_name="h200_sxm",
+            backend_name="vllm",
+            database_mode="SOL",
+        )
 
 
 def test_pareto_sweep_controls_tpot_grid():
@@ -1019,21 +1192,86 @@ def test_to_dict_skips_predictor_strategy_field():
 # ---------------------------------------------------------------------------
 
 
-def _build_fake_summary(result_dict: dict | None = None, oom: bool = False):
+def _build_fake_summary(
+    result_dict: dict | None = None,
+    oom: bool = False,
+    kv_cache_oom: bool = False,
+    per_ops_data: dict | None = None,
+    per_ops_source: dict | None = None,
+):
     """Return a MagicMock InferenceSummary."""
     from unittest.mock import MagicMock
 
     s = MagicMock(name="InferenceSummary")
     s.check_oom.return_value = oom
-    s.check_kv_cache_oom.return_value = False
+    s.check_kv_cache_oom.return_value = kv_cache_oom
     s.get_result_dict.return_value = (
         result_dict if result_dict is not None else {"tokens/s/gpu": 100.0, "ttft": 50.0, "tpot": 20.0}
     )
+    s.get_per_ops_data.return_value = per_ops_data
+    s.get_per_ops_source.return_value = per_ops_source
     # For disagg: get_summary_df().iloc[0].to_dict()
     import pandas as pd
 
     s.get_summary_df.return_value = pd.DataFrame([result_dict or {"tokens/s/gpu": 100.0, "ttft": 50.0, "tpot": 20.0}])
     return s
+
+
+def _build_fake_disagg_summary(
+    role: str,
+    *,
+    oom: bool = False,
+    kv_cache_oom: bool = False,
+    phase_latency: dict | None = None,
+    phase_source: dict | None = None,
+):
+    result = {
+        "model": "m",
+        "isl": 4000,
+        "osl": 500,
+        "prefix": 0,
+        "concurrency": 1,
+        "bs": 1,
+        "global_bs": 1,
+        "tp": 4,
+        "pp": 1,
+        "dp": 1,
+        "moe_tp": 1,
+        "moe_ep": 1,
+        "parallel": "tp4pp1dp1",
+        "ttft": 80.0 if role == "prefill" else 0.0,
+        "tpot": 0.0 if role == "prefill" else 25.0,
+        "seq/s": 10.0 if role == "prefill" else 5.0,
+        "tokens/s/user": 0.0 if role == "prefill" else 40.0,
+        "gemm": "fp8",
+        "kvcache": "fp8",
+        "fmha": "fp8",
+        "moe": "fp8",
+        "comm": "half",
+        "memory": 12.3,
+        "backend": "trtllm",
+        "version": "1.3.0",
+        "system": "h200_sxm",
+        "power_w": 500.0,
+    }
+    summary = _build_fake_summary(
+        result_dict=result,
+        oom=oom,
+        kv_cache_oom=kv_cache_oom,
+    )
+    if role == "prefill":
+        summary.get_context_latency_dict.return_value = phase_latency
+        summary.get_context_source_dict.return_value = phase_source
+    else:
+        summary.get_generation_latency_dict.return_value = phase_latency
+        summary.get_generation_source_dict.return_value = phase_source
+    return summary
+
+
+def _patch_single_point_runtime_dependencies(monkeypatch):
+    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", lambda *args, **kwargs: "db")
+    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", lambda name: object())
+    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", lambda *args, **kwargs: object())
 
 
 def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
@@ -1078,6 +1316,70 @@ def test_run_single_agg_calls_predict_agg_worker_with_fixed_point(monkeypatch):
     assert captured["predict_kwargs"]["ctx_tokens"] == t.isl
 
 
+def test_run_single_agg_include_per_ops_returns_authoritative_summary_data(monkeypatch):
+    from aiconfigurator.sdk import predict
+
+    row = {"tokens/s/gpu": 999.0, "ttft": 42.0, "tpot": 7.0}
+    per_ops_data = {
+        "mix_step": {"attention": 1.25, "moe": 2.5},
+        "scheduling": {"num_mix_steps": 1},
+    }
+    per_ops_source = {"mix_step": {"attention": "sol", "moe": "sol"}}
+    summary = _build_fake_summary(
+        result_dict=row,
+        per_ops_data=per_ops_data,
+        per_ops_source=per_ops_source,
+    )
+    _patch_single_point_runtime_dependencies(monkeypatch)
+    monkeypatch.setattr(predict, "predict_agg_worker", lambda **kwargs: summary)
+
+    task = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
+    result = task.run_single_agg(tp=4, batch_size=64, include_per_ops=True)
+
+    assert isinstance(result, task_v2.SinglePointEvaluation)
+    assert result.row == row
+    assert result.per_ops_data == per_ops_data
+    assert result.per_ops_source == per_ops_source
+    assert result.communication_evidence is None
+    with pytest.raises(FrozenInstanceError):
+        result.row = {}
+
+
+@pytest.mark.parametrize(
+    ("missing_field", "expected_message"),
+    [
+        ("data", "aggregate per-operation data is missing"),
+        ("source", "aggregate per-operation source is missing"),
+    ],
+)
+def test_run_single_agg_include_per_ops_fails_fast_when_summary_evidence_is_missing(
+    monkeypatch,
+    missing_field,
+    expected_message,
+):
+    from aiconfigurator.sdk import predict
+
+    summary = _build_fake_summary(
+        per_ops_data=None if missing_field == "data" else {"mix_step": {"attention": 1.25}},
+        per_ops_source=None if missing_field == "source" else {"mix_step": {"attention": "sol"}},
+    )
+    _patch_single_point_runtime_dependencies(monkeypatch)
+    monkeypatch.setattr(predict, "predict_agg_worker", lambda **kwargs: summary)
+
+    task = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        task.run_single_agg(tp=4, batch_size=64, include_per_ops=True)
+
+
+@pytest.mark.parametrize("include_per_ops", [None, 0, 1, "true"])
+def test_run_single_agg_requires_exact_bool_include_per_ops(include_per_ops):
+    task = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
+
+    with pytest.raises(TypeError, match="include_per_ops must be a bool"):
+        task.run_single_agg(tp=1, batch_size=1, include_per_ops=include_per_ops)
+
+
 def test_run_single_agg_rejects_disagg_task():
     t = Task(
         serving_mode="disagg",
@@ -1108,7 +1410,7 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
         return MagicMock()
 
     def fake_predict_agg_worker(**kwargs):
-        return _build_fake_summary(oom=True)
+        return _build_fake_summary(oom=True, kv_cache_oom=True)
 
     monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
@@ -1116,8 +1418,32 @@ def test_run_single_agg_raises_on_oom(monkeypatch):
     monkeypatch.setattr(predict, "predict_agg_worker", fake_predict_agg_worker)
 
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
-    with pytest.raises(RuntimeError, match="OOM"):
+    with pytest.raises(InsufficientMemoryError, match="OOM") as raised:
         t.run_single_agg(tp=1, batch_size=999)
+
+    assert type(raised.value) is InsufficientMemoryError
+    assert str(raised.value) == (
+        "OOM at tp=1 pp=1 dp=1 moe_tp=1 moe_ep=1 batch_size=999.  "
+        "Reduce batch_size, increase parallelism, or use a quantized model."
+    )
+
+
+def test_run_single_agg_raises_typed_kv_cache_capacity_error(monkeypatch):
+    from aiconfigurator.sdk import predict
+
+    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", lambda *args, **kwargs: "db")
+    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", lambda name: object())
+    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(
+        predict,
+        "predict_agg_worker",
+        lambda **kwargs: _build_fake_summary(kv_cache_oom=True),
+    )
+
+    task = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
+
+    with pytest.raises(KVCacheCapacityError, match=r"KV cache.*batch_size=999"):
+        task.run_single_agg(tp=1, batch_size=999)
 
 
 def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
@@ -1140,42 +1466,9 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
 
         return MagicMock()
 
-    # Build per-role summary dicts that satisfy _rate_match_dict's schema.
-    def _phase_summary(role: str):
-        base = {
-            "model": "m",
-            "isl": 4000,
-            "osl": 500,
-            "prefix": 0,
-            "concurrency": 1,
-            "bs": 1,
-            "global_bs": 1,
-            "tp": 4,
-            "pp": 1,
-            "dp": 1,
-            "moe_tp": 1,
-            "moe_ep": 1,
-            "parallel": "tp4pp1dp1",
-            "ttft": 80.0 if role == "prefill" else 0.0,
-            "tpot": 0.0 if role == "prefill" else 25.0,
-            "seq/s": 10.0 if role == "prefill" else 5.0,
-            "tokens/s/user": 0.0 if role == "prefill" else 40.0,
-            "gemm": "fp8",
-            "kvcache": "fp8",
-            "fmha": "fp8",
-            "moe": "fp8",
-            "comm": "half",
-            "memory": 12.3,
-            "backend": "trtllm",
-            "version": "1.3.0",
-            "system": "h200_sxm",
-            "power_w": 500.0,
-        }
-        return _build_fake_summary(result_dict=base)
-
     def fake_predict_disagg_worker(**kwargs):
         call_roles.append(kwargs["role"])
-        return _phase_summary(kwargs["role"])
+        return _build_fake_disagg_summary(kwargs["role"])
 
     monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", fake_get_database)
     monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", fake_get_backend)
@@ -1207,10 +1500,262 @@ def test_run_single_disagg_invokes_both_phases_and_rate_matches(monkeypatch):
     assert "(e)workers" in row  # encoder placeholders preserved
 
 
+def test_run_single_disagg_include_per_ops_combines_prefill_and_decode_evidence(monkeypatch):
+    from aiconfigurator.sdk import predict
+
+    summaries = {
+        "prefill": _build_fake_disagg_summary(
+            "prefill",
+            phase_latency={"attention": 3.5, "moe": 7.25},
+            phase_source={"attention": "sol", "moe": "sol"},
+        ),
+        "decode": _build_fake_disagg_summary(
+            "decode",
+            phase_latency={"attention": 0.25, "moe": 0.5},
+            phase_source={"attention": "sol", "moe": "sol"},
+        ),
+    }
+    _patch_single_point_runtime_dependencies(monkeypatch)
+    monkeypatch.setattr(predict, "predict_disagg_worker", lambda **kwargs: summaries[kwargs["role"]])
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+    )
+    result = task.run_single_disagg(
+        prefill_tp=4,
+        prefill_batch_size=1,
+        prefill_num_workers=2,
+        decode_tp=2,
+        decode_batch_size=64,
+        decode_num_workers=4,
+        include_per_ops=True,
+    )
+
+    assert isinstance(result, task_v2.SinglePointEvaluation)
+    assert result.row["(p)workers"] == 2
+    assert result.row["(d)workers"] == 4
+    assert result.per_ops_data == {
+        "prefill": {"attention": 3.5, "moe": 7.25},
+        "decode": {"attention": 0.25, "moe": 0.5},
+    }
+    assert result.per_ops_source == {
+        "prefill": {"attention": "sol", "moe": "sol"},
+        "decode": {"attention": "sol", "moe": "sol"},
+    }
+    assert result.communication_evidence is None
+
+
+def test_run_single_disagg_include_per_ops_allows_empty_decode_evidence_for_osl_one(monkeypatch):
+    from aiconfigurator.sdk import predict
+
+    summaries = {
+        "prefill": _build_fake_disagg_summary(
+            "prefill",
+            phase_latency={"attention": 3.5, "moe": 7.25},
+            phase_source={"attention": "sol", "moe": "sol"},
+        ),
+        "decode": _build_fake_disagg_summary(
+            "decode",
+            phase_latency=None,
+            phase_source=None,
+        ),
+    }
+    _patch_single_point_runtime_dependencies(monkeypatch)
+    monkeypatch.setattr(predict, "predict_disagg_worker", lambda **kwargs: summaries[kwargs["role"]])
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+        osl=1,
+    )
+    result = task.run_single_disagg(
+        prefill_tp=4,
+        prefill_batch_size=1,
+        prefill_num_workers=2,
+        decode_tp=2,
+        decode_batch_size=1,
+        decode_num_workers=4,
+        include_per_ops=True,
+    )
+
+    assert isinstance(result, task_v2.SinglePointEvaluation)
+    assert result.per_ops_data == {
+        "prefill": {"attention": 3.5, "moe": 7.25},
+        "decode": {},
+    }
+    assert result.per_ops_source == {
+        "prefill": {"attention": "sol", "moe": "sol"},
+        "decode": {},
+    }
+    assert result.communication_evidence is None
+
+
+@pytest.mark.parametrize(
+    ("missing_role", "missing_kind", "expected_message"),
+    [
+        ("prefill", "data", "prefill per-operation data is missing"),
+        ("prefill", "source", "prefill per-operation source is missing"),
+        ("decode", "data", "decode per-operation data is missing"),
+        ("decode", "source", "decode per-operation source is missing"),
+    ],
+)
+def test_run_single_disagg_include_per_ops_fails_fast_when_phase_evidence_is_missing(
+    monkeypatch,
+    missing_role,
+    missing_kind,
+    expected_message,
+):
+    from aiconfigurator.sdk import predict
+
+    summaries = {}
+    for role in ("prefill", "decode"):
+        summaries[role] = _build_fake_disagg_summary(
+            role,
+            phase_latency=None if (role, missing_kind) == (missing_role, "data") else {"attention": 1.0},
+            phase_source=None if (role, missing_kind) == (missing_role, "source") else {"attention": "sol"},
+        )
+    _patch_single_point_runtime_dependencies(monkeypatch)
+    monkeypatch.setattr(predict, "predict_disagg_worker", lambda **kwargs: summaries[kwargs["role"]])
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+    )
+
+    with pytest.raises(RuntimeError, match=expected_message):
+        task.run_single_disagg(
+            prefill_tp=1,
+            decode_tp=1,
+            decode_batch_size=64,
+            include_per_ops=True,
+        )
+
+
+@pytest.mark.parametrize("include_per_ops", [None, 0, 1, "true"])
+def test_run_single_disagg_requires_exact_bool_include_per_ops(include_per_ops):
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+    )
+
+    with pytest.raises(TypeError, match="include_per_ops must be a bool"):
+        task.run_single_disagg(
+            prefill_tp=1,
+            decode_tp=1,
+            decode_batch_size=1,
+            include_per_ops=include_per_ops,
+        )
+
+
 def test_run_single_disagg_rejects_agg_task():
     t = Task(serving_mode="agg", model_path="deepseek-ai/DeepSeek-V3", system_name="h200_sxm")
     with pytest.raises(ValueError, match="requires serving_mode='disagg'"):
         t.run_single_disagg(prefill_tp=4, decode_tp=2, decode_batch_size=64)
+
+
+@pytest.mark.parametrize(
+    ("kv_oom_role", "expected_calls"),
+    [("prefill", ["prefill"]), ("decode", ["prefill", "decode"])],
+)
+def test_run_single_disagg_raises_typed_role_kv_cache_capacity_error(
+    monkeypatch,
+    kv_oom_role,
+    expected_calls,
+):
+    from aiconfigurator.sdk import predict
+
+    calls = []
+
+    def fake_predict_disagg_worker(**kwargs):
+        role = kwargs["role"]
+        calls.append(role)
+        return _build_fake_disagg_summary(role, kv_cache_oom=role == kv_oom_role)
+
+    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", lambda *args, **kwargs: "db")
+    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", lambda name: object())
+    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(predict, "predict_disagg_worker", fake_predict_disagg_worker)
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+    )
+
+    with pytest.raises(KVCacheCapacityError, match=rf"KV cache.*{kv_oom_role}.*batch_size"):
+        task.run_single_disagg(prefill_tp=1, decode_tp=1, decode_batch_size=64)
+
+    assert calls == expected_calls
+
+
+@pytest.mark.parametrize(
+    ("oom_role", "expected_calls", "expected_message"),
+    [
+        (
+            "prefill",
+            ["prefill"],
+            "OOM in prefill phase at tp=1 pp=1 dp=1 batch_size=1.",
+        ),
+        (
+            "decode",
+            ["prefill", "decode"],
+            "OOM in decode phase at tp=1 pp=1 dp=1 batch_size=64.",
+        ),
+    ],
+)
+def test_run_single_disagg_raises_typed_role_insufficient_memory_error(
+    monkeypatch,
+    oom_role,
+    expected_calls,
+    expected_message,
+):
+    from aiconfigurator.sdk import predict
+
+    calls = []
+
+    def fake_predict_disagg_worker(**kwargs):
+        role = kwargs["role"]
+        calls.append(role)
+        return _build_fake_disagg_summary(
+            role,
+            oom=role == oom_role,
+            kv_cache_oom=role == oom_role,
+        )
+
+    monkeypatch.setattr("aiconfigurator.sdk.perf_database.get_database_view", lambda *args, **kwargs: "db")
+    monkeypatch.setattr("aiconfigurator.sdk.backends.factory.get_backend", lambda name: object())
+    monkeypatch.setattr("aiconfigurator.sdk.models.get_model", lambda *args, **kwargs: object())
+    monkeypatch.setattr(predict, "predict_disagg_worker", fake_predict_disagg_worker)
+
+    task = Task(
+        serving_mode="disagg",
+        prefill_model_path="deepseek-ai/DeepSeek-V3",
+        prefill_system_name="h200_sxm",
+        decode_model_path="deepseek-ai/DeepSeek-V3",
+        decode_system_name="h200_sxm",
+    )
+
+    with pytest.raises(InsufficientMemoryError, match=rf"OOM in {oom_role}.*batch_size") as raised:
+        task.run_single_disagg(prefill_tp=1, decode_tp=1, decode_batch_size=64)
+
+    assert type(raised.value) is InsufficientMemoryError
+    assert str(raised.value) == expected_message
+    assert calls == expected_calls
 
 
 # ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@ from aiconfigurator.sdk import common
 from aiconfigurator.sdk.config import RuntimeConfig
 from aiconfigurator.sdk.inference_summary import InferenceSummary
 from aiconfigurator.sdk.models import BaseModel
-from aiconfigurator.sdk.perf_database import PerfDatabase
+from aiconfigurator.sdk.perf_database import PerfDatabase, bind_collective_operation
 from aiconfigurator.sdk.rust_engine_step import (
     estimate_decode_step_latency_with_rust,
     estimate_mixed_step_latency_with_rust,
@@ -285,15 +285,16 @@ class BaseBackend:
             eff_batch = batch_size * num_images if use_varlen else batch_size
             eff_s = pre_merge_per_image if use_varlen else n_img
             x = eff_batch * eff_s
-            result = op.query(
-                database,
-                x=x,
-                batch_size=eff_batch,
-                beam_width=1,
-                s=eff_s,
-                prefix=0,
-                model_name=getattr(model, "model_name", ""),
-            )
+            with bind_collective_operation(op._name):
+                result = op.query(
+                    database,
+                    x=x,
+                    batch_size=eff_batch,
+                    beam_width=1,
+                    s=eff_s,
+                    prefix=0,
+                    model_name=getattr(model, "model_name", ""),
+                )
             encoder_latency_dict[op._name] += float(result)
             encoder_energy_wms_dict[op._name] += getattr(result, "energy", 0.0)
             encoder_source_dict[op._name] = getattr(result, "source", "silicon")
@@ -321,15 +322,16 @@ class BaseBackend:
 
         for op in model.context_ops:
             x = batch_size * effective_isl if "logits_gemm" not in op._name else batch_size
-            result = op.query(
-                database,
-                x=x,
-                batch_size=batch_size,
-                beam_width=1,
-                s=effective_isl,
-                prefix=prefix,
-                seq_imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
-            )
+            with bind_collective_operation(op._name):
+                result = op.query(
+                    database,
+                    x=x,
+                    batch_size=batch_size,
+                    beam_width=1,
+                    s=effective_isl,
+                    prefix=prefix,
+                    seq_imbalance_correction_scale=runtime_config.seq_imbalance_correction_scale,
+                )
             context_latency_dict[op._name] += float(result)
             context_energy_wms_dict[op._name] += getattr(result, "energy", 0.0)
             new_src = getattr(result, "source", "silicon")
@@ -363,14 +365,15 @@ class BaseBackend:
             energy_wms_dict = defaultdict(float)
 
             for op in model.generation_ops:
-                result = op.query(
-                    database,
-                    x=batch_size * beam_width,
-                    batch_size=batch_size,
-                    beam_width=beam_width,
-                    s=isl + i + 1,
-                    gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
-                )
+                with bind_collective_operation(op._name):
+                    result = op.query(
+                        database,
+                        x=batch_size * beam_width,
+                        batch_size=batch_size,
+                        beam_width=beam_width,
+                        s=isl + i + 1,
+                        gen_seq_imbalance_correction_scale=runtime_config.gen_seq_imbalance_correction_scale,
+                    )
                 latency_dict[op._name] += float(result)
                 energy_wms_dict[op._name] += getattr(result, "energy", 0.0)
                 new_src = getattr(result, "source", "silicon")
@@ -912,6 +915,69 @@ class BaseBackend:
 
     # ============== AGG STEP LATENCY HELPERS (shared) ==================
 
+    @staticmethod
+    def _semantic_attention_op_names(model: BaseModel, *, phase: str) -> tuple[str, ...]:
+        if phase == "context":
+            contract_name = "MIXED_STEP_CONTEXT_ATTENTION_KEYS"
+            names = model.MIXED_STEP_CONTEXT_ATTENTION_KEYS
+            graph = model.context_ops
+        elif phase == "generation":
+            contract_name = "MIXED_STEP_GENERATION_ATTENTION_KEYS"
+            names = model.MIXED_STEP_GENERATION_ATTENTION_KEYS
+            graph = model.generation_ops
+        else:
+            raise ValueError(f"Unsupported attention contract phase: {phase!r}")
+        if not isinstance(names, tuple) or not names:
+            raise TypeError(f"{contract_name} must be a non-empty tuple of operation names")
+        for name in names:
+            if not isinstance(name, str) or not name:
+                raise TypeError(f"{phase} attention operation names must be non-empty strings; got {name!r}")
+        if len(set(names)) != len(names):
+            duplicate = next(name for index, name in enumerate(names) if name in names[:index])
+            raise ValueError(f"duplicate {phase} attention operation name: {duplicate!r}")
+        graph_names = {operation._name for operation in graph}
+        missing = tuple(name for name in names if name not in graph_names)
+        if missing:
+            raise ValueError(f"{phase} attention contract references missing graph operations: {missing!r}")
+        return names
+
+    @staticmethod
+    def _executed_operation_source(
+        sources: dict[str, str],
+        *,
+        operation_name: str,
+        phase: str,
+        role: str,
+    ) -> str:
+        if operation_name not in sources:
+            raise ValueError(f"missing source for executed {phase} {role} operation {operation_name!r}")
+        source = sources[operation_name]
+        if not isinstance(source, str) or not source:
+            raise ValueError(f"invalid source for executed {phase} {role} operation {operation_name!r}: {source!r}")
+        return source
+
+    @classmethod
+    def _require_executed_attention_evidence(
+        cls,
+        *,
+        phase: str,
+        operation_names: tuple[str, ...],
+        latencies: dict[str, float],
+        energies: dict[str, float],
+        sources: dict[str, str],
+    ) -> None:
+        for operation_name in operation_names:
+            if operation_name not in latencies:
+                raise ValueError(f"missing latency for executed {phase} attention operation {operation_name!r}")
+            if operation_name not in energies:
+                raise ValueError(f"missing energy for executed {phase} attention operation {operation_name!r}")
+            cls._executed_operation_source(
+                sources,
+                operation_name=operation_name,
+                phase=phase,
+                role="attention",
+            )
+
     def _get_mix_step_latency(
         self,
         model: BaseModel,
@@ -949,6 +1015,9 @@ class BaseBackend:
 
         ctx_scale = runtime_config.seq_imbalance_correction_scale
         gen_scale = runtime_config.gen_seq_imbalance_correction_scale
+        context_attention_names = self._semantic_attention_op_names(model, phase="context")
+        generation_attention_names = self._semantic_attention_op_names(model, phase="generation")
+        context_attention_name_set = set(context_attention_names)
 
         # Pass 1: combined single-batch inference to extract non-attention latency.
         num_tokens_combined = ctx_tokens + gen_tokens
@@ -969,16 +1038,30 @@ class BaseBackend:
         latency_dict = summary.get_context_latency_dict()
         energy_wms_dict = summary.get_context_energy_wms_dict()
         source_dict = summary.get_context_source_dict()
+        self._require_executed_attention_evidence(
+            phase="context",
+            operation_names=context_attention_names,
+            latencies=latency_dict,
+            energies=energy_wms_dict,
+            sources=source_dict,
+        )
         non_attention_latency_ms = 0.0
         non_attention_energy_wms = 0.0
         mix_non_attn_ops: dict[str, float] = {}
         mix_non_attn_sources: dict[str, str] = {}
         for layer_name, latency in latency_dict.items():
-            if layer_name != "context_attention":
+            if layer_name not in context_attention_name_set:
                 non_attention_latency_ms += latency
-                non_attention_energy_wms += energy_wms_dict.get(layer_name, 0.0)
+                if layer_name not in energy_wms_dict:
+                    raise ValueError(f"missing energy for executed context non-attention operation {layer_name!r}")
+                non_attention_energy_wms += energy_wms_dict[layer_name]
                 mix_non_attn_ops[layer_name] = latency
-                mix_non_attn_sources[layer_name] = source_dict.get(layer_name, "silicon")
+                mix_non_attn_sources[layer_name] = self._executed_operation_source(
+                    source_dict,
+                    operation_name=layer_name,
+                    phase="context",
+                    role="non-attention",
+                )
 
         # Pass 2: context attention split full isl over num_steps and averaged.
         batch_size = np.ceil(ctx_tokens / isl)
@@ -997,15 +1080,32 @@ class BaseBackend:
         )
         latency_dict = summary.get_context_latency_dict()
         energy_wms_dict = summary.get_context_energy_wms_dict()
-        ctx_attn_source = summary.get_context_source_dict().get("context_attention", "silicon")
+        source_dict = summary.get_context_source_dict()
+        self._require_executed_attention_evidence(
+            phase="context",
+            operation_names=context_attention_names,
+            latencies=latency_dict,
+            energies=energy_wms_dict,
+            sources=source_dict,
+        )
         scale_factor = np.ceil(isl / ctx_tokens)
-        ctx_attention_latency_ms = latency_dict["context_attention"] / scale_factor
-        ctx_attention_energy_wms = energy_wms_dict.get("context_attention", 0.0) / scale_factor
+        context_attention_ops = {
+            f"{operation_name} (scaled)": latency_dict[operation_name] / scale_factor
+            for operation_name in context_attention_names
+        }
+        context_attention_sources = {
+            f"{operation_name} (scaled)": source_dict[operation_name] for operation_name in context_attention_names
+        }
+        ctx_attention_latency_ms = sum(context_attention_ops.values())
+        ctx_attention_energy_wms = sum(
+            energy_wms_dict[operation_name] / scale_factor for operation_name in context_attention_names
+        )
 
         # Pass 3: generation attention (use isl + osl//2 for the avg seq len).
         gen_attention_latency_ms = 0.0
         gen_attention_energy_wms = 0.0
-        gen_attn_source = "silicon"
+        generation_attention_ops: dict[str, float] = {}
+        generation_attention_sources: dict[str, str] = {}
         if gen_tokens > 0:
             summary = self.run_static(
                 model,
@@ -1021,19 +1121,37 @@ class BaseBackend:
             )
             latency_dict = summary.get_generation_latency_dict()
             energy_wms_dict = summary.get_generation_energy_wms_dict()
-            gen_attention_latency_ms = latency_dict["generation_attention"]
-            gen_attention_energy_wms = energy_wms_dict.get("generation_attention", 0.0)
-            gen_attn_source = summary.get_generation_source_dict().get("generation_attention", "silicon")
+            source_dict = summary.get_generation_source_dict()
+            self._require_executed_attention_evidence(
+                phase="generation",
+                operation_names=generation_attention_names,
+                latencies=latency_dict,
+                energies=energy_wms_dict,
+                sources=source_dict,
+            )
+            generation_attention_ops = {
+                operation_name: latency_dict[operation_name] for operation_name in generation_attention_names
+            }
+            generation_attention_sources = {
+                operation_name: source_dict[operation_name] for operation_name in generation_attention_names
+            }
+            gen_attention_latency_ms = sum(generation_attention_ops.values())
+            gen_attention_energy_wms = sum(
+                energy_wms_dict[operation_name] for operation_name in generation_attention_names
+            )
+        else:
+            generation_attention_ops = {"generation_attention (not executed)": 0.0}
+            generation_attention_sources = {"generation_attention (not executed)": "not_executed"}
 
         per_ops_step_data = {
             **mix_non_attn_ops,
-            "context_attention (scaled)": ctx_attention_latency_ms,
-            "generation_attention": gen_attention_latency_ms,
+            **context_attention_ops,
+            **generation_attention_ops,
         }
         per_ops_step_source = {
             **mix_non_attn_sources,
-            "context_attention (scaled)": ctx_attn_source,
-            "generation_attention": gen_attn_source,
+            **context_attention_sources,
+            **generation_attention_sources,
         }
 
         total_latency_ms = non_attention_latency_ms + ctx_attention_latency_ms + gen_attention_latency_ms

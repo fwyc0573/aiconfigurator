@@ -72,8 +72,8 @@ class TestEnableAlltoallConditions:
     """Test the enable_alltoall gating logic (SM100 only)."""
 
     def test_alltoall_enabled_default_backend(self):
-        """alltoall enabled when moe_backend=None, dp>1, moe_tp=1, quant_mode set."""
-        db = _make_mock_db(sm_version=100)
+        """NVL72 enables alltoall for the default backend when other gates pass."""
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(
             moe_tp_size=1,
             moe_ep_size=8,
@@ -85,15 +85,15 @@ class TestEnableAlltoallConditions:
         db.query_trtllm_alltoall.assert_called_once()
 
     def test_alltoall_enabled_cutlass_backend(self):
-        """alltoall enabled when moe_backend='CUTLASS' and quant_mode set."""
-        db = _make_mock_db(sm_version=100)
+        """NVL72 enables alltoall for CUTLASS when other gates pass."""
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(moe_backend="CUTLASS", pre_dispatch=True, quant_mode=common.MoEQuantMode.fp8)
         dispatch.query(db, x=16)
         db.query_trtllm_alltoall.assert_called_once()
 
     def test_alltoall_requires_quant_mode_when_enabled(self):
         """TRTLLM alltoall path fails fast when quant_mode is missing."""
-        db = _make_mock_db(sm_version=100)
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(moe_tp_size=1, moe_ep_size=8, attention_dp_size=8, pre_dispatch=True, quant_mode=None)
         with pytest.raises(ValueError, match="requires quant_mode"):
             dispatch.query(db, x=16)
@@ -122,6 +122,15 @@ class TestEnableAlltoallConditions:
         dispatch.query(db, x=16)
         db.query_trtllm_alltoall.assert_not_called()
 
+    def test_alltoall_disabled_when_not_nvl72(self):
+        """SM100 systems with fewer than 72 GPUs per node use the DP fallback."""
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=8)
+        dispatch = _make_dispatch(pre_dispatch=True, quant_mode=common.MoEQuantMode.fp8)
+        dispatch.query(db, x=16)
+
+        db.query_trtllm_alltoall.assert_not_called()
+        db.query_nccl.assert_called_once()
+
 
 @pytest.mark.skipif(torch.xpu.is_available(), reason="skip for xpu")
 class TestSm100AlltoallPath:
@@ -129,7 +138,7 @@ class TestSm100AlltoallPath:
 
     def test_pre_dispatch_calls_alltoall_dispatch(self):
         """Pre-dispatch uses alltoall_dispatch op."""
-        db = _make_mock_db(sm_version=100)
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(pre_dispatch=True, quant_mode=common.MoEQuantMode.fp8)
         result = dispatch.query(db, x=16)
 
@@ -141,7 +150,7 @@ class TestSm100AlltoallPath:
 
     def test_post_dispatch_calls_alltoall_combine(self):
         """Post-dispatch uses alltoall_combine op."""
-        db = _make_mock_db(sm_version=100)
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(pre_dispatch=False, quant_mode=common.MoEQuantMode.fp8)
         result = dispatch.query(db, x=16)
 
@@ -152,7 +161,7 @@ class TestSm100AlltoallPath:
 
     def test_nvfp4_quant_mode_forwarded(self):
         """nvfp4 quant_mode is correctly forwarded to alltoall (not replaced by default)."""
-        db = _make_mock_db(sm_version=100)
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(pre_dispatch=True, quant_mode=common.MoEQuantMode.nvfp4)
         dispatch.query(db, x=16)
 
@@ -161,7 +170,7 @@ class TestSm100AlltoallPath:
 
     def test_moe_backend_forwarded_to_alltoall(self):
         """moe_backend is forwarded to query_trtllm_alltoall."""
-        db = _make_mock_db(sm_version=100)
+        db = _make_mock_db(sm_version=100, num_gpus_per_node=72)
         dispatch = _make_dispatch(pre_dispatch=True, moe_backend="CUTLASS", quant_mode=common.MoEQuantMode.fp8)
         dispatch.query(db, x=16)
 
@@ -433,12 +442,105 @@ class TestSmLt100NoAlltoall:
 
 
 @pytest.mark.skipif(torch.xpu.is_available(), reason="skip for xpu")
+class TestVllmReduceResults:
+    """Test the vLLM attention-TP reduction gate used by explicit model graphs."""
+
+    @pytest.mark.parametrize("pre_dispatch", [True, False])
+    def test_reduce_results_false_skips_attention_tp_allreduce(self, pre_dispatch):
+        db = _make_mock_db(sm_version=90, backend="vllm")
+        dispatch = _make_dispatch(
+            moe_tp_size=8,
+            moe_ep_size=1,
+            attention_dp_size=1,
+            pre_dispatch=pre_dispatch,
+            reduce_results=False,
+        )
+
+        result = dispatch.query(db, x=16)
+
+        assert float(result) == 0.0
+        db.query_custom_allreduce.assert_not_called()
+        db.query_nccl.assert_not_called()
+
+    def test_default_reduce_results_keeps_attention_tp_allreduce(self):
+        db = _make_mock_db(sm_version=90, backend="vllm")
+        dispatch = _make_dispatch(
+            moe_tp_size=8,
+            moe_ep_size=1,
+            attention_dp_size=1,
+            pre_dispatch=True,
+        )
+
+        result = dispatch.query(db, x=16)
+
+        assert float(result) == 1.5
+        db.query_custom_allreduce.assert_called_once()
+        db.query_nccl.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "pre_dispatch,collective",
+        [
+            (True, "all_gather"),
+            (False, "reduce_scatter"),
+        ],
+    )
+    def test_attention_dp_communication_is_independent_of_reduce_results(self, pre_dispatch, collective):
+        db = _make_mock_db(sm_version=90, backend="vllm")
+        dispatch = _make_dispatch(
+            moe_tp_size=1,
+            moe_ep_size=8,
+            attention_dp_size=8,
+            pre_dispatch=pre_dispatch,
+            reduce_results=False,
+        )
+
+        result = dispatch.query(db, x=16)
+
+        assert float(result) == 2.0
+        db.query_custom_allreduce.assert_not_called()
+        db.query_nccl.assert_called_once()
+        assert db.query_nccl.call_args[0][2] == collective
+
+    def test_actual_group_eight_queries_are_used_when_attention_dp_is_two(self):
+        db = _make_mock_db(
+            sm_version=100,
+            num_gpus_per_node=4,
+            backend="vllm",
+        )
+        dispatch = _make_dispatch(
+            moe_tp_size=8,
+            moe_ep_size=1,
+            attention_dp_size=2,
+            pre_dispatch=True,
+            hidden_size=1024,
+        )
+
+        result = dispatch.query(db, x=16)
+
+        assert float(result) == 3.5
+        db.query_custom_allreduce.assert_called_once_with(
+            common.CommQuantMode.half,
+            8,
+            16 * 1024,
+        )
+        db.query_nccl.assert_called_once_with(
+            common.CommQuantMode.half,
+            8,
+            "all_gather",
+            16 * 1024 * 2,
+        )
+
+
+@pytest.mark.skipif(torch.xpu.is_available(), reason="skip for xpu")
 class TestSGLangNonDeepEPAttentionTpDp:
     """Test SGLang non-DeepEP combined attention TPxDP communication."""
 
     def test_pre_dispatch_uses_reduce_scatter_then_all_gather(self):
         db = _make_mock_db(sm_version=90, backend="sglang")
-        db.query_nccl.side_effect = [PerformanceResult(2.0), PerformanceResult(3.0)]
+        db.query_nccl.side_effect = [
+            PerformanceResult(2.0),
+            PerformanceResult(3.0),
+        ]
         dispatch = _make_dispatch(
             moe_tp_size=4,
             moe_ep_size=2,
@@ -462,7 +564,10 @@ class TestSGLangNonDeepEPAttentionTpDp:
 
     def test_post_dispatch_uses_reduce_scatter_then_all_gather(self):
         db = _make_mock_db(sm_version=90, backend="sglang")
-        db.query_nccl.side_effect = [PerformanceResult(2.0), PerformanceResult(3.0)]
+        db.query_nccl.side_effect = [
+            PerformanceResult(2.0),
+            PerformanceResult(3.0),
+        ]
         dispatch = _make_dispatch(
             moe_tp_size=4,
             moe_ep_size=2,

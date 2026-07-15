@@ -248,6 +248,32 @@ class DeepSeekV4Config:
     n_shared_experts: int = 1
 
 
+@dataclass(frozen=True)
+class Step4Config:
+    """Step4 structural fields required by its predefined operation graph.
+
+    ``block_types`` is the normalized AIC grouping sequence derived from the
+    architecture CSV counts and the Step4Air block labels. It preserves the
+    three audited block classes without claiming an independently verified
+    checkpoint layer-by-layer order.
+    """
+
+    block_types: tuple[str, ...]
+    full_num_attention_heads: int
+    full_num_key_value_heads: int
+    sliding_num_attention_heads: int
+    sliding_num_key_value_heads: int
+    attention_head_dim: int
+    sliding_window_size: int
+    q_lora_rank: int
+    kv_lora_rank: int
+    qk_nope_head_dim: int
+    qk_rope_head_dim: int
+    v_head_dim: int
+    dense_inter_size: int
+    shared_expert_inter_size: int
+
+
 def indexer_cache_entry_bytes(index_head_dim: int) -> int:
     """Bytes per token in the FP8 indexer KV cache, including one scale per 128 values."""
     return index_head_dim + ((index_head_dim + 127) // 128) * 4
@@ -491,6 +517,8 @@ DefaultHFModels = {
     "nvidia/GLM-5.2-NVFP4",
     # DeepSeek V4
     *DEEPSEEK_V4_HF_MODELS,
+    # Step4
+    "stepfun-ai/Step4",
     # Qwen 3 Models
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
@@ -581,6 +609,7 @@ ModelFamily = {
     "QWEN3VL_MOE",
     "GEMMA4MIX",
     "MINIMAXM3",
+    "STEP4",
 }
 ARCHITECTURE_TO_MODEL_FAMILY = {
     "LlamaForCausalLM": "LLAMA",
@@ -594,6 +623,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "DeepseekV32ForCausalLM": "DEEPSEEKV32",
     "GlmMoeDsaForCausalLM": "DEEPSEEKV32",
     "DeepseekV4ForCausalLM": "DEEPSEEKV4",
+    "Step4ForCausalLM": "STEP4",
     "KimiK25ForConditionalGeneration": "KIMIK25",
     "NemotronForCausalLM": "NEMOTRONNAS",
     "DeciLMForCausalLM": "NEMOTRONNAS",

@@ -38,10 +38,15 @@ _COLLECTOR_DIR = str(Path(__file__).resolve().parents[3] / "collector")
 if _COLLECTOR_DIR not in sys.path:
     sys.path.insert(0, _COLLECTOR_DIR)
 
+
+def _make_torch_mock():
+    torch_mock = MagicMock()
+    torch_mock.AcceleratorError = type("AcceleratorError", (Exception,), {})
+    return torch_mock
+
+
 if "torch" not in sys.modules:
-    _torch = MagicMock()
-    _torch.AcceleratorError = type("AcceleratorError", (Exception,), {})
-    sys.modules["torch"] = _torch
+    sys.modules["torch"] = _make_torch_mock()
 
 import collect as _collect_mod
 from collect import parallel_run
@@ -76,6 +81,19 @@ def _task_fn(label, behavior, device):
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+@pytest.fixture(autouse=True)
+def _mock_torch(monkeypatch):
+    """Keep worker device setup independent of test collection order."""
+    torch_mock = _make_torch_mock()
+    monkeypatch.setitem(sys.modules, "torch", torch_mock)
+    monkeypatch.setattr(_collect_mod, "torch", torch_mock)
+    _collect_mod.get_device_module.cache_clear()
+    _collect_mod.get_device_str.cache_clear()
+    yield
+    _collect_mod.get_device_module.cache_clear()
+    _collect_mod.get_device_str.cache_clear()
+
+
 @pytest.fixture(autouse=True)
 def _fork_mp(monkeypatch):
     """Replace mp in collect module with a fork context so that the mocked

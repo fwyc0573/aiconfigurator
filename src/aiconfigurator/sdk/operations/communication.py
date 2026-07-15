@@ -171,13 +171,11 @@ class CustomAllReduce(Operation):
         if database_mode is None:
             database_mode = database._default_database_mode
         if database_mode == common.DatabaseMode.SOL:
-            sol_latency = get_sol(quant_mode, tp_size, size)[0]
-            return PerformanceResult(sol_latency, energy=0.0, source="sol")
+            return PerformanceResult(get_sol(quant_mode, tp_size, size)[0], energy=0.0, source="sol")
         elif database_mode == common.DatabaseMode.SOL_FULL:
             return get_sol(quant_mode, tp_size, size)
         elif database_mode == common.DatabaseMode.EMPIRICAL:
-            emp_latency = get_empirical(quant_mode, tp_size, size)
-            return PerformanceResult(emp_latency, energy=0.0, source="empirical")
+            return PerformanceResult(get_empirical(quant_mode, tp_size, size), energy=0.0, source="empirical")
 
         cls.load_data(database)
         data_wrapper = database._custom_allreduce_data
@@ -252,11 +250,12 @@ class CustomAllReduce(Operation):
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query custom allreduce latency with power data."""
         if self._tp_size == 1:
-            # No-op short-circuit: tp_size=1 has no allreduce. Tag as
-            # ``empirical`` rather than letting the constructor default to
-            # ``silicon`` so EMPIRICAL/SOL modes don't get a spurious
-            # silicon leakage in the breakdown report.
-            return PerformanceResult(0.0, 0.0, source="empirical")
+            source = (
+                "sol"
+                if database._default_database_mode in (common.DatabaseMode.SOL, common.DatabaseMode.SOL_FULL)
+                else "empirical"
+            )
+            return PerformanceResult(0.0, 0.0, source=source)
         # count, not size in bytes
         size = (-(-kwargs.get("x") // self._seq_split)) * self._h  # CP: ceil = busiest rank
 
@@ -590,9 +589,12 @@ class P2P(Operation):
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query P2P latency with power data."""
         if self._pp_size == 1:
-            # No-op short-circuit: pp_size=1 has no P2P transfer. See note on
-            # CustomAllReduce.query for source-tag rationale.
-            return PerformanceResult(0.0, 0.0, source="empirical")
+            source = (
+                "sol"
+                if database._default_database_mode in (common.DatabaseMode.SOL, common.DatabaseMode.SOL_FULL)
+                else "empirical"
+            )
+            return PerformanceResult(0.0, 0.0, source=source)
 
         size = (-(-kwargs.get("x") // self._seq_split)) * self._h  # CP: ceil = busiest rank
         p2p_bytes = size * 2

@@ -9,6 +9,8 @@ empirical attribution feature -- default value, _merge_source helper, and
 propagation through ``+``, ``*``, ``/``, ``abs()``.
 """
 
+import inspect
+
 import pytest
 
 from aiconfigurator.sdk.performance_result import PerformanceResult
@@ -44,6 +46,13 @@ class TestConstruction:
     def test_energy_stored(self):
         r = pr(5.0, energy=250.0)
         assert r.energy == 250.0
+
+    def test_collective_evidence_is_not_a_performance_result_carrier(self):
+        signature = inspect.signature(PerformanceResult)
+        result = PerformanceResult(1.0)
+
+        assert "communication_evidence" not in signature.parameters
+        assert not hasattr(result, "communication_evidence")
 
 
 # -------------------------------------------------------------------------

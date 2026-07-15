@@ -11,6 +11,17 @@ added method, replacing ``PerfDatabase._get_p2p_bandwidth``.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
+
+@dataclass(frozen=True, slots=True)
+class BandwidthSelection:
+    """Immutable record of one topology bandwidth selection."""
+
+    group_size: int
+    tier: str
+    bandwidth_bytes_per_second: int | float
+
 
 class SystemSpec(dict):
     """Hardware system spec backed by the YAML dict.
@@ -19,8 +30,8 @@ class SystemSpec(dict):
     attributes. Construct directly with ``SystemSpec(yaml_dict)``.
     """
 
-    def get_p2p_bandwidth(self, num_gpus: int) -> float:
-        """Return point-to-point bandwidth (bytes/s) based on topology.
+    def select_p2p_bandwidth(self, num_gpus: int) -> BandwidthSelection:
+        """Return the selected point-to-point bandwidth and topology tier.
 
         Three-tier selection:
 
@@ -37,7 +48,21 @@ class SystemSpec(dict):
         num_gpus_per_rack = node_spec.get("num_gpus_per_rack", float("inf"))
 
         if num_gpus <= num_gpus_per_node:
-            return node_spec["intra_node_bw"]
-        if num_gpus <= num_gpus_per_rack:
-            return node_spec["inter_node_bw"]
-        return node_spec.get("inter_rack_bw", node_spec["inter_node_bw"])
+            tier = "intra_node_bw"
+            bandwidth = node_spec[tier]
+        elif num_gpus <= num_gpus_per_rack:
+            tier = "inter_node_bw"
+            bandwidth = node_spec[tier]
+        else:
+            tier = "inter_rack_bw" if "inter_rack_bw" in node_spec else "inter_node_bw"
+            bandwidth = node_spec[tier]
+
+        return BandwidthSelection(
+            group_size=num_gpus,
+            tier=tier,
+            bandwidth_bytes_per_second=bandwidth,
+        )
+
+    def get_p2p_bandwidth(self, num_gpus: int) -> float:
+        """Return point-to-point bandwidth while preserving the legacy API."""
+        return self.select_p2p_bandwidth(num_gpus).bandwidth_bytes_per_second

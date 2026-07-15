@@ -18,6 +18,19 @@ import yaml
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.common import PerfDataFilename, parse_support_matrix_version
+from aiconfigurator.sdk.communication_evidence import (
+    _COLLECTIVE_QUERY_EVIDENCE,
+    _prepare_collective_query_evidence,
+)
+from aiconfigurator.sdk.communication_evidence import (
+    CommunicationQueryEvidence as CommunicationQueryEvidence,
+)
+from aiconfigurator.sdk.communication_evidence import (
+    bind_collective_operation as bind_collective_operation,
+)
+from aiconfigurator.sdk.communication_evidence import (
+    capture_collective_queries as capture_collective_queries,
+)
 from aiconfigurator.sdk.errors import PerfDataNotAvailableError
 from aiconfigurator.sdk.interpolation import InterpolationDataNotAvailableError
 from aiconfigurator.sdk.performance_result import PerformanceResult
@@ -25,6 +38,7 @@ from aiconfigurator.sdk.system_spec import SystemSpec
 
 databases_cache = defaultdict(lambda: defaultdict(lambda: defaultdict()))
 logger = logging.getLogger(__name__)
+
 
 _SYSTEMS_PATHS: list[str] = [os.fspath(pkg_resources.files("aiconfigurator") / "systems")]
 _MISSING_SILICON_DATA_EXCEPTIONS = (PerfDataNotAvailableError, InterpolationDataNotAvailableError)
@@ -2124,7 +2138,6 @@ class PerfDatabase:
         )
 
     # to simplify, we no longer support allreduce_strategy
-    @functools.lru_cache(maxsize=32768)
     def query_custom_allreduce(
         self,
         quant_mode: common.CommQuantMode,
@@ -2134,11 +2147,39 @@ class PerfDatabase:
     ) -> PerformanceResult | tuple[float, float, float]:
         """Query custom AllReduce latency. Delegates to
         ``CustomAllReduce._query_custom_allreduce_table``."""
+        collected = evidence = None
+        if _COLLECTIVE_QUERY_EVIDENCE.get() is not None and tp_size > 1:
+            selection = self.system_spec.select_p2p_bandwidth(tp_size)
+            collected, evidence = _prepare_collective_query_evidence(
+                operation_kind="custom_allreduce",
+                collective="all_reduce",
+                group_size=tp_size,
+                tier=selection.tier,
+                bandwidth_bytes_per_sec=selection.bandwidth_bytes_per_second,
+                message_size_bytes=size * quant_mode.value.memory,
+            )
+        result = self._query_custom_allreduce_cached(
+            quant_mode,
+            tp_size,
+            size,
+            database_mode,
+        )
+        if collected is not None and evidence is not None:
+            collected.append(evidence)
+        return result
+
+    @functools.lru_cache(maxsize=32768)
+    def _query_custom_allreduce_cached(
+        self,
+        quant_mode: common.CommQuantMode,
+        tp_size: int,
+        size: int,
+        database_mode: common.DatabaseMode | None = None,
+    ) -> PerformanceResult | tuple[float, float, float]:
         from aiconfigurator.sdk.operations.communication import CustomAllReduce
 
         return CustomAllReduce._query_custom_allreduce_table(self, quant_mode, tp_size, size, database_mode)
 
-    @functools.lru_cache(maxsize=32768)
     def query_nccl(
         self,
         dtype: common.CommQuantMode,
@@ -2149,6 +2190,37 @@ class PerfDatabase:
     ) -> PerformanceResult | tuple[float, float, float]:
         """Query NCCL collective communication latency. Delegates to
         ``NCCL._query_nccl_table``."""
+        collected = evidence = None
+        if _COLLECTIVE_QUERY_EVIDENCE.get() is not None and num_gpus > 1:
+            selection = self.system_spec.select_p2p_bandwidth(num_gpus)
+            collected, evidence = _prepare_collective_query_evidence(
+                operation_kind="nccl",
+                collective=operation,
+                group_size=num_gpus,
+                tier=selection.tier,
+                bandwidth_bytes_per_sec=selection.bandwidth_bytes_per_second,
+                message_size_bytes=dtype.value.memory * message_size,
+            )
+        result = self._query_nccl_cached(
+            dtype,
+            num_gpus,
+            operation,
+            message_size,
+            database_mode,
+        )
+        if collected is not None and evidence is not None:
+            collected.append(evidence)
+        return result
+
+    @functools.lru_cache(maxsize=32768)
+    def _query_nccl_cached(
+        self,
+        dtype: common.CommQuantMode,
+        num_gpus: int,
+        operation: str,
+        message_size: int,
+        database_mode: common.DatabaseMode | None = None,
+    ) -> PerformanceResult | tuple[float, float, float]:
         from aiconfigurator.sdk.operations.communication import NCCL
 
         return NCCL._query_nccl_table(self, dtype, num_gpus, operation, message_size, database_mode)
@@ -2307,11 +2379,32 @@ class PerfDatabase:
             d_conv,
         )
 
-    @functools.lru_cache(maxsize=32768)
     def query_p2p(
         self, message_bytes: int, database_mode: common.DatabaseMode | None = None
     ) -> PerformanceResult | tuple[float, float, float]:
         """Query P2P latency. Delegates to ``P2P._query_p2p_table``."""
+        collected = evidence = None
+        if _COLLECTIVE_QUERY_EVIDENCE.get() is not None:
+            bandwidth = self.system_spec["node"]["inter_node_bw"]
+            collected, evidence = _prepare_collective_query_evidence(
+                operation_kind="p2p",
+                collective=None,
+                group_size=2,
+                tier="inter_node_bw",
+                bandwidth_bytes_per_sec=bandwidth,
+                message_size_bytes=message_bytes,
+            )
+        result = self._query_p2p_cached(message_bytes, database_mode)
+        if collected is not None and evidence is not None:
+            collected.append(evidence)
+        return result
+
+    @functools.lru_cache(maxsize=32768)
+    def _query_p2p_cached(
+        self,
+        message_bytes: int,
+        database_mode: common.DatabaseMode | None = None,
+    ) -> PerformanceResult | tuple[float, float, float]:
         from aiconfigurator.sdk.operations.communication import P2P
 
         return P2P._query_p2p_table(self, message_bytes, database_mode)

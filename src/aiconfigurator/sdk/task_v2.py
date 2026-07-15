@@ -36,12 +36,14 @@ from dataclasses import dataclass, field
 from typing import Any, Literal
 
 from aiconfigurator.sdk import common, config
+from aiconfigurator.sdk.errors import InsufficientMemoryError, KVCacheCapacityError
 from aiconfigurator.sdk.models import (
     _infer_quant_modes_from_raw_config,
     check_is_moe,
     get_model_family,
 )
 from aiconfigurator.sdk.perf_database import (
+    CommunicationQueryEvidence,
     get_latest_database_version,
     is_blackwell_system,
     is_hopper_system,
@@ -52,6 +54,30 @@ from aiconfigurator.sdk.utils import enumerate_parallel_config, get_model_config
 logger = logging.getLogger(__name__)
 
 ParallelChoice = tuple[int, int, int, int, int, int]  # (tp, pp, dp, moe_tp, moe_ep, cp)
+
+
+@dataclass(frozen=True)
+class SinglePointEvaluation:
+    """One single-point result with authoritative per-operation evidence."""
+
+    row: dict[str, Any]
+    per_ops_data: dict[str, Any]
+    per_ops_source: dict[str, Any]
+    communication_evidence: tuple[CommunicationQueryEvidence, ...] | None = None
+
+
+def _copy_required_per_ops_mapping(
+    value: Any,
+    *,
+    phase: str,
+    evidence: str,
+    allow_empty: bool = False,
+) -> dict[str, Any]:
+    if allow_empty and value is None:
+        return {}
+    if not isinstance(value, dict) or (not value and not allow_empty):
+        raise RuntimeError(f"{phase} per-operation {evidence} is missing from InferenceSummary.")
+    return copy.deepcopy(value)
 
 
 _DEFAULT_NEXTN_ACCEPT_RATES: list[float] = [0.85, 0.8, 0.6, 0.0, 0.0]
@@ -350,6 +376,7 @@ class Task:
     free_gpu_memory_fraction: float | None = None
     max_seq_len: int | None = None
     engine_step_backend: str | None = None
+    batch_sweep_step: int | None = None
 
     # ====== 2. Agg worker spec (serving_mode='agg') ======
     model_path: str = ""
@@ -378,6 +405,7 @@ class Task:
     agg_moe_tp_candidates: list[int] | None = None
     agg_moe_ep_candidates: list[int] | None = None
     agg_cp_candidates: list[int] | None = None
+    agg_max_batch_size: int = 512
 
     # ====== 4. Disagg prefill worker spec ======
     prefill_model_path: str = ""
@@ -429,6 +457,8 @@ class Task:
     max_gpu_per_replica: int | None = None
     max_prefill_workers: int | None = None
     max_decode_workers: int | None = None
+    disagg_ranking_total_gpus: int | None = None
+    disagg_ranking_metric_kind: str = "output_token_throughput"
     prefill_max_batch_size: int = 1
     decode_max_batch_size: int = 512
     prefill_latency_correction: float = 1.1
@@ -553,14 +583,43 @@ class Task:
     # =====================================================================
 
     def __post_init__(self) -> None:
+        self._validate_batch_sweep_config()
         self._check_prefix_discipline()
         self._validate_deepseek_v4_hardware()
         self._resolve_model_identity()
+        self._validate_step4_database_mode()
         self._resolve_backend_version()
         self._normalize_wideep_moe_backend()
         self._resolve_quant_modes()
         self._resolve_search_space()
         self._validate_megamoe_backend_support()
+
+    def _validate_batch_sweep_config(self) -> None:
+        if self.batch_sweep_step is not None and type(self.batch_sweep_step) is not int:
+            raise TypeError(f"batch_sweep_step must be a positive integer when set, got {self.batch_sweep_step!r}")
+        if self.batch_sweep_step is not None and self.batch_sweep_step < 1:
+            raise ValueError(f"batch_sweep_step must be >= 1 when set, got {self.batch_sweep_step}")
+        if self.agg_max_batch_size < 1:
+            raise ValueError(f"agg_max_batch_size must be >= 1, got {self.agg_max_batch_size}")
+        if self.disagg_ranking_total_gpus is not None and type(self.disagg_ranking_total_gpus) is not int:
+            raise TypeError(
+                f"disagg_ranking_total_gpus must be a positive integer; got {self.disagg_ranking_total_gpus!r}"
+            )
+        if self.disagg_ranking_total_gpus is not None and self.disagg_ranking_total_gpus < 1:
+            raise ValueError(f"disagg_ranking_total_gpus must be positive; got {self.disagg_ranking_total_gpus!r}")
+        valid_ranking_metrics = {"output_token_throughput", "prefill_input_throughput"}
+        if self.disagg_ranking_metric_kind not in valid_ranking_metrics:
+            raise ValueError(
+                f"disagg_ranking_metric_kind must be one of {sorted(valid_ranking_metrics)}; "
+                f"got {self.disagg_ranking_metric_kind!r}"
+            )
+        if self.disagg_ranking_metric_kind == "prefill_input_throughput":
+            if self.serving_mode != "disagg":
+                raise ValueError("prefill_input_throughput ranking is supported only in disagg mode")
+            if self.osl != 1:
+                raise ValueError(f"prefill_input_throughput ranking requires osl=1; got {self.osl!r}")
+            if self.disagg_ranking_total_gpus is None:
+                raise ValueError("prefill_input_throughput ranking requires disagg_ranking_total_gpus")
 
     def _normalize_wideep_moe_backend(self) -> None:
         """enable_wideep implies the deepep_moe MoE backend (mirrors v1 __init__), so the
@@ -603,12 +662,14 @@ class Task:
             )
 
     def _validate_deepseek_v4_hardware(self) -> None:
-        """Reject native DeepSeek-V4 FP4-expert checkpoints on Hopper (use the FP8 build)."""
+        """Reject native DeepSeek-V4 FP4 checkpoints on unsupported Hopper backends."""
         roles = ["agg"] if self.serving_mode == "agg" else ["prefill", "decode"]
         for role in roles:
             model = self._role_attr(role, "model_path")
             replacement = _DEEPSEEK_V4_NATIVE_FP4_TO_FP8_MODEL.get(model)
-            if replacement and is_hopper_system(self._role_attr(role, "system_name")):
+            backend = self._role_attr(role, "backend_name")
+            vllm_native_pro = backend == "vllm" and model == "deepseek-ai/DeepSeek-V4-Pro"
+            if replacement and not vllm_native_pro and is_hopper_system(self._role_attr(role, "system_name")):
                 raise ValueError(
                     f"{model} uses native FP4 routed-expert weights and is not supported on "
                     f"Hopper systems. Use {replacement} instead."
@@ -740,6 +801,18 @@ class Task:
                         from_hf = common.MoEQuantMode.w4a8_mxfp4_mxfp8_trtllm
                     elif is_hopper_system(sysn):
                         from_hf = common.MoEQuantMode.w4a16_mxfp4_cutlass
+                # vLLM uses an architecture-specific activation precision for the
+                # native DeepSeek-V4-Pro MXFP4 routed-expert weights.
+                if (
+                    key == "moe_quant_mode"
+                    and self._role_attr(role, "backend_name") == "vllm"
+                    and self._role_attr(role, "model_path") == "deepseek-ai/DeepSeek-V4-Pro"
+                ):
+                    sysn = self._role_attr(role, "system_name")
+                    if is_blackwell_system(sysn):
+                        from_hf = common.MoEQuantMode.w4a8_mxfp4_mxfp8
+                    elif is_hopper_system(sysn):
+                        from_hf = common.MoEQuantMode.w4a16_mxfp4
                 fallback = _QUANT_FALLBACKS[key]
 
                 if explicit is not None:
@@ -1075,6 +1148,15 @@ class Task:
     # Validation
     # =====================================================================
 
+    def _validate_step4_database_mode(self) -> None:
+        if self._model_family != "STEP4":
+            return
+        allowed_modes = (common.DatabaseMode.SOL.name, common.DatabaseMode.SOL_FULL.name)
+        if self.database_mode not in allowed_modes:
+            raise ValueError(
+                f"Step4 tasks require database_mode to be 'SOL' or 'SOL_FULL'; got {self.database_mode!r}."
+            )
+
     def validate(self) -> None:
         """Check that the resolved task is internally consistent and supported.
 
@@ -1088,7 +1170,8 @@ class Task:
           dsa_context_module / deepseek_v4_context_module / wideep_context_mla,
           and the corresponding generation_* op).  Skipped silently if
           the DB cannot be loaded, or if the model is DeepSeek-V4 in a
-          synthetic database mode (SOL / SOL_FULL / EMPIRICAL / HYBRID).
+          synthetic database mode (EMPIRICAL / HYBRID). Formula-only modes
+          (SOL / SOL_FULL) skip database capability validation for all models.
 
         Database load is cheap (``get_database`` is module-level cached),
         and the load happens later in sweep anyway — failing here just
@@ -1099,6 +1182,7 @@ class Task:
             UnsupportedWideepConfigError specifically for wideep_* ops
             (lets callers distinguish from generic ``ValueError``).
         """
+        self._validate_step4_database_mode()
         if self.attention_backend is not None and self.attention_backend not in ("flashinfer", "fa3"):
             raise ValueError(f"attention_backend must be 'flashinfer' or 'fa3', got {self.attention_backend!r}.")
         if self.wideep_num_slots is not None and self.wideep_num_slots <= 0:
@@ -1151,18 +1235,17 @@ class Task:
     def _validate_database_quant_modes(self) -> None:
         """Validate user's quant modes against the perf database's supported list.
 
-        Mirrors the per-op check in V1's ``TaskConfig.validate``.  Skipped
-        silently if the DB can't be loaded or for DeepSeek-V4 in synthetic
-        modes (where the supported_quant_mode table is incomplete).
+        Mirrors the per-op check in V1's ``TaskConfig.validate``. Skipped for
+        formula-only modes because their operation queries do not consume
+        profiling tables, silently if the DB can't be loaded, or for
+        DeepSeek-V4 empirical modes where the support table is incomplete.
         """
-        # DeepSeek-V4 in synthetic database modes: DB's supported_quant_mode
-        # list is incomplete; skip entirely (V1 parity).
-        if self._model_family == "DEEPSEEKV4" and self.database_mode in (
-            "SOL",
-            "SOL_FULL",
-            "EMPIRICAL",
-            "HYBRID",
-        ):
+        if self.database_mode in (common.DatabaseMode.SOL.name, common.DatabaseMode.SOL_FULL.name):
+            return
+
+        # DeepSeek-V4 empirical modes: DB's supported_quant_mode list is
+        # incomplete; skip entirely (V1 parity).
+        if self._model_family == "DEEPSEEKV4" and self.database_mode in ("EMPIRICAL", "HYBRID"):
             return
 
         if self.serving_mode == "agg":
@@ -1384,9 +1467,11 @@ class Task:
             "backend_name": self.backend_name,
             "model_config": self.build_model_config(role="agg"),
             "parallel_config_list": parallel_config_list,
+            "max_batch_size": self.agg_max_batch_size,
             "enable_chunked_prefill": self.enable_chunked_prefill,
             "free_gpu_memory_fraction": self.free_gpu_memory_fraction,
             "max_seq_len": self.max_seq_len,
+            "batch_sweep_step": self.batch_sweep_step,
         }
 
     def sweep_disagg_kwargs(self, *, prefill_database, decode_database) -> dict[str, Any]:
@@ -1439,6 +1524,9 @@ class Task:
             "rate_matching_decode_degradation": self.rate_match_decode_degradation,
             "autoscale_ttft_correction_factor": self.autoscale_ttft_correction_factor,
             "require_same_tp": require_same_tp,
+            "batch_sweep_step": self.batch_sweep_step,
+            "ranking_total_gpus": self.disagg_ranking_total_gpus,
+            "ranking_metric_kind": self.disagg_ranking_metric_kind,
         }
 
     # =====================================================================
@@ -1477,8 +1565,9 @@ class Task:
                 ``(p)workers=1`` and ``(d)workers=1``.  Ignored in agg mode.
             validate: when True (default), call ``validate()`` first to fail fast
                 on unsupported quant / WideEP configs -- matches v1, which validates
-                in ``__init__``.  Set False for a best-effort sweep that silently
-                skips unsupported parallel configs (e.g. the Planner).
+                in ``__init__``. Set False for a best-effort sweep that skips the
+                optional database capability checks. The Step4 formula-only database
+                mode guard always runs before database loading.
 
         Returns:
             pandas.DataFrame -- ``common.ColumnsAgg`` schema for agg,
@@ -1486,6 +1575,7 @@ class Task:
             candidate set; Pareto frontier computation is downstream in
             ``aiconfigurator.sdk.picking``.
         """
+        self._validate_step4_database_mode()
         if validate:
             self.validate()
         from aiconfigurator.sdk.sweep import sweep_agg, sweep_disagg
@@ -1526,7 +1616,8 @@ class Task:
         moe_ep: int = 1,
         batch_size: int,
         ctx_tokens: int | None = None,
-    ) -> dict:
+        include_per_ops: bool = False,
+    ) -> dict | SinglePointEvaluation:
         """Evaluate one fixed agg config point and return its row dict.
 
         Subsumes the per-point use case that ``cli/api.cli_estimate``
@@ -1541,16 +1632,20 @@ class Task:
             ctx_tokens: per-step context-token budget for the IFB
                 scheduler.  Defaults to ``self.isl`` (full prefill in
                 one step) -- matching ``cli_estimate`` semantics.
+            include_per_ops: return a :class:`SinglePointEvaluation`
+                containing authoritative latency and source evidence.
 
         Returns:
-            Row dict in ``common.ColumnsAgg`` schema, equivalent to one
-            row of what ``run()`` would produce for the same point.
+            Row dict in ``common.ColumnsAgg`` schema by default.  When
+            ``include_per_ops`` is true, return ``SinglePointEvaluation``.
 
         Raises:
             ValueError: if called on a disagg Task.  Use
                 :meth:`run_single_disagg` instead.
             RuntimeError: on OOM at this config point.
         """
+        if type(include_per_ops) is not bool:
+            raise TypeError(f"include_per_ops must be a bool, got {type(include_per_ops).__name__}.")
         if self.serving_mode != "agg":
             raise ValueError(
                 f"run_single_agg requires serving_mode='agg', got {self.serving_mode!r}; "
@@ -1588,14 +1683,33 @@ class Task:
             **backend_kwargs,
         )
         if summary.check_oom():
-            raise RuntimeError(
+            raise InsufficientMemoryError(
                 f"OOM at tp={tp} pp={pp} dp={dp} moe_tp={moe_tp} moe_ep={moe_ep} "
                 f"batch_size={batch_size}.  Reduce batch_size, increase parallelism, "
                 "or use a quantized model."
             )
+        if summary.check_kv_cache_oom():
+            raise KVCacheCapacityError(
+                f"KV cache capacity exceeded at tp={tp} pp={pp} dp={dp} "
+                f"moe_tp={moe_tp} moe_ep={moe_ep} batch_size={batch_size}."
+            )
         result = summary.get_result_dict()
         if result is None:
             raise RuntimeError("run_single_agg produced no result; configuration may be invalid.")
+        if include_per_ops:
+            return SinglePointEvaluation(
+                row=copy.deepcopy(result),
+                per_ops_data=_copy_required_per_ops_mapping(
+                    summary.get_per_ops_data(),
+                    phase="aggregate",
+                    evidence="data",
+                ),
+                per_ops_source=_copy_required_per_ops_mapping(
+                    summary.get_per_ops_source(),
+                    phase="aggregate",
+                    evidence="source",
+                ),
+            )
         return result
 
     def run_single_disagg(
@@ -1615,7 +1729,8 @@ class Task:
         decode_moe_ep: int = 1,
         decode_batch_size: int,
         decode_num_workers: int = 1,
-    ) -> dict:
+        include_per_ops: bool = False,
+    ) -> dict | SinglePointEvaluation:
         """Evaluate one fixed disagg config point and return its row dict.
 
         Subsumes the disagg per-point use case from ``cli_estimate``.
@@ -1623,13 +1738,16 @@ class Task:
         parallelism, batch_size, and num_workers come from args.
 
         Returns:
-            Row dict in ``common.ColumnsDisagg`` schema (one rate-matched
-            P/D pair).
+            Row dict in ``common.ColumnsDisagg`` schema by default.  When
+            ``include_per_ops`` is true, return ``SinglePointEvaluation``
+            with prefill-context and decode-generation evidence.
 
         Raises:
             ValueError: if called on an agg Task.
             RuntimeError: on OOM in either phase.
         """
+        if type(include_per_ops) is not bool:
+            raise TypeError(f"include_per_ops must be a bool, got {type(include_per_ops).__name__}.")
         if self.serving_mode != "disagg":
             raise ValueError(
                 f"run_single_disagg requires serving_mode='disagg', got {self.serving_mode!r}; "
@@ -1663,9 +1781,14 @@ class Task:
             predictor=self.predictor,
         )
         if p_summary.check_oom():
-            raise RuntimeError(
+            raise InsufficientMemoryError(
                 f"OOM in prefill phase at tp={prefill_tp} pp={prefill_pp} dp={prefill_dp} "
                 f"batch_size={prefill_batch_size}."
+            )
+        if p_summary.check_kv_cache_oom():
+            raise KVCacheCapacityError(
+                f"KV cache capacity exceeded in prefill phase at tp={prefill_tp} "
+                f"pp={prefill_pp} dp={prefill_dp} batch_size={prefill_batch_size}."
             )
 
         # --- Decode phase ---
@@ -1691,14 +1814,50 @@ class Task:
             predictor=self.predictor,
         )
         if d_summary.check_oom():
-            raise RuntimeError(
+            raise InsufficientMemoryError(
                 f"OOM in decode phase at tp={decode_tp} pp={decode_pp} dp={decode_dp} batch_size={decode_batch_size}."
+            )
+        if d_summary.check_kv_cache_oom():
+            raise KVCacheCapacityError(
+                f"KV cache capacity exceeded in decode phase at tp={decode_tp} "
+                f"pp={decode_pp} dp={decode_dp} batch_size={decode_batch_size}."
             )
 
         # --- Rate-match the pair ---
         p_dict = p_summary.get_summary_df().iloc[0].to_dict()
         d_dict = d_summary.get_summary_df().iloc[0].to_dict()
-        return _rate_match_dict(p_dict, prefill_num_workers, d_dict, decode_num_workers)
+        result = _rate_match_dict(p_dict, prefill_num_workers, d_dict, decode_num_workers)
+        if include_per_ops:
+            return SinglePointEvaluation(
+                row=copy.deepcopy(result),
+                per_ops_data={
+                    "prefill": _copy_required_per_ops_mapping(
+                        p_summary.get_context_latency_dict(),
+                        phase="prefill",
+                        evidence="data",
+                    ),
+                    "decode": _copy_required_per_ops_mapping(
+                        d_summary.get_generation_latency_dict(),
+                        phase="decode",
+                        evidence="data",
+                        allow_empty=self.osl == 1,
+                    ),
+                },
+                per_ops_source={
+                    "prefill": _copy_required_per_ops_mapping(
+                        p_summary.get_context_source_dict(),
+                        phase="prefill",
+                        evidence="source",
+                    ),
+                    "decode": _copy_required_per_ops_mapping(
+                        d_summary.get_generation_source_dict(),
+                        phase="decode",
+                        evidence="source",
+                        allow_empty=self.osl == 1,
+                    ),
+                },
+            )
+        return result
 
 
-__all__ = ["ParallelChoice", "Task"]
+__all__ = ["ParallelChoice", "SinglePointEvaluation", "Task"]

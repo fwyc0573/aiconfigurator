@@ -1,0 +1,42 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# Simulated H800 SXM spec for SOL-only roofline experiments.
+# Sources checked 2026-07-04:
+# - NVIDIA H800 Tensor Core GPU datasheet: H800 SXM 80GB, 3.35TB/s memory bandwidth,
+#   sparse BF16/FP16 1979TFLOPS, sparse FP8/INT8 3958, up to 700W, NVLink 400GB/s,
+#   PCIe 5.0 128GB/s, and non-sparse specs are 1/2 of sparse specs.
+# - Existing AIC Hopper YAML convention stores dense Tensor Core FLOPS and single-direction bandwidth.
+
+metadata:
+  simulation_status: simulated
+  source_summary: "H800 SXM values from NVIDIA H800 datasheet; dense FLOPS and single-direction bandwidth follow AIC YAML conventions."
+
+data_dir: data/h800_sxm
+
+gpu:
+  mem_bw: 3350000000000
+  mem_bw_empirical_scaling_factor: 0.8
+  mem_empirical_constant_latency: 0.000003
+  mem_capacity: 85899345920
+  bfloat16_tc_flops: 989500000000000
+  int8_tc_flops: 1979000000000000
+  fp8_tc_flops: 1979000000000000
+  power: 700
+  sm_version: 90
+
+node:
+  num_gpus_per_node: 8
+  inter_node_bw: 50000000000
+  intra_node_bw: 200000000000
+  pcie_bw: 64000000000
+  p2p_latency: 0.00001
+
+misc:
+  nccl_mem:
+    1: 0
+    2: 358612992
+    4: 411041792
+    8: 411041792
+  other_mem: 3758096384
+  nccl_version: '2.27.3'

@@ -290,8 +290,6 @@ class MoE(Operation):
         """Verbatim port of legacy ``PerfDatabase.query_moe`` body."""
         from aiconfigurator.sdk.perf_database import PerfDataNotAvailableError
 
-        cls.load_data(database)
-
         num_gemms = 3 if is_gated else 2  # gated (SwiGLU): 3 GEMMs; non-gated (Relu2): 2 GEMMs
 
         def get_sol(
@@ -715,6 +713,8 @@ class MoE(Operation):
             return PerformanceResult(emp_latency, energy=0.0, source="empirical")
         else:
             # SILICON or HYBRID mode - use database
+            cls.load_data(database)
+
             def get_silicon():
                 if database.backend == common.BackendName.sglang.value:
                     # deepep_moe is for sglang wideep only
@@ -1335,10 +1335,15 @@ class MoEDispatch(Operation):
                 "vllm does not support MoE TP and MoE EP at the same time"
             )
 
-            comm_latency = 0
+            source = (
+                "sol"
+                if database._default_database_mode in (common.DatabaseMode.SOL, common.DatabaseMode.SOL_FULL)
+                else "empirical"
+            )
+            comm_latency = PerformanceResult(0.0, energy=0.0, source=source)
 
             # Add allreduce latency when TP > 1
-            if self._attention_tp_size > 1:
+            if self._attention_tp_size > 1 and self._reduce_results:
                 comm_latency += database.query_custom_allreduce(common.CommQuantMode.half, self.num_gpus, volume)
 
             if self._attention_dp_size > 1:

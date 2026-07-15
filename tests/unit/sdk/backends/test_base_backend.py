@@ -63,6 +63,7 @@ def database():
         version="test-version",
         system="test-system",
         system_spec={"gpu": {"mem_capacity": 80 * (1 << 30)}},
+        get_default_database_mode=lambda: common.DatabaseMode.SOL,
     )
 
 
@@ -220,3 +221,297 @@ def test_mix_step_efficiency_base_default_is_one(backend: BaseBackend) -> None:
     assert backend._mix_step_efficiency(ctx_tokens=4096, gen_tokens=16) == 1.0
     assert backend._mix_step_efficiency(ctx_tokens=4096, gen_tokens=0) == 1.0
     assert backend._mix_step_efficiency(ctx_tokens=0, gen_tokens=0) == 1.0
+
+
+def _mixed_step_summary(
+    *,
+    context_latency=None,
+    context_energy=None,
+    context_source=None,
+    generation_latency=None,
+    generation_energy=None,
+    generation_source=None,
+):
+    summary = MagicMock()
+    summary.get_context_latency_dict.return_value = context_latency or {}
+    summary.get_context_energy_wms_dict.return_value = context_energy or {}
+    summary.get_context_source_dict.return_value = context_source or {}
+    summary.get_generation_latency_dict.return_value = generation_latency or {}
+    summary.get_generation_energy_wms_dict.return_value = generation_energy or {}
+    summary.get_generation_source_dict.return_value = generation_source or {}
+    return summary
+
+
+def _semantic_attention_model(
+    *,
+    context_names,
+    generation_names,
+    context_graph_names=None,
+    generation_graph_names=None,
+):
+    context_graph_names = context_names if context_graph_names is None else context_graph_names
+    generation_graph_names = generation_names if generation_graph_names is None else generation_graph_names
+    return SimpleNamespace(
+        model_path="semantic-attention-model",
+        MIXED_STEP_CONTEXT_ATTENTION_KEYS=context_names,
+        MIXED_STEP_GENERATION_ATTENTION_KEYS=generation_names,
+        context_ops=tuple(SimpleNamespace(_name=name) for name in context_graph_names),
+        generation_ops=tuple(SimpleNamespace(_name=name) for name in generation_graph_names),
+    )
+
+
+def test_mix_step_consumes_every_semantic_attention_operation_exactly_once(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_full_attention", "context_swa_attention"),
+        generation_names=("generation_full_attention", "generation_swa_attention"),
+    )
+    summaries = iter(
+        (
+            _mixed_step_summary(
+                context_latency={
+                    "context_full_attention": 10.0,
+                    "context_swa_attention": 20.0,
+                    "context_mlp": 3.0,
+                },
+                context_energy={
+                    "context_full_attention": 100.0,
+                    "context_swa_attention": 200.0,
+                    "context_mlp": 30.0,
+                },
+                context_source={
+                    "context_full_attention": "sol",
+                    "context_swa_attention": "sol",
+                    "context_mlp": "sol",
+                },
+            ),
+            _mixed_step_summary(
+                context_latency={"context_full_attention": 12.0, "context_swa_attention": 24.0},
+                context_energy={"context_full_attention": 120.0, "context_swa_attention": 240.0},
+                context_source={"context_full_attention": "sol", "context_swa_attention": "sol"},
+            ),
+            _mixed_step_summary(
+                generation_latency={"generation_full_attention": 2.0, "generation_swa_attention": 4.0},
+                generation_energy={"generation_full_attention": 20.0, "generation_swa_attention": 40.0},
+                generation_source={"generation_full_attention": "sol", "generation_swa_attention": "sol"},
+            ),
+        )
+    )
+    monkeypatch.setattr(backend, "run_static", lambda *_args, **_kwargs: next(summaries))
+
+    latency, energy, per_ops, sources = backend._get_mix_step_latency(
+        model,
+        database,
+        RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=5),
+        ctx_tokens=4,
+        gen_tokens=2,
+        isl=8,
+        osl=5,
+        prefix=0,
+    )
+
+    assert latency == pytest.approx(27.0)
+    assert energy == pytest.approx(270.0)
+    assert per_ops == {
+        "context_mlp": 3.0,
+        "context_full_attention (scaled)": 6.0,
+        "context_swa_attention (scaled)": 12.0,
+        "generation_full_attention": 2.0,
+        "generation_swa_attention": 4.0,
+    }
+    assert sources == dict.fromkeys(per_ops, "sol")
+
+
+def test_mix_step_rejects_duplicate_semantic_attention_names(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_attention", "context_attention"),
+        generation_names=("generation_attention",),
+    )
+    monkeypatch.setattr(
+        backend,
+        "run_static",
+        lambda *_args, **_kwargs: pytest.fail("duplicate semantic names must fail before execution"),
+    )
+
+    with pytest.raises(ValueError, match="duplicate context attention operation name"):
+        backend._get_mix_step_latency(
+            model,
+            database,
+            RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=1),
+            ctx_tokens=8,
+            gen_tokens=0,
+            isl=8,
+            osl=1,
+            prefix=0,
+        )
+
+
+def test_mix_step_rejects_declared_attention_name_missing_from_graph_before_query(
+    backend,
+    database,
+    monkeypatch,
+):
+    model = _semantic_attention_model(
+        context_names=("context_attention", "context_missing"),
+        generation_names=("generation_attention",),
+        context_graph_names=("context_attention",),
+    )
+    monkeypatch.setattr(
+        backend,
+        "run_static",
+        lambda *_args, **_kwargs: pytest.fail("graph contract must fail before execution"),
+    )
+
+    with pytest.raises(ValueError, match="context attention contract references missing graph operations"):
+        backend._get_mix_step_latency(
+            model,
+            database,
+            RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=1),
+            ctx_tokens=8,
+            gen_tokens=0,
+            isl=8,
+            osl=1,
+            prefix=0,
+        )
+
+
+def test_mix_step_rejects_missing_executed_context_attention_energy(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_attention",),
+        generation_names=("generation_attention",),
+    )
+    summaries = iter(
+        (
+            _mixed_step_summary(
+                context_latency={"context_attention": 10.0, "context_mlp": 3.0},
+                context_energy={"context_attention": 100.0, "context_mlp": 30.0},
+                context_source={"context_attention": "sol", "context_mlp": "sol"},
+            ),
+            _mixed_step_summary(
+                context_latency={"context_attention": 12.0},
+                context_energy={},
+                context_source={"context_attention": "sol"},
+            ),
+        )
+    )
+    monkeypatch.setattr(backend, "run_static", lambda *_args, **_kwargs: next(summaries))
+
+    with pytest.raises(ValueError, match="missing energy for executed context attention operation"):
+        backend._get_mix_step_latency(
+            model,
+            database,
+            RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=1),
+            ctx_tokens=8,
+            gen_tokens=0,
+            isl=8,
+            osl=1,
+            prefix=0,
+        )
+
+
+def test_mix_step_rejects_missing_executed_context_attention_source(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_attention",),
+        generation_names=("generation_attention",),
+    )
+    summaries = iter(
+        (
+            _mixed_step_summary(
+                context_latency={"context_attention": 10.0, "context_mlp": 3.0},
+                context_energy={"context_attention": 100.0, "context_mlp": 30.0},
+                context_source={"context_attention": "sol", "context_mlp": "sol"},
+            ),
+            _mixed_step_summary(
+                context_latency={"context_attention": 12.0},
+                context_energy={"context_attention": 120.0},
+                context_source={},
+            ),
+        )
+    )
+    monkeypatch.setattr(backend, "run_static", lambda *_args, **_kwargs: next(summaries))
+
+    with pytest.raises(ValueError, match="missing source for executed context attention operation"):
+        backend._get_mix_step_latency(
+            model,
+            database,
+            RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=1),
+            ctx_tokens=8,
+            gen_tokens=0,
+            isl=8,
+            osl=1,
+            prefix=0,
+        )
+
+
+def test_mix_step_rejects_missing_executed_generation_attention_source(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_attention",),
+        generation_names=("generation_attention",),
+    )
+    summaries = iter(
+        (
+            _mixed_step_summary(
+                context_latency={"context_attention": 10.0, "context_mlp": 3.0},
+                context_energy={"context_attention": 100.0, "context_mlp": 30.0},
+                context_source={"context_attention": "sol", "context_mlp": "sol"},
+            ),
+            _mixed_step_summary(
+                context_latency={"context_attention": 12.0},
+                context_energy={"context_attention": 120.0},
+                context_source={"context_attention": "sol"},
+            ),
+            _mixed_step_summary(
+                generation_latency={"generation_attention": 2.0},
+                generation_energy={"generation_attention": 20.0},
+                generation_source={},
+            ),
+        )
+    )
+    monkeypatch.setattr(backend, "run_static", lambda *_args, **_kwargs: next(summaries))
+
+    with pytest.raises(ValueError, match="missing source for executed generation attention operation"):
+        backend._get_mix_step_latency(
+            model,
+            database,
+            RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=5),
+            ctx_tokens=8,
+            gen_tokens=2,
+            isl=8,
+            osl=5,
+            prefix=0,
+        )
+
+
+def test_mix_step_marks_unexecuted_generation_attention_as_explicit_noop(backend, database, monkeypatch):
+    model = _semantic_attention_model(
+        context_names=("context_attention",),
+        generation_names=("generation_attention",),
+    )
+    summaries = iter(
+        (
+            _mixed_step_summary(
+                context_latency={"context_attention": 10.0, "context_mlp": 3.0},
+                context_energy={"context_attention": 100.0, "context_mlp": 30.0},
+                context_source={"context_attention": "sol", "context_mlp": "sol"},
+            ),
+            _mixed_step_summary(
+                context_latency={"context_attention": 12.0},
+                context_energy={"context_attention": 120.0},
+                context_source={"context_attention": "sol"},
+            ),
+        )
+    )
+    monkeypatch.setattr(backend, "run_static", lambda *_args, **_kwargs: next(summaries))
+
+    _latency, _energy, per_ops, sources = backend._get_mix_step_latency(
+        model,
+        database,
+        RuntimeConfig(batch_size=1, beam_width=1, isl=8, osl=1),
+        ctx_tokens=8,
+        gen_tokens=0,
+        isl=8,
+        osl=1,
+        prefix=0,
+    )
+
+    assert per_ops["generation_attention (not executed)"] == 0.0
+    assert sources["generation_attention (not executed)"] == "not_executed"

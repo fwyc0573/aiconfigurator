@@ -49,7 +49,11 @@ from aiconfigurator.sdk.errors import (
 from aiconfigurator.sdk.models import get_model
 from aiconfigurator.sdk.perf_database import PerfDatabase
 from aiconfigurator.sdk.predict import predict_agg_worker, predict_disagg_worker
-from aiconfigurator.sdk.utils import enumerate_ttft_tpot_constraints
+from aiconfigurator.sdk.utils import (
+    calculate_prefill_tokens_per_second,
+    cluster_normalized_throughput,
+    enumerate_ttft_tpot_constraints,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +72,9 @@ _DECODE_FILTER_RATIO_MIN = 0.0
 _DECODE_FILTER_RATIO_MAX = 1.0
 _MAX_DECODE_WORKERS_PER_CATEGORY = 16
 _MAX_PREFILL_WORKERS = 32
+_OUTPUT_TOKEN_THROUGHPUT = "output_token_throughput"
+_PREFILL_INPUT_THROUGHPUT = "prefill_input_throughput"
+_DISAGG_RANKING_METRIC_KINDS = frozenset({_OUTPUT_TOKEN_THROUGHPUT, _PREFILL_INPUT_THROUGHPUT})
 
 # Default decode batch-size schedule for disagg worker enumeration.
 _DEFAULT_DECODE_BATCH_SCHEDULE: list[int] = (
@@ -86,6 +93,33 @@ _DEFAULT_AGG_BATCH_SCHEDULE: list[int] = (
     + list(range(512, 1024, 256))
     + [1024]
 )
+
+
+def _validate_batch_sweep_step(batch_sweep_step: int | None) -> None:
+    if batch_sweep_step is not None and type(batch_sweep_step) is not int:
+        raise TypeError(f"batch_sweep_step must be a positive integer when set, got {batch_sweep_step!r}")
+    if batch_sweep_step is not None and batch_sweep_step < 1:
+        raise ValueError(f"batch_sweep_step must be >= 1 when set, got {batch_sweep_step}")
+
+
+def _agg_batch_list(max_batch_size: int, batch_sweep_step: int | None) -> list[int]:
+    """Build the aggregate batch schedule without changing the legacy default."""
+
+    _validate_batch_sweep_step(batch_sweep_step)
+    if batch_sweep_step is None:
+        return [b for b in _DEFAULT_AGG_BATCH_SCHEDULE if b <= max_batch_size]
+    return list(range(1, max_batch_size + 1, batch_sweep_step))
+
+
+def _decode_batch_list(decode_max_num_tokens: int, batch_sweep_step: int | None) -> list[int]:
+    """Build the decode batch schedule without changing the legacy default."""
+
+    _validate_batch_sweep_step(batch_sweep_step)
+    if batch_sweep_step is None:
+        if decode_max_num_tokens > max(_DEFAULT_DECODE_BATCH_SCHEDULE):
+            return _DEFAULT_DECODE_BATCH_SCHEDULE + [decode_max_num_tokens]
+        return [b for b in _DEFAULT_DECODE_BATCH_SCHEDULE if b <= decode_max_num_tokens]
+    return list(range(1, decode_max_num_tokens + 1, batch_sweep_step))
 
 
 # ---------------------------------------------------------------------------
@@ -265,6 +299,7 @@ def _sweep_one_parallel_agg(
     free_gpu_memory_fraction: float | None,
     max_seq_len: int | None,
     predictor: Any = None,
+    batch_sweep_step: int | None = None,
 ) -> tuple[pd.DataFrame, bool, bool]:
     """Sweep batch_size x ctx_tokens for one fixed parallel choice.
 
@@ -284,7 +319,7 @@ def _sweep_one_parallel_agg(
     ttft_target = runtime_config.ttft
     tpot_target = runtime_config.tpot
 
-    b_list = [b for b in _DEFAULT_AGG_BATCH_SCHEDULE if b <= max_batch_size]
+    b_list = _agg_batch_list(max_batch_size, batch_sweep_step)
     ctx_tokens_list = _agg_ctx_tokens_list(isl, ctx_stride, enable_chunked_prefill)
 
     results_dict_list: list[dict] = []
@@ -294,6 +329,8 @@ def _sweep_one_parallel_agg(
     saw_memory_fit = False
 
     for b in b_list:
+        batch_saw_memory_fit = False
+        stop_after_batch = False
         for ctx_tokens in ctx_tokens_list:
             # batch / ctx_tokens balance guards (legacy semantics)
             if b - np.ceil(ctx_tokens / isl) < 0:
@@ -337,12 +374,16 @@ def _sweep_one_parallel_agg(
             kv_cache_oom = summary.check_kv_cache_oom()
             saw_model_fit |= not model_oom
             saw_memory_fit |= not model_oom and not kv_cache_oom
+            batch_saw_memory_fit |= not model_oom and not kv_cache_oom
             if model_oom or kv_cache_oom:
+                stop_after_batch = not batch_saw_memory_fit
                 break  # ctx_tokens monotonic → larger will also OOM
             result_dict = summary.get_result_dict()
             if result_dict and result_dict["tpot"] <= tpot_target and result_dict["ttft"] <= ttft_target:
                 results_dict_list.append(result_dict)
                 results_per_ops_source.append(summary.get_per_ops_source())
+        if stop_after_batch:
+            break
 
     if not results_dict_list:
         return pd.DataFrame(columns=common.ColumnsAgg), saw_model_fit, saw_memory_fit
@@ -370,6 +411,7 @@ def sweep_agg(
     free_gpu_memory_fraction: float | None = None,
     max_seq_len: int | None = None,
     predictor: Any = None,
+    batch_sweep_step: int | None = None,
 ) -> pd.DataFrame:
     """Sweep parallel x batch x ctx_tokens for agg; return feasible-candidate DataFrame.
 
@@ -401,6 +443,8 @@ def sweep_agg(
         enable_chunked_prefill: When False, ctx_tokens snaps to multiples of isl.
         free_gpu_memory_fraction: TRT-LLM-only KV cache fraction.
         max_seq_len: TRT-LLM-only per-slot KV cache budget.
+        batch_sweep_step: Optional exact batch-size increment. ``None`` preserves
+            the legacy graduated schedule.
 
     Returns:
         Deduped, sorted feasible-candidate DataFrame with schema ``common.ColumnsAgg``.
@@ -409,10 +453,10 @@ def sweep_agg(
         InsufficientMemoryError: When the model does not fit in any config.
         KVCacheCapacityError: When the model fits but the KV cache does not.
         NoFeasibleConfigError: When SLA cannot be satisfied at any point.
-        RuntimeError: When no results are produced and a configuration raises.
+        Exception: Any unexpected configuration-evaluation error is logged and
+            re-raised immediately without publishing partial results.
     """
     results_df = pd.DataFrame(columns=common.ColumnsAgg)
-    exceptions: list[Exception] = []
     saw_model_fit = False
     saw_memory_fit = False
 
@@ -486,6 +530,7 @@ def sweep_agg(
                     free_gpu_memory_fraction=free_gpu_memory_fraction,
                     max_seq_len=max_seq_len,
                     predictor=predictor,
+                    batch_sweep_step=batch_sweep_step,
                 )
                 saw_model_fit |= point_saw_model_fit
                 saw_memory_fit |= point_saw_memory_fit
@@ -495,17 +540,16 @@ def sweep_agg(
                     results_df = point_df
                 else:
                     results_df = pd.concat([results_df, point_df], axis=0, ignore_index=True)
-        except Exception as exc:
-            logger.info(
-                "sweep_agg: error at tp=%s pp=%s dp=%s moe_tp=%s moe_ep=%s, skipping",
+        except Exception:
+            logger.exception(
+                "sweep_agg: unknown error at tp=%s pp=%s dp=%s moe_tp=%s moe_ep=%s",
                 tp_size,
                 pp_size,
                 dp_size,
                 moe_tp_size,
                 moe_ep_size,
             )
-            exceptions.append(exc)
-            continue
+            raise
 
     if not results_df.empty:
         dedupe_cols = [c for c in results_df.columns if c != "_per_ops_source"]
@@ -513,10 +557,6 @@ def sweep_agg(
         results_df = results_df.sort_values(by="tokens/s/gpu", ascending=False).reset_index(drop=True)
         return results_df
 
-    if exceptions:
-        raise RuntimeError(
-            f"sweep_agg: no results for any parallel configuration. Last exception: {exceptions[-1]}"
-        ) from exceptions[-1]
     if not saw_model_fit:
         raise InsufficientMemoryError(
             "sweep_agg: no results — model does not fit in GPU memory for any parallel config. "
@@ -557,9 +597,13 @@ def _get_disagg_worker_candidates(
     (parallel, batch_size) that fits in memory.  Replaces the body of
     ``DisaggInferenceSession.get_worker_candidates``.
     """
+    if not parallel_config_list:
+        raise ValueError("parallel_config_list must be non-empty")
+    if not b_list:
+        raise ValueError("b_list must be non-empty")
+
     backend = get_backend(backend_name)
     summary_df = pd.DataFrame(columns=common.ColumnsStatic)
-    exceptions: list[Exception] = []
     all_configs_oom = True
 
     for parallel_config in parallel_config_list:
@@ -606,33 +650,29 @@ def _get_disagg_worker_candidates(
                     )
                 else:
                     break
-        except Exception as e:
-            logger.warning(
-                "sweep_disagg/%s: error at parallel tp=%s pp=%s dp=%s moe_tp=%s moe_ep=%s; skipping. err=%s",
+        except Exception:
+            logger.exception(
+                "sweep_disagg/%s: unknown error at parallel tp=%s pp=%s dp=%s moe_tp=%s moe_ep=%s",
                 role,
                 tp_size,
                 pp_size,
                 dp_size,
                 moe_tp_size,
                 moe_ep_size,
-                e,
             )
-            exceptions.append(e)
-            continue
+            raise
 
     if summary_df.empty:
-        if exceptions:
+        if not all_configs_oom:
             raise RuntimeError(
-                f"sweep_disagg/{role}: no results for any parallel config. Last exception: {exceptions[-1]}"
-            ) from exceptions[-1]
+                f"sweep_disagg/{role}: candidate generation produced no rows despite observing a non-OOM candidate"
+            )
         if all_configs_oom:
             raise InsufficientMemoryError(
                 f"sweep_disagg/{role}: no results — model does not fit in GPU memory for any parallel config. "
                 "Try increasing GPU budget, using a quantized model, or a system with more VRAM per GPU."
             )
-        raise NoFeasibleConfigError(
-            f"sweep_disagg/{role}: no parallel configuration met TTFT/TPOT or request-latency constraints."
-        )
+        raise RuntimeError(f"sweep_disagg/{role}: candidate generation ended without a classified result")
     return summary_df
 
 
@@ -737,6 +777,271 @@ def _find_best_disagg_under_constraint(
     return df
 
 
+def _disagg_cluster_identity(
+    prefill: dict[str, Any],
+    prefill_workers: int,
+    decode: dict[str, Any],
+    decode_workers: int,
+) -> tuple[int, ...]:
+    """Return the numeric identity used to break exact cluster-throughput ties."""
+
+    return (
+        int(prefill["tp"]),
+        int(prefill["pp"]),
+        int(prefill["dp"]),
+        int(prefill["moe_tp"]),
+        int(prefill["moe_ep"]),
+        int(prefill.get("cp", 1)),
+        int(prefill["bs"]),
+        prefill_workers,
+        int(decode["tp"]),
+        int(decode["pp"]),
+        int(decode["dp"]),
+        int(decode["moe_tp"]),
+        int(decode["moe_ep"]),
+        int(decode.get("cp", 1)),
+        int(decode["bs"]),
+        decode_workers,
+    )
+
+
+def _disagg_result_cluster_identity(row: dict[str, Any]) -> tuple[int, ...]:
+    """Return the same numeric identity from one composed disaggregate row."""
+
+    return (
+        int(row["(p)tp"]),
+        int(row["(p)pp"]),
+        int(row["(p)dp"]),
+        int(row["(p)moe_tp"]),
+        int(row["(p)moe_ep"]),
+        int(row["(p)cp"]),
+        int(row["(p)bs"]),
+        int(row["(p)workers"]),
+        int(row["(d)tp"]),
+        int(row["(d)pp"]),
+        int(row["(d)dp"]),
+        int(row["(d)moe_tp"]),
+        int(row["(d)moe_ep"]),
+        1,
+        int(row["(d)bs"]),
+        int(row["(d)workers"]),
+    )
+
+
+def _find_best_disagg_cluster_under_constraint(
+    *,
+    ttft_target: float,
+    tpot_target: float,
+    prefill_summary_df: pd.DataFrame,
+    decode_summary_df: pd.DataFrame,
+    ranking_total_gpus: int,
+    num_gpu_set: set[int],
+    prefill_num_worker_list: list[int],
+    decode_num_worker_list: list[int],
+    max_prefill_gpus: int | None,
+    max_decode_gpus: int | None,
+    require_same_tp: bool,
+    prefill_degradation: float,
+    decode_degradation: float,
+    autoscale_ttft_correction_factor: float,
+    ranking_metric_kind: str = _OUTPUT_TOKEN_THROUGHPUT,
+) -> pd.DataFrame | None:
+    """Return the exact fixed-cluster rank one without raw-throughput pruning."""
+
+    if ranking_metric_kind not in _DISAGG_RANKING_METRIC_KINDS:
+        raise ValueError(
+            f"ranking_metric_kind must be one of {sorted(_DISAGG_RANKING_METRIC_KINDS)}; got {ranking_metric_kind!r}"
+        )
+
+    p_corrected = prefill_summary_df.assign(ttft=prefill_summary_df["ttft"] * autoscale_ttft_correction_factor)
+    p_candidates = p_corrected[p_corrected["ttft"] < ttft_target]
+    if p_candidates.empty:
+        minimum_ttft = float(p_corrected["ttft"].min())
+        raise NoFeasibleConfigError(
+            "Fixed-cluster disaggregate search has no prefill candidate satisfying the TTFT constraint: "
+            f"target={ttft_target} ms, minimum corrected TTFT={minimum_ttft} ms."
+        )
+    if ranking_metric_kind == _PREFILL_INPUT_THROUGHPUT:
+        if any(int(osl) != 1 for osl in p_candidates["osl"]):
+            raise ValueError("prefill_input_throughput ranking requires every prefill candidate to have osl=1")
+        if any(int(osl) != 1 for osl in decode_summary_df["osl"]):
+            raise ValueError("prefill_input_throughput ranking requires every decode candidate to have osl=1")
+        for record in p_candidates.to_dict("records"):
+            calculate_prefill_tokens_per_second(
+                global_batch_size=int(record["global_bs"]),
+                num_workers=1,
+                isl=int(record["isl"]),
+                prefix=int(record["prefix"]),
+                ttft_ms=float(record["ttft"]),
+            )
+        d_candidates = decode_summary_df
+    else:
+        d_candidates = decode_summary_df[
+            (decode_summary_df["tpot"] < tpot_target * _DECODE_FILTER_RATIO_MAX)
+            & (decode_summary_df["tpot"] > tpot_target * _DECODE_FILTER_RATIO_MIN)
+        ]
+    if d_candidates.empty:
+        if ranking_metric_kind == _OUTPUT_TOKEN_THROUGHPUT:
+            raise NoFeasibleConfigError(
+                "Fixed-cluster disaggregate search has no decode candidate satisfying the TPOT constraint: "
+                f"target={tpot_target} ms."
+            )
+        raise RuntimeError("Fixed-cluster prefill-throughput ranking received no decode candidates")
+    if "cp" in d_candidates and any(int(cp) != 1 for cp in d_candidates["cp"]):
+        raise ValueError("Fixed-cluster disaggregate ranking currently requires decode cp=1")
+
+    prefill_groups: dict[tuple[int, ...], list[dict[str, Any]]] = {}
+    for record in p_candidates.to_dict("records"):
+        width = int(record["num_total_gpus"])
+        key = (width, int(record["tp"])) if require_same_tp else (width,)
+        prefill_groups.setdefault(key, []).append(record)
+
+    decode_groups: dict[tuple[Any, ...], list[dict[str, Any]]] = {}
+    for record in d_candidates.to_dict("records"):
+        key = (record["parallel"], int(record["tp"])) if require_same_tp else (record["parallel"],)
+        decode_groups.setdefault(key, []).append(record)
+
+    best: tuple[float, tuple[int, ...], dict[str, Any]] | None = None
+    for p_key, p_records in prefill_groups.items():
+        prefill_worker_gpus = p_key[0]
+        for d_key, d_records in decode_groups.items():
+            if require_same_tp and p_key[1] != d_key[1]:
+                continue
+            decode_worker_gpus = int(d_records[0]["num_total_gpus"])
+            if any(int(record["num_total_gpus"]) != decode_worker_gpus for record in d_records):
+                raise ValueError(f"Decode parallel category {d_key[0]!r} contains multiple worker widths")
+
+            for prefill_workers in prefill_num_worker_list:
+                prefill_pool_gpus = prefill_worker_gpus * prefill_workers
+                if max_prefill_gpus is not None and prefill_pool_gpus > max_prefill_gpus:
+                    continue
+                max_prefill_throughput = max(
+                    float(record["seq/s"]) * prefill_workers * prefill_degradation for record in p_records
+                )
+
+                for decode_workers in decode_num_worker_list:
+                    decode_pool_gpus = decode_worker_gpus * decode_workers
+                    if max_decode_gpus is not None and decode_pool_gpus > max_decode_gpus:
+                        continue
+                    deployment_gpus = prefill_pool_gpus + decode_pool_gpus
+                    if deployment_gpus > ranking_total_gpus:
+                        continue
+                    if num_gpu_set and deployment_gpus not in num_gpu_set:
+                        continue
+
+                    if ranking_metric_kind == _PREFILL_INPUT_THROUGHPUT:
+                        prefill = min(
+                            p_records,
+                            key=lambda record: (
+                                -calculate_prefill_tokens_per_second(
+                                    global_batch_size=int(record["global_bs"]),
+                                    num_workers=prefill_workers,
+                                    isl=int(record["isl"]),
+                                    prefix=int(record["prefix"]),
+                                    ttft_ms=float(record["ttft"]),
+                                ),
+                                int(record["tp"]),
+                                int(record["pp"]),
+                                int(record["dp"]),
+                                int(record["moe_tp"]),
+                                int(record["moe_ep"]),
+                                int(record.get("cp", 1)),
+                                int(record["bs"]),
+                            ),
+                        )
+                        decode = min(
+                            d_records,
+                            key=lambda record: (
+                                int(record["tp"]),
+                                int(record["pp"]),
+                                int(record["dp"]),
+                                int(record["moe_tp"]),
+                                int(record["moe_ep"]),
+                                int(record.get("cp", 1)),
+                                int(record["bs"]),
+                            ),
+                        )
+                    else:
+                        max_decode_throughput = max(
+                            float(record["seq/s"]) * decode_workers * decode_degradation for record in d_records
+                        )
+                        bottleneck = min(max_prefill_throughput, max_decode_throughput)
+                        eligible_prefill = [
+                            record
+                            for record in p_records
+                            if float(record["seq/s"]) * prefill_workers * prefill_degradation >= bottleneck
+                        ]
+                        eligible_decode = [
+                            record
+                            for record in d_records
+                            if float(record["seq/s"]) * decode_workers * decode_degradation >= bottleneck
+                        ]
+                        prefill = min(
+                            eligible_prefill,
+                            key=lambda record: (
+                                int(record["tp"]),
+                                int(record["pp"]),
+                                int(record["dp"]),
+                                int(record["moe_tp"]),
+                                int(record["moe_ep"]),
+                                int(record.get("cp", 1)),
+                                int(record["bs"]),
+                            ),
+                        )
+                        decode = min(
+                            eligible_decode,
+                            key=lambda record: (
+                                int(record["tp"]),
+                                int(record["pp"]),
+                                int(record["dp"]),
+                                int(record["moe_tp"]),
+                                int(record["moe_ep"]),
+                                int(record.get("cp", 1)),
+                                int(record["bs"]),
+                            ),
+                        )
+                    row = _rate_match_dict(
+                        prefill,
+                        prefill_workers,
+                        decode,
+                        decode_workers,
+                        prefill_degradation=prefill_degradation,
+                        decode_degradation=decode_degradation,
+                    )
+                    if ranking_metric_kind == _PREFILL_INPUT_THROUGHPUT:
+                        prefill_tokens_per_second = calculate_prefill_tokens_per_second(
+                            global_batch_size=int(prefill["global_bs"]),
+                            num_workers=prefill_workers,
+                            isl=int(prefill["isl"]),
+                            prefix=int(prefill["prefix"]),
+                            ttft_ms=float(prefill["ttft"]),
+                        )
+                        score = cluster_normalized_throughput(
+                            tokens_per_second_per_gpu=prefill_tokens_per_second / deployment_gpus,
+                            deployment_gpus=deployment_gpus,
+                            total_gpus=ranking_total_gpus,
+                        )
+                    else:
+                        score = cluster_normalized_throughput(
+                            tokens_per_second_per_gpu=float(row["tokens/s/gpu"]),
+                            deployment_gpus=deployment_gpus,
+                            total_gpus=ranking_total_gpus,
+                        )
+                    identity = _disagg_cluster_identity(
+                        prefill,
+                        prefill_workers,
+                        decode,
+                        decode_workers,
+                    )
+                    candidate = (score, identity, row)
+                    if best is None or (-candidate[0], candidate[1]) < (-best[0], best[1]):
+                        best = candidate
+
+    if best is None:
+        return None
+    return pd.DataFrame([best[2]], columns=common.ColumnsDisagg)
+
+
 def sweep_disagg(
     *,
     model_path: str,
@@ -765,6 +1070,9 @@ def sweep_disagg(
     rate_matching_decode_degradation: float | None = None,
     autoscale_ttft_correction_factor: float | None = None,
     predictor: Any = None,
+    batch_sweep_step: int | None = None,
+    ranking_total_gpus: int | None = None,
+    ranking_metric_kind: str = _OUTPUT_TOKEN_THROUGHPUT,
 ) -> pd.DataFrame:
     """Sweep prefill_parallel x decode_parallel x batches x workers with rate matching.
 
@@ -776,13 +1084,30 @@ def sweep_disagg(
     hetero-disagg (prefill and decode on different systems).
 
     Returns:
-        DataFrame (possibly empty) with schema ``common.ColumnsDisagg``.
+        DataFrame with schema ``common.ColumnsDisagg``. Fixed-cluster ranking
+        returns one row or raises a typed terminal error; legacy and autoscale
+        modes preserve their existing empty-result behavior.
 
     Raises:
         ValueError: invalid GPU bounds.
-        RuntimeError: no feasible worker candidates.
+        RuntimeError: worker candidate generation or allocation violates its contract.
         NoFeasibleConfigError: no point satisfies the SLA.
     """
+    if ranking_total_gpus is not None and type(ranking_total_gpus) is not int:
+        raise TypeError(f"ranking_total_gpus must be a positive integer; got {ranking_total_gpus!r}")
+    if ranking_total_gpus is not None and ranking_total_gpus < 1:
+        raise ValueError(f"ranking_total_gpus must be positive; got {ranking_total_gpus!r}")
+    if ranking_total_gpus is not None and autoscale:
+        raise ValueError("ranking_total_gpus cannot be combined with autoscale=True")
+    if ranking_metric_kind not in _DISAGG_RANKING_METRIC_KINDS:
+        raise ValueError(
+            f"ranking_metric_kind must be one of {sorted(_DISAGG_RANKING_METRIC_KINDS)}; got {ranking_metric_kind!r}"
+        )
+    if ranking_metric_kind == _PREFILL_INPUT_THROUGHPUT:
+        if ranking_total_gpus is None:
+            raise ValueError("prefill_input_throughput ranking requires ranking_total_gpus")
+        if runtime_config.osl != 1:
+            raise ValueError(f"prefill_input_throughput ranking requires osl=1; got {runtime_config.osl!r}")
     if max_prefill_gpus is not None and max_prefill_gpus <= 0:
         raise ValueError(f"max_prefill_gpus must be > 0, got {max_prefill_gpus}")
     if max_decode_gpus is not None and max_decode_gpus <= 0:
@@ -817,10 +1142,7 @@ def sweep_disagg(
     if decode_max_num_tokens < 1:
         logger.warning("decode_max_num_tokens < 1, clamping to 1")
         decode_max_num_tokens = 1
-    if decode_max_num_tokens > max(_DEFAULT_DECODE_BATCH_SCHEDULE):
-        decode_batch_range: list[int] | range = _DEFAULT_DECODE_BATCH_SCHEDULE + [decode_max_num_tokens]
-    else:
-        decode_batch_range = [b for b in _DEFAULT_DECODE_BATCH_SCHEDULE if b <= decode_max_num_tokens]
+    decode_batch_range = _decode_batch_list(decode_max_num_tokens, batch_sweep_step)
 
     if prefill_max_num_tokens < runtime_config.isl:
         logger.warning("prefill_max_num_tokens < runtime_config.isl, clamping to isl")
@@ -854,6 +1176,16 @@ def sweep_disagg(
     )
 
     if len(prefill_summary_df) == 0 or len(decode_summary_df) == 0:
+        if ranking_total_gpus is not None:
+            empty_roles = [
+                role
+                for role, candidates in (("prefill", prefill_summary_df), ("decode", decode_summary_df))
+                if candidates.empty
+            ]
+            raise RuntimeError(
+                "sweep_disagg: worker candidate builder returned an empty result without raising a typed terminal "
+                f"error for roles={empty_roles}"
+            )
         logger.debug("sweep_disagg: no prefill or decode worker candidates")
         return pd.DataFrame(columns=common.ColumnsDisagg)
 
@@ -894,6 +1226,78 @@ def sweep_disagg(
     else:
         tpot_values = runtime_config.tpot if isinstance(runtime_config.tpot, list) else [runtime_config.tpot]
         constraint_pairs = [(runtime_config.ttft, tpot) for tpot in tpot_values]
+
+    if not constraint_pairs and ranking_total_gpus is not None:
+        raise NoFeasibleConfigError(
+            "sweep_disagg: no TTFT/TPOT constraint pair satisfies the requested latency constraints."
+        )
+
+    if ranking_total_gpus is not None:
+        ranked_rows: list[dict[str, Any]] = []
+        sla_errors: list[NoFeasibleConfigError] = []
+        allocation_infeasible = False
+        for ttft_c, tpot_c in constraint_pairs:
+            try:
+                partial = _find_best_disagg_cluster_under_constraint(
+                    ttft_target=ttft_c,
+                    tpot_target=tpot_c,
+                    prefill_summary_df=prefill_summary_df,
+                    decode_summary_df=decode_summary_df,
+                    ranking_total_gpus=ranking_total_gpus,
+                    num_gpu_set=num_gpu_set,
+                    prefill_num_worker_list=p_num_workers,
+                    decode_num_worker_list=d_num_workers,
+                    max_prefill_gpus=max_prefill_gpus,
+                    max_decode_gpus=max_decode_gpus,
+                    require_same_tp=require_same_tp,
+                    prefill_degradation=p_deg,
+                    decode_degradation=d_deg,
+                    autoscale_ttft_correction_factor=ttft_corr,
+                    ranking_metric_kind=ranking_metric_kind,
+                )
+            except NoFeasibleConfigError as error:
+                sla_errors.append(error)
+                continue
+            if partial is not None:
+                ranked_rows.extend(partial.to_dict("records"))
+            else:
+                allocation_infeasible = True
+        if not ranked_rows:
+            if not allocation_infeasible:
+                error = NoFeasibleConfigError(
+                    "sweep_disagg: no fixed-cluster candidate met any TTFT/TPOT constraint pair. "
+                    f"Last SLA failure: {sla_errors[-1]}"
+                )
+                raise error from sla_errors[-1]
+            raise RuntimeError(
+                "sweep_disagg: at least one constraint pair met role SLA, but no worker allocation satisfied the "
+                "GPU, worker-count, and topology constraints"
+            )
+
+        def _ranking_score(row: dict[str, Any]) -> float:
+            deployment_gpus = int(row["num_total_gpus"])
+            if ranking_metric_kind == _PREFILL_INPUT_THROUGHPUT:
+                prefill_tokens_per_second = calculate_prefill_tokens_per_second(
+                    global_batch_size=int(row["(p)global_bs"]),
+                    num_workers=int(row["(p)workers"]),
+                    isl=int(row["isl"]),
+                    prefix=int(row["prefix"]),
+                    ttft_ms=float(row["ttft"]),
+                )
+                per_gpu = prefill_tokens_per_second / deployment_gpus
+            else:
+                per_gpu = float(row["tokens/s/gpu"])
+            return cluster_normalized_throughput(
+                tokens_per_second_per_gpu=per_gpu,
+                deployment_gpus=deployment_gpus,
+                total_gpus=ranking_total_gpus,
+            )
+
+        best_row = min(
+            ranked_rows,
+            key=lambda row: (-_ranking_score(row), _disagg_result_cluster_identity(row)),
+        )
+        return pd.DataFrame([best_row], columns=common.ColumnsDisagg)
 
     # Worker-count rate matching depends only on per-worker throughput/GPUs and the
     # (constant) worker-count lists + GPU budget -- NOT on the (ttft, tpot) target.

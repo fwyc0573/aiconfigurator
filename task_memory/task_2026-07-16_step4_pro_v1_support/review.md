@@ -8,6 +8,7 @@
 | 2026-07-16 | Recorded the StepCode Claude APPROVE verdict, WATCH risks, and implementation authorization. |
 | 2026-07-16 | Recorded the graph/roofline implementation checkpoint and affected-regression evidence. |
 | 2026-07-16 | Recorded the integration, CLI, and provenance-documentation checkpoint. |
+| 2026-07-16 | Recorded the full-unit/static validation checkpoint and independent final StepCode Claude APPROVE verdict. |
 
 # Review Log
 
@@ -80,3 +81,23 @@
 | Inspected Artifacts | `tests/integration/test_step4_pro_v1_support.py`; `tests/integration/test_step4_prefill_ranking.py`; `docs/step4_pro_v1_modeling.md`; Task single-point APIs; CLI estimate/generate parsers and output; fresh pytest/Ruff/doc-marker output |
 | Identified Issues/Anomalies | Aggregate evidence contains both `mix_step` and `genonly_step`; `mix_step` explicitly marks generation attention as `not_executed`; naive eight-GPU CLI generate success does not prove fit because the command performs no memory validation. |
 | Remediation/Verification Code Actions Taken | Corrected test-only phase/source assumptions without production changes; prohibited network and operation profile loaders; required all executed sources to equal `sol`; documented the generate warning and all human-update items; verified `4/4` integration tests, `66/66` focused/original integration regression, Ruff/format/diff, and 11 required documentation markers. |
+
+## Checkpoint 8: Full unit regression and static validation
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Repository-wide unit regression, multiprocessing environment diagnosis, and delivery-surface static validation |
+| Reviewer Agent Identity | Primary Codex leader following systematic-debugging and verification-before-completion workflows |
+| Inspected Artifacts | Full pytest output; `tests/unit/collector/test_parallel_run.py`; Python multiprocessing traceback; `TMPDIR` lengths; `/tmp` and `/data` byte/inode preflights; Ruff check/format output; Git tracked-file list and diff |
+| Identified Issues/Anomalies | The `81`-character task-local `TMPDIR` produced `113`-character representative SyncManager socket paths and 13 AF_UNIX failures. Full-tree Ruff format scanned four non-delivery fixture copies below untracked `tests/.tmp/`. `/usr/bin/time` is not installed. |
+| Remediation/Verification Code Actions Taken | Reproduced the long-path failure and short-path pass with the same test; passed the complete collector suite with `/tmp` and `/data/ycfeng/tmp`; reran full unit to `2063 passed / 12 skipped / 1123 deselected` in `770.74 s`; passed Ruff check, all 432 tracked-file format checks, explicit temp exclusion, and diff checks. No production or test logic changed. |
+
+## Checkpoint 9: Independent final code review
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Final review of commits `fdd869b..e4a1083`, including parser scope, exact topology, graph formulas, SOL/SOL_FULL boundary, shared CustomAllReduce semantics, offline integration, and documentation truthfulness |
+| Reviewer Agent Identity | StepCode Claude `claude-opus-4-6[1m]`, `effort=max`, independent read-only code-review lane |
+| Inspected Artifacts | Complete Git diff and changed files; `AGENTS.md`; requirements/plan/issues/review; `docs/step4_pro_v1_modeling.md`; fresh focused/full regression and static evidence; `.omx/artifacts/claude-act-as-the-independent-final-code-reviewer-for-the-step4-pro-2026-07-15T19-36-24-039Z.md` |
+| Identified Issues/Anomalies | Verdict `APPROVE`; no Critical and no BLOCK. Two low-severity Important observations required no action: CustomAllReduce SOL_FULL semantics are shared, and Step4-local routed-MoE assignments intentionally shadow generic variables. Three Minor test-maintenance observations cover exact CLI warning text and private test-helper access. |
+| Remediation/Verification Code Actions Taken | Confirmed the shared CustomAllReduce correction is semantically necessary, original Step4 parser behavior is preserved, and all observations are already covered by regression evidence. No code remediation was requested. Artifact SHA256: `15669234b47250e4b9d1f07577f90b942139fbf4eeaa710b4283adad05aec9b2`. Reviewer explicitly authorized final archival/reporting. |

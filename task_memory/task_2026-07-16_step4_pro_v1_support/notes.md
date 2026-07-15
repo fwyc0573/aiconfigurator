@@ -8,6 +8,7 @@
 | 2026-07-16 | Recorded the StepCode Claude APPROVE artifact and its explicit original-Step4 formula regression requirement. |
 | 2026-07-16 | Added integration parallelism, per-op source semantics, and CLI generate interpretation reminders. |
 | 2026-07-16 | Added numeric-evidence artifact details and the generic naive sizing limitation. |
+| 2026-07-16 | Recorded the AF_UNIX-safe temporary-directory rule, full-unit result, static-scan caveat, and final StepCode Claude review artifact. |
 
 # Operational Notes
 
@@ -31,7 +32,9 @@
 ## Runtime and Test Environment
 
 - Verified environment: `/home/i-fengyicheng/miniconda3/envs/aic-step-design` with Python `3.11.15`, pytest `8.4.2`, and Ruff `0.14.1`.
-- Bind this worktree explicitly with `PYTHONPATH="$PWD/src:$PWD"`, `MPLBACKEND=Agg`, and task-local `TMPDIR="$PWD/tests/.tmp"`.
+- Bind this worktree explicitly with `PYTHONPATH="$PWD/src:$PWD"` and `MPLBACKEND=Agg`.
+- Do not use the `81`-character task-local `tests/.tmp` path as `TMPDIR` for multiprocessing tests. Its representative SyncManager socket path is `113` characters and fails with `OSError: AF_UNIX path too long`. Use a preflighted short path such as `/tmp` or `/data/ycfeng/tmp`; both passed the 22-test collector suite.
+- `/usr/bin/time` is absent on this host. Record pytest's built-in elapsed time and the shell exit code instead of wrapping test commands with that binary.
 - The repository `.venv` is not a valid test environment on this host: it uses Python `3.13.13`, lacks pytest, and has no Ruff executable.
 - Consult `task_memory/env_handbook.md` before diagnosing environment-specific failures.
 - No GPU or Docker execution is currently planned. If later required, read the company handbooks before running commands.
@@ -64,3 +67,5 @@
 - The fresh generate smoke reported a generic `1,559,313,383,424`-parameter estimate, required `TP=32`, maximum `TP=8`, and `fit=False`. The `68,637,168,768`-parameter (`4.604431739983%`) gap from the CSV total comes from the generic all-layers-MoE estimator, not MTP. Do not use this output as the authoritative parameter count.
 - CLI `estimate` coverage uses `database_mode=SOL`; the global CLI intentionally excludes `SOL_FULL` from its choices.
 - Numeric evidence is temporarily retained at `tests/.tmp/step4_pro_v1_numeric_evidence.json` (`32,593` bytes, SHA256 `ec8d9a1b37f343a56aa4ef52b57e1ebca2f33685eca9f0e4cc25a3ea39582555`) until it is transcribed into the final test report. Do not stage `tests/.tmp/`.
+- Final independent code-review artifact: `.omx/artifacts/claude-act-as-the-independent-final-code-reviewer-for-the-step4-pro-2026-07-15T19-36-24-039Z.md` (`12,336` bytes, SHA256 `15669234b47250e4b9d1f07577f90b942139fbf4eeaa710b4283adad05aec9b2`). Verdict: `APPROVE`; no Critical, no BLOCK, and no code remediation required.
+- `ruff format --check .` enumerates four copied Python fixtures below untracked `tests/.tmp/`. Preserve that failure as evidence and validate the delivery surface with the same command excluding `tests/.tmp` plus a `git ls-files '*.py'` check over all `432` tracked Python files.

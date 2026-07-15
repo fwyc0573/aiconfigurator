@@ -7,6 +7,7 @@
 | 2026-07-16 | Applied the independent StepCode Claude APPROVE verdict and added explicit original-Step4 formula-equivalence assertions. |
 | 2026-07-16 | Marked configuration, graph, roofline, integration, CLI, and provenance-documentation tasks complete after focused verification. |
 | 2026-07-16 | Recorded direct roofline, public SDK, per-operation, and CLI numeric evidence. |
+| 2026-07-16 | Completed full regression, static validation, independent final review, requirement audit, and completion-archive gates. |
 
 # Step4-Pro-V1 AIC Support Implementation Plan
 
@@ -112,10 +113,10 @@
 - Update: all task documentation in `task_memory/task_2026-07-16_step4_pro_v1_support/`
 - Create: `task_memory/task_2026-07-16_step4_pro_v1_support/test_report_2026-07-16_step4_pro_v1_support.md`
 
-- [ ] Run focused Step4-Pro-V1 tests.
-- [ ] Run affected Step4 regression tests.
-- [ ] Run `pytest -m unit` with environment caveats recorded.
-- [ ] Run `ruff check .`, `ruff format --check .`, and `git diff --check`.
-- [ ] Run an independent code-review lane and remediate every Critical/Important issue.
-- [ ] Audit requirements one-by-one against code, test output, docs, worktree/branch state, and numeric evidence.
-- [ ] Record exact paths, commands, Python environment, pass/fail counts, timings, expected/actual values, errors, resolutions, and SHA256 inventory.
+- [x] Run focused Step4-Pro-V1 tests.
+- [x] Run affected Step4 regression tests.
+- [x] Run `pytest -m unit` with environment caveats recorded.
+- [x] Run `ruff check .`, `ruff format --check .`, and `git diff --check`; preserve the generated-`tests/.tmp` format-scan anomaly and verify every Git-tracked Python file separately.
+- [x] Run an independent code-review lane and remediate every Critical/Important issue; final verdict was `APPROVE` with no required remediation.
+- [x] Audit requirements one-by-one against code, test output, docs, worktree/branch state, and numeric evidence.
+- [x] Record exact paths, commands, Python environment, pass/fail counts, timings, expected/actual values, errors, resolutions, and SHA256 inventory.

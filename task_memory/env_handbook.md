@@ -8,6 +8,7 @@
 | 2026-07-15 | Added the verified headless Matplotlib test recipe for stale or unreachable SSH `DISPLAY` values. |
 | 2026-07-15 | Added the verified pytest temp-directory recipe for `/tmp` inode exhaustion. |
 | 2026-07-15 | Added the verified repository-local Git author identity recovery recipe. |
+| 2026-07-16 | Added the verified short-`TMPDIR` recipe for Python multiprocessing AF_UNIX socket paths and documented pytest-native timing when `/usr/bin/time` is unavailable. |
 
 # Environment Handbook
 
@@ -208,6 +209,68 @@ exit code: 0
 ```
 
 Do not delete unrelated `/tmp` files as an implicit cleanup. Redirect temporary creation to the data filesystem, identify the owner of inode-heavy paths separately, and obtain permission before any deletion.
+
+## Running multiprocessing tests from a long worktree path
+
+### Root Cause
+
+- Python `multiprocessing.Manager()` creates an AF_UNIX listener below `tempfile.gettempdir()` using a path shaped like `pymp-XXXXXXXX/listener-XXXXXXXX`.
+- Linux AF_UNIX socket pathnames must fit in the fixed `sockaddr_un.sun_path` field. A long repository-local `TMPDIR` can therefore have sufficient bytes and inodes while still failing at `socket.bind()` with `OSError: AF_UNIX path too long`.
+- In the Step4-Pro-V1 worktree, `TMPDIR="$PWD/tests/.tmp"` was `81` characters. A representative manager listener pathname was `113` characters, beyond the practical pathname limit.
+- This is an environment-entry failure, not a `collector.parallel_run` logic failure. The parent process surfaces `EOFError` only because the SyncManager child exits before sending its listener address.
+
+### Verified Recipe
+
+Preflight capacity and inode availability, then select a short existing directory explicitly:
+
+```bash
+df -h /tmp /data
+df -i /tmp /data
+
+CONDA_ENV=/home/i-fengyicheng/miniconda3/envs/aic-step-design
+
+PYTHONPATH=src:. \
+MPLBACKEND=Agg \
+TMPDIR=/data/ycfeng/tmp \
+  "$CONDA_ENV/bin/python" -m pytest tests/unit/collector/test_parallel_run.py -q
+```
+
+`TMPDIR=/tmp` is also verified when its inode preflight is healthy. Select one verified path before the run; do not implement an automatic retry or silently switch paths after a failure.
+
+### Verification Evidence
+
+Observed on 2026-07-16:
+
+```text
+Long TMPDIR base length: 81 characters
+Representative manager socket length: 113 characters
+Long-TMPDIR control: 1 failed in 0.36s, exit code 1, AF_UNIX path too long
+/tmp single-test experiment: 1 passed in 0.24s, exit code 0
+/tmp collector suite: 22 passed in 6.00s, exit code 0
+/data/ycfeng/tmp collector suite: 22 passed in 7.18s, exit code 0
+/tmp full unit suite: 2063 passed, 12 skipped, 1123 deselected in 770.74s, exit code 0
+```
+
+Do not patch `multiprocessing`, shorten application names, skip collector tests, or delete temporary files to mask this environment constraint. Correct the `TMPDIR` entry point.
+
+## Timing pytest when `/usr/bin/time` is unavailable
+
+### Root Cause
+
+- This host does not provide `/usr/bin/time`; invoking it exits `127` before pytest starts.
+- Pytest already emits suite elapsed time in its terminal summary, so a separate timing binary is not required for reproducible test evidence.
+
+### Verified Recipe
+
+Run pytest directly and record its summary duration plus the shell exit code:
+
+```bash
+CONDA_ENV=/home/i-fengyicheng/miniconda3/envs/aic-step-design
+"$CONDA_ENV/bin/python" -m pytest <paths> -q
+printf 'exit=%s\n' "$?"
+```
+
+Observed on 2026-07-16: `/usr/bin/time -p ...` returned `/bin/bash: /usr/bin/time: No such file or directory` with exit code `127`; the direct pytest commands reported their own elapsed times and completed normally.
 
 ## Recovering a missing Git author identity without changing global configuration
 

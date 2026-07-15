@@ -12,6 +12,7 @@
 | 2026-07-16 | Recorded formula-only graph coverage, the CustomAllReduce roofline correction, and the 192-test affected regression. |
 | 2026-07-16 | Recorded offline aggregate/disaggregate integration, CLI subprocess coverage, modeling documentation, and focused regression. |
 | 2026-07-16 | Recorded direct roofline, per-operation, SDK/CLI numeric evidence and the naive sizing mismatch root cause. |
+| 2026-07-16 | Recorded full-unit AF_UNIX diagnosis, short-TMPDIR verification, repository-wide passing regression, static evidence, and final independent review. |
 
 # Progress
 
@@ -20,9 +21,10 @@
 - Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; passing Step4 baseline; three-lane Team audit; report verification; clean Team shutdown.
 - Completed: Team-finding reconciliation and independent StepCode Claude plan review (`APPROVE`, no BLOCK).
 - Completed: cached identity/config, fail-fast Step4 parser validation, config-derived projection geometry, parallel-divisibility validation, and original-Step4 focused regression.
-- Completed: Step4-Pro-V1 structural graph, direct SOL/SOL_FULL roofline audit, offline aggregate/disaggregate integration, CLI subprocess coverage, and provenance documentation.
-- In progress: numeric evidence capture and full regression.
-- Pending: independent code review, test report, final archive, and Git-history cleanup.
+- Completed: Step4-Pro-V1 structural graph, direct SOL/SOL_FULL roofline audit, offline aggregate/disaggregate integration, CLI subprocess coverage, provenance documentation, numeric evidence capture, and full regression.
+- Completed: independent final code review (`APPROVE`), test report preparation, requirement audit, and completion archive.
+- Completed: current-tree focused regression, static checks, document/hash audit, and preserved stash verification immediately before the final archive commit.
+- Pending: none in the approved task scope.
 
 ## 2026-07-16 — Evidence and worktree setup
 
@@ -129,3 +131,24 @@
 - **Method:** Queried the same nine shapes used by `test_step4_pro_v1_direct_sol_full_components_close_the_roofline`, ran aggregate/disaggregate `TP=8, PP=2, MoE-TP=8`, and executed both offline CLI subprocesses. The first evidence script failed with `KeyError: 'scheduling'`: aggregate `per_ops_data` contains top-level scheduling metadata while `per_ops_source` intentionally contains only operation phases. A diagnostic run proved `data_only_phases=['scheduling']` with no per-operation key mismatch. The corrected script validates operation-phase sets explicitly and stores scheduling separately; no production code changed.
 - **Result:** Direct selected times ranged from `0.002097152 ms` (MLA BMM) to `171.79869184 ms` (context MLA), all with `selected == max(math, memory) == scalar SOL` and `source=sol`. Aggregate observed `TTFT=105.16356682 ms`, `TPOT=1.3241611666666666 ms`; disaggregate observed `TTFT=45.28 ms`, `TPOT=1.43 ms`. The complete `32,593`-byte evidence JSON is task-local at `tests/.tmp/step4_pro_v1_numeric_evidence.json` with SHA256 `ec8d9a1b37f343a56aa4ef52b57e1ebca2f33685eca9f0e4cc25a3ea39582555` and will be transcribed into the final test report, not committed as a product artifact.
 - **Result:** CLI estimate matched the SDK aggregate values after display rounding (`TTFT=105.164 ms`, `TPOT=1.324 ms`, memory `91.31 GB`). CLI generate succeeded as an artifact smoke but explicitly reported `fit=False`, required `TP=32` versus maximum `8`, and a generic `1,559,313,383,424`-parameter estimate. The authoritative CSV total is `1,490,676,214,656`; the gap is `68,637,168,768` parameters (`4.604431739983%`). Root cause is the pre-existing generic naive estimator treating all 80 layers as identical routed-MoE layers with one generic attention formula, not MTP or the Step4-Pro-V1 block sequence. The modeling document now records this cross-cutting generator boundary instead of changing it without approval.
+
+## 2026-07-16 — Full unit AF_UNIX failure and environment correction
+
+- **Motivation:** Complete the required repository-wide regression without misclassifying a test-runner environment failure as a product defect.
+- **Expectation:** The full unit suite either identifies a reproducible source regression or passes after using the verified environment entry points.
+- **Method:** The first run set `TMPDIR="$PWD/tests/.tmp"` and ended with 13 failures in `test_parallel_run.py`; every SyncManager traceback ended at `socket.bind()` with `OSError: AF_UNIX path too long`. Measured the temp base at `81` characters and a representative manager listener at `113`. Ran a controlled single-test comparison with identical code and only `TMPDIR` changed, then exercised the full collector file with both `/tmp` and `/data/ycfeng/tmp` before rerunning all unit tests.
+- **Result:** Long-path control: `1 failed` in `0.36 s`, exit `1`. `/tmp` experiment: `1 passed` in `0.24 s`, exit `0`. Collector suite: `22/22 passed` in `6.00 s` with `/tmp` and `22/22 passed` in `7.18 s` with `/data/ycfeng/tmp`. Final full unit: `2063 passed / 12 skipped / 1123 deselected / 4 warnings` in `770.74 s`, exit `0`. Root cause is fully isolated to AF_UNIX pathname length; no code or test change was needed.
+
+## 2026-07-16 — Full static checks and generated-temp scope
+
+- **Motivation:** Prove all delivery files satisfy the repository's lint, formatting, and whitespace contracts while preserving prohibited-to-delete task-local evidence.
+- **Expectation:** All tracked source files pass Ruff and Git diff checks; generated pytest fixture copies must not be mistaken for deliverables.
+- **Method:** Ran `ruff check .`, `ruff format --check .`, a tracked-file format check over `git ls-files '*.py'`, an explicit `--exclude tests/.tmp` format check, and `git diff --check fdd869b..HEAD`. Inspected every path reported by the only non-zero command.
+- **Result:** Ruff lint passed. The broad format command reported only four copied fixtures below untracked `tests/.tmp/`; all `432` tracked Python files passed formatting, the explicit temp-exclusion check passed, and Git diff checks passed. No tracked file required modification. `/usr/bin/time` was separately confirmed absent with exit `127`; pytest-native elapsed time is used in the test report.
+
+## 2026-07-16 — Independent final code review
+
+- **Motivation:** Satisfy the cross-model separation-of-duties gate before delivery and challenge the shared parser/communication changes and support claims.
+- **Expectation:** Receive `APPROVE`, record a non-blocking `WATCH`, or stop for user adjudication on `BLOCK`.
+- **Method:** Ran `omx ask claude` against StepCode Claude `claude-opus-4-6[1m]` at `effort=max` with the original objective, review range `fdd869b..e4a1083`, all task/modeling docs, changed production/tests, full numeric evidence, and explicit questions about parser scope, topology, formulas, SOL_FULL, CustomAllReduce, offline integration, generator sizing, and documentation truthfulness.
+- **Result:** Verdict `APPROVE`; no Critical, no BLOCK, and explicit authorization to proceed to final archival/reporting. The reviewer recorded two low-severity Important observations and three Minor test-maintenance points, with no required code action. Artifact: `.omx/artifacts/claude-act-as-the-independent-final-code-reviewer-for-the-step4-pro-2026-07-15T19-36-24-039Z.md`, `12,336` bytes, SHA256 `15669234b47250e4b9d1f07577f90b942139fbf4eeaa710b4283adad05aec9b2`.

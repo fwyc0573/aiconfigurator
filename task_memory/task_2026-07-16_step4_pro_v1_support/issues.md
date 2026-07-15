@@ -12,6 +12,7 @@
 | 2026-07-16 | Recorded and resolved the CustomAllReduce SOL_FULL memory-roofline contract defect. |
 | 2026-07-16 | Documented the naive CLI generate feasibility boundary for the eight-GPU smoke command. |
 | 2026-07-16 | Documented the generic naive-generator parameter-count mismatch exposed by numeric evidence. |
+| 2026-07-16 | Resolved the full-unit AF_UNIX path failure and recorded the generated-temp Ruff format-scan anomaly. |
 
 # Issues
 
@@ -66,7 +67,7 @@
 
 ## ISSUE-007: Step4 parsing silently substitutes or accepts malformed geometry
 
-- **Status:** Resolved in focused RED/GREEN tests; full unit regression remains pending.
+- **Status:** Resolved; focused RED/GREEN and full unit regression passed.
 - **Symptom:** Missing/zero `moe_intermediate_size` can inherit dense `intermediate_size`; missing/zero/bool/float `num_experts_per_tok` and boolean core dimensions can pass weak validation.
 - **Root cause:** Step4-specific parsing reuses permissive generic numeric extraction and fallback behavior that was not exposed while only one cached Step4 configuration existed.
 - **Impact:** Malformed Step4-Pro-V1 configuration can build a plausible but incorrect operation graph instead of failing at the configuration boundary.
@@ -90,7 +91,7 @@
 
 ## ISSUE-010: Step4 operation construction silently truncates non-divisible parallel geometry
 
-- **Status:** Resolved in focused RED/GREEN tests; full unit regression remains pending.
+- **Status:** Resolved; focused RED/GREEN and full unit regression passed.
 - **Symptom:** Non-divisible attention heads reach a shared `assert`, while vocabulary, dense/shared intermediate widths, routed expert count, and routed intermediate width are silently truncated by integer division.
 - **Root cause:** `Step4Model` creates sharded operation dimensions without validating the exact divisibility assumptions of its TP/EP formulas; the shared `BaseModel` checks only attention heads and uses an optimization-removable assertion.
 - **Impact:** Invalid topology can yield a plausible but numerically incomplete graph, and `python -O` can remove the one existing head check.
@@ -119,3 +120,19 @@
 - **Root cause:** `generator.naive._estimate_model_weight_bytes()` applies one generic layer formula to all 80 layers: one embedding, `4 * H^2` attention, and 512 routed experts in every FFN. It does not read `block_types`, the four dense layers, shared-expert dimensions, both embeddings, or the CSV attention totals. `num_nextn_predict_layers` is not included in this calculation, so MTP is not the cause.
 - **Impact:** The naive fit check reports required `TP=32`, available maximum `TP=8`, and `fit=False`. Its sizing, TP, and memory messages are not authoritative Step4-Pro-V1 deployment evidence even though artifact rendering succeeds.
 - **Resolution for this task:** Preserve the explicit CLI warning, assert the warning in integration coverage, and document exact observed-versus-authoritative values. Do not silently special-case Step4-Pro-V1 or change the generic generator under this task; a block-aware estimator would be a separately approved cross-family refactor and must first follow `.claude/rules/generator-development.md`.
+
+## ISSUE-014: Long task-local TMPDIR exceeds the AF_UNIX manager-socket limit
+
+- **Status:** Resolved as a test-environment entry issue; no source or test skip was required.
+- **Symptom:** The first full unit run ended with `13 failed / 2050 passed / 12 skipped / 1123 deselected` after every multiprocessing test that called `mp.Manager()` raised parent-side `EOFError`. Each SyncManager child reported `OSError: AF_UNIX path too long` at `socket.bind()`.
+- **Root cause:** `TMPDIR="$PWD/tests/.tmp"` was `81` characters. Python adds a `pymp-XXXXXXXX/listener-XXXXXXXX` suffix, producing a representative `113`-character AF_UNIX pathname that does not fit Linux `sockaddr_un.sun_path`.
+- **Impact:** The failure was isolated to `tests/unit/collector/test_parallel_run.py`; Step4-Pro-V1 and all later suites continued to pass. It provided no evidence of a Collector or Step4 production defect.
+- **Resolution:** A controlled single test failed with the long path (`1 failed`, `0.36 s`, exit `1`) and passed with `/tmp` (`1 passed`, `0.24 s`, exit `0`). The complete collector file then passed `22/22` with `/tmp` in `6.00 s` and with `/data/ycfeng/tmp` in `7.18 s`. The full unit suite passed with `/tmp`: `2063 passed / 12 skipped / 1123 deselected`, `770.74 s`, exit `0`.
+
+## ISSUE-015: Full-tree Ruff format scan includes generated pytest fixture copies
+
+- **Status:** Resolved as validation scoping; all delivery files are formatted.
+- **Symptom:** `ruff format --check .` reported four files below untracked `tests/.tmp/pytest-of-i-fengyicheng/...` that would be reformatted.
+- **Root cause:** Earlier tests intentionally copied tracked performance scripts into their pytest temp fixtures. Ruff recursively scanned those non-delivery copies because `tests/.tmp/` is untracked rather than ignored.
+- **Impact:** No Git-tracked or changed file failed formatting. Deleting or moving `tests/.tmp/` was prohibited, so a clean whole-tree result could not be obtained by cleanup.
+- **Resolution:** `ruff check .` passed, all `432` Git-tracked Python files passed `ruff format --check`, `ruff format --check --exclude tests/.tmp .` passed, and `git diff --check fdd869b..HEAD` passed. The original four-file diagnostic is retained in the test report rather than hidden.

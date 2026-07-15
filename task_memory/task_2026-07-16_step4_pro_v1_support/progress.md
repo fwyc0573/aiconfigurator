@@ -5,14 +5,15 @@
 | 2026-07-16 | Initialized the execution ledger and recorded the evidence-grounding/worktree setup. |
 | 2026-07-16 | Recorded the failed `.venv` baseline, root cause, corrected conda rerun, and exact passing counts. |
 | 2026-07-16 | Recorded the initial OMX Team clean-workspace rejection and planned source-of-truth commit. |
+| 2026-07-16 | Recorded the completed parallel Team audits, report handoff/verification, lifecycle recovery, and clean shutdown. |
 
 # Progress
 
 ## Status
 
-- Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; initial requirements and plan capture.
-- In progress: baseline verification and parallel design/test audit.
-- Pending: TDD implementation, integration, full verification, independent review, final archive.
+- Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; passing Step4 baseline; three-lane Team audit; report verification; clean Team shutdown.
+- In progress: Team-finding reconciliation and independent StepCode Claude plan review.
+- Pending: strict RED/GREEN implementation, integration, full verification, independent code review, test report, final archive, and Git-history cleanup.
 
 ## 2026-07-16 — Evidence and worktree setup
 
@@ -40,4 +41,18 @@
 - **Motivation:** Start the user-requested parallel read-only audit without allowing workers to diverge from the task source of truth.
 - **Expectation:** OMX Team starts from a clean leader worktree and all workers read identical committed requirements.
 - **Method:** Ran `omx team 3:architect` after the baseline; the runtime inspected Git state before spawning panes and rejected the eight untracked task documents. Chose to commit the audited task documents rather than stash them, because stashing would remove the requirements from worker visibility.
-- **Result:** No workers started and no code changed. The exact error was `leader_workspace_dirty_for_worktrees ... commit_or_stash_before_omx_team`. The task documents will be validated and committed, then the same launch will be retried.
+- **Result:** No workers started and no code changed. The exact error was `leader_workspace_dirty_for_worktrees ... commit_or_stash_before_omx_team`. The task documents were subsequently validated and committed before a successful retry.
+
+## 2026-07-16 — Parallel Team audit and report integration
+
+- **Motivation:** Satisfy the user's parallel-Team requirement while keeping architecture, roofline, and integration evidence independently reviewable before production edits.
+- **Expectation:** Three read-only lanes identify model/config assumptions, formula-contract risks, and exact RED/integration coverage without modifying shared production code.
+- **Method:** Ran Team `step4-pro-v1-pre-impl-0ddff5cf`; reconciled a legacy decomposition mismatch through owner-corrected tasks 3/6 and superseded fragments 4/5; collected architect payloads; saved `team_roofline_audit.md` and `team_test_integration_audit.md`; committed them as `6667131`; had worker-1 verify required sections, references, hashes, and replacement-task states.
+- **Result:** All `6/6` tasks completed with `0` failed. Roofline report SHA256 is `005796a87e7f3874132802461523f58d302d670f3013b42d7514599ce52478ef`; integration report SHA256 is `40fa52a2708209c8def342767ee1a6ba55b5e5d142375bea2a21bb8691977e72`. Team shutdown completed with no worker diffs and Git remained clean.
+
+## 2026-07-16 — Newly grounded implementation boundaries
+
+- **Motivation:** Prevent the implementation plan from promising behavior that the shared Step4 contracts cannot currently provide.
+- **Expectation:** Convert every audit anomaly into either an approved minimal fix, an explicit scope boundary, or a human-update item.
+- **Method:** Reproduced/inspected SOL_FULL tuple incompatibility, temporary MLA KV arithmetic, parser fallback acceptance, and AFD `dense_swiglu` classification failure; compared each against the original request and no-fallback/root-cause rules.
+- **Result:** The revised plan uses SOL for complete graph execution, direct SOL_FULL database assertions for roofline components, fail-fast Step4 config validation, explicit `48.31838208 GB vs 10.7 GB` KV disclosure, and no AFD claim. These decisions now await independent StepCode Claude review before RED tests begin.

@@ -4,6 +4,7 @@
 |---|---|
 | 2026-07-16 | Recorded authoritative inputs, branch constraints, environment notes, and safety boundaries. |
 | 2026-07-16 | Corrected the test environment to the verified `aic-step-design` conda environment after `.venv` reproduction failed. |
+| 2026-07-16 | Added Team shutdown state, report provenance, SOL_FULL/KV/parser/AFD execution reminders, and the preserved test-temp stash. |
 
 # Operational Notes
 
@@ -20,6 +21,9 @@
 - Isolated worktree: `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro`
 - Branch: `step4-pro`
 - The original `step-design` worktree contains unrelated untracked files and must not be changed, stashed, moved, or deleted by this task.
+- Team `step4-pro-v1-pre-impl-0ddff5cf` completed `6/6` tasks and was shut down; worker panes are gone and no worker diff remained.
+- Architect reports are committed at `6667131`; their verified SHA256 values are `005796a87e7f3874132802461523f58d302d670f3013b42d7514599ce52478ef` and `40fa52a2708209c8def342767ee1a6ba55b5e5d142375bea2a21bb8691977e72`.
+- Preserve `stash@{0}` (`e1b4de9d4ba0b73d7ae828f4bbf9b59fd9a0b269`), which contains only `tests/.tmp/tmpid1wo7aj/test_system.yaml`; do not drop it or restore it unless later evidence requires that exact temporary fixture.
 
 ## Runtime and Test Environment
 
@@ -37,3 +41,11 @@
   - SWA: expected from CSV `213911648`, standard-GQA calculation `163577856`, absolute gap `50333792`, relative gap `23.530%`.
 - Do not invent hidden projection operations or apply scaling factors to close these gaps.
 - Until complete attention detail is supplied, use the same explicitly temporary MLA roofline treatment as Step4 while preserving `20 Full / 60 SWA` labels.
+
+## Execution and Validation Reminders
+
+- Complete operation-graph execution is supported in `DatabaseMode.SOL`. Current SOL_FULL database calls return `(selected, math, memory)` tuples that shared operation wrappers cannot consume; audit these methods directly and do not claim end-to-end SOL_FULL Task execution.
+- Temporary Step4 MLA KV arithmetic is `80 * (512 + 64) = 46,080` elements/token and `48.31838208 GB` at `1,048,576` FP8 tokens. The CSV target is `10.7 GB`; record the `37.61838208 GB` gap and `4.515736642991x` ratio without calibration.
+- Add fail-fast RED coverage before changing Step4 parsing: missing/zero `moe_intermediate_size`, missing/zero/bool/float `num_experts_per_tok`, boolean core dimensions, invalid block composition, `top-k > experts`, and non-divisible parallel geometry.
+- Existing Step4 AFD partitioning fails on `context_dense_swiglu` and `generation_dense_swiglu`. The minimum delivery covers aggregate/disaggregate SOL only; do not claim AFD or silicon support-matrix coverage.
+- Before modifying `src/aiconfigurator/generator/**`, read `.claude/rules/generator-development.md`. No generator edit is currently planned.

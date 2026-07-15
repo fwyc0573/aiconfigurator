@@ -7,6 +7,7 @@
 | 2026-07-16 | Added Team shutdown state, report provenance, SOL_FULL/KV/parser/AFD execution reminders, and the preserved test-temp stash. |
 | 2026-07-16 | Recorded the StepCode Claude APPROVE artifact and its explicit original-Step4 formula regression requirement. |
 | 2026-07-16 | Added integration parallelism, per-op source semantics, and CLI generate interpretation reminders. |
+| 2026-07-16 | Added numeric-evidence artifact details and the generic naive sizing limitation. |
 
 # Operational Notes
 
@@ -60,4 +61,6 @@
 - Aggregate `per_ops_source` contains both `mix_step` and `genonly_step`. For OSL greater than one, `mix_step` may explicitly record `generation_attention (not executed)` with zero latency and source `not_executed`; all actually executed operations must remain `source="sol"`.
 - Disaggregate source evidence is separated into `prefill` and `decode`, and every executed entry must be `sol`.
 - CLI `generate --total-gpus 8` is a naive artifact-rendering smoke. The command itself warns that it performs no memory validation or performance optimization, so success must not be reported as eight-GPU feasibility for the 1.490676-trillion-parameter model.
+- The fresh generate smoke reported a generic `1,559,313,383,424`-parameter estimate, required `TP=32`, maximum `TP=8`, and `fit=False`. The `68,637,168,768`-parameter (`4.604431739983%`) gap from the CSV total comes from the generic all-layers-MoE estimator, not MTP. Do not use this output as the authoritative parameter count.
 - CLI `estimate` coverage uses `database_mode=SOL`; the global CLI intentionally excludes `SOL_FULL` from its choices.
+- Numeric evidence is temporarily retained at `tests/.tmp/step4_pro_v1_numeric_evidence.json` (`32,593` bytes, SHA256 `ec8d9a1b37f343a56aa4ef52b57e1ebca2f33685eca9f0e4cc25a3ea39582555`) until it is transcribed into the final test report. Do not stage `tests/.tmp/`.

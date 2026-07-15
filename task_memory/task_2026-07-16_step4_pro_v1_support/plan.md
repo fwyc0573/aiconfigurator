@@ -6,6 +6,7 @@
 | 2026-07-16 | Reconciled the completed Team audits, narrowed SOL_FULL and AFD claims, and added fail-fast validation and KV-provenance gates. |
 | 2026-07-16 | Applied the independent StepCode Claude APPROVE verdict and added explicit original-Step4 formula-equivalence assertions. |
 | 2026-07-16 | Marked configuration, graph, roofline, integration, CLI, and provenance-documentation tasks complete after focused verification. |
+| 2026-07-16 | Recorded direct roofline, public SDK, per-operation, and CLI numeric evidence. |
 
 # Step4-Pro-V1 AIC Support Implementation Plan
 
@@ -83,7 +84,7 @@
 - [x] Monkeypatch every perf-data loader to fail if called.
 - [x] Require all non-zero results to report `source == "sol"`; permit only explicitly proven zero-latency no-ops.
 - [x] Add boundary/error cases for TP/EP width mismatch, expert count, unsupported backend, invalid database mode, empty/invalid block composition, and `nextn=0/3` generation scaling.
-- [ ] Record SOL per-op latency/source plus direct SOL_FULL math roofline, memory roofline, and selected maximum for numeric audit.
+- [x] Record SOL per-op latency/source plus direct SOL_FULL math roofline, memory roofline, and selected maximum for numeric audit.
 - [x] Preserve a regression that documents the current Task-level SOL_FULL tuple/`PerformanceResult` incompatibility; do not refactor the shared operation-query contract without separate approval.
 
 ### Task 4: Exercise SDK/CLI integration and document provenance

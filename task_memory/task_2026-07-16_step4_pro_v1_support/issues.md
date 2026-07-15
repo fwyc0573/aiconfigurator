@@ -11,6 +11,7 @@
 | 2026-07-16 | Recorded and resolved silent Step4 parallel-geometry truncation. |
 | 2026-07-16 | Recorded and resolved the CustomAllReduce SOL_FULL memory-roofline contract defect. |
 | 2026-07-16 | Documented the naive CLI generate feasibility boundary for the eight-GPU smoke command. |
+| 2026-07-16 | Documented the generic naive-generator parameter-count mismatch exposed by numeric evidence. |
 
 # Issues
 
@@ -110,3 +111,11 @@
 - **Root cause:** `generate` intentionally creates a naive configuration without a parameter sweep and prints an explicit warning that it performs no memory validation or performance optimization.
 - **Impact:** Treating subprocess success as fit/performance evidence would overstate support and could suggest an infeasible deployment.
 - **Resolution for this task:** Assert only cached identity resolution, successful artifact rendering, and the exact CLI summary. Use aggregate/disaggregate `SOL` with the tested `TP=8, PP=2, MoE-TP=8` shape for performance-model integration evidence. Preserve the CLI warning in user documentation.
+
+## ISSUE-013: Generic naive weight sizing does not consume Step4-Pro-V1 block composition
+
+- **Status:** Root cause established and documented; cross-cutting generator correction is outside the approved model-support scope.
+- **Symptom:** The requested generate smoke reports `1,559,313,383,424` parameters (`2,904.447509765625 GiB` in BF16), while the authoritative CSV trunk plus both embeddings is `1,490,676,214,656` parameters (`2,776.600820302963 GiB`). The absolute gap is `68,637,168,768` parameters and the relative gap is `4.604431739983%`.
+- **Root cause:** `generator.naive._estimate_model_weight_bytes()` applies one generic layer formula to all 80 layers: one embedding, `4 * H^2` attention, and 512 routed experts in every FFN. It does not read `block_types`, the four dense layers, shared-expert dimensions, both embeddings, or the CSV attention totals. `num_nextn_predict_layers` is not included in this calculation, so MTP is not the cause.
+- **Impact:** The naive fit check reports required `TP=32`, available maximum `TP=8`, and `fit=False`. Its sizing, TP, and memory messages are not authoritative Step4-Pro-V1 deployment evidence even though artifact rendering succeeds.
+- **Resolution for this task:** Preserve the explicit CLI warning, assert the warning in integration coverage, and document exact observed-versus-authoritative values. Do not silently special-case Step4-Pro-V1 or change the generic generator under this task; a block-aware estimator would be a separately approved cross-family refactor and must first follow `.claude/rules/generator-development.md`.

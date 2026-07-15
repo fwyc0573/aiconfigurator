@@ -3,6 +3,7 @@
 | Date | Summary of Changes |
 |---|---|
 | 2026-07-16 | Added the Step4-Pro-V1 structure, formula-roofline boundary, provenance register, and human-update items. |
+| 2026-07-16 | Added measured CLI output and the generic naive-weight-estimator mismatch boundary. |
 
 # Step4-Pro-V1 Modeling in AIConfigurator
 
@@ -322,7 +323,33 @@ aiconfigurator cli generate \
   --system h200_sxm
 ```
 
-`generate` deliberately warns that it performs no memory validation or performance optimization. Successful artifact rendering at eight GPUs must not be read as a model-fit or latency claim.
+The fresh command reported the following sizing values:
+
+| Quantity | Observed / authoritative value |
+|---|---:|
+| Generic naive estimate | 1,559,313,383,424 parameters |
+| Generic naive BF16 weight estimate | 2,904.447509765625 GiB |
+| CSV trunk + both embeddings | 1,490,676,214,656 parameters |
+| CSV-equivalent BF16 weight size | 2,776.600820302963 GiB |
+| Naive-minus-CSV gap | 68,637,168,768 parameters |
+| Relative gap | 4.604431739983% |
+| Naive fit decision | required TP=32, available maximum TP=8, `fit=False` |
+
+This difference is not MTP weight. The existing generic
+`generator.naive._estimate_model_weight_bytes()` formula uses one embedding,
+applies one `4 * H^2` attention estimate to every layer, and treats every one
+of the 80 layers as the same 512-expert MoE layer. It does not consume
+Step4-Pro-V1 `block_types`, shared-expert geometry, or the CSV attention totals.
+Consequently, the naive sizing result is not the authoritative model parameter
+count. Correcting that generic cross-family estimator is a separate generator
+refactor and is not hidden inside this model-support task.
+
+`generate` deliberately warns that it performs no memory validation or
+performance optimization. Successful artifact rendering at eight GPUs must not
+be read as a model-fit or latency claim. The same run explicitly warned that the
+model may not fit, selected an internal `TEP=8` strategy, and rendered a summary
+whose dense `TP=1, PP=1` fields are not a complete deployment-feasibility
+description.
 
 ## 10. Human-Update Register
 
@@ -337,6 +364,7 @@ aiconfigurator cli generate \
 | MTP | `num_nextn_predict_layers=3`; caller-controlled acceptance rates | Confirm Pro draft depth and acceptance policy | generation scale may change |
 | Maximum context/window | 1,048,576 maximum positions and 512 sliding window | Confirm deployment/checkpoint limits | capacity metadata may change |
 | Backend support | vLLM `0.22.0` used for formula-only tests | Add measured support evidence separately if needed | no silicon-support claim exists |
+| Naive generator sizing | generic 1,559,313,383,424-parameter approximation | Add a block-aware cross-family weight estimator in a separately approved generator task | generate fit/TP output is not authoritative for this model |
 | AFD | explicitly excluded | Add a separate `dense_swiglu` classifier task and both phase regressions | AFD remains unsupported |
 | Task-level `SOL_FULL` | direct queries only | Approve shared operation-wrapper result-contract refactor | full graph remains `SOL` only |
 

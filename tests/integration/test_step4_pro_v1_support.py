@@ -253,6 +253,8 @@ def test_step4_pro_v1_cli_generate_subprocess_uses_cached_identity(tmp_path):
     assert "Naive Configuration Generated Successfully" in completed.stdout
     assert f"Model:           {MODEL_ID}" in completed.stdout
     assert "Total GPUs:      8" in completed.stdout
+    assert "WARNING: This is a NAIVE configuration generated without" in completed.stdout
+    assert "memory validation or performance optimization. It may NOT" in completed.stdout
     assert "huggingface.co" not in (completed.stdout + completed.stderr).lower()
     generated_configs = list(tmp_path.rglob("generator_config.yaml"))
     assert len(generated_configs) == 1

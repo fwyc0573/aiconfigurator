@@ -131,20 +131,23 @@ class Step4Model(BaseModel):
         h = self._hidden_size
         tp = self.config.tp_size
         prefix = f"context_{label}_mla_approx"
+        downscale_output = cfg.q_lora_rank + cfg.kv_lora_rank + cfg.qk_rope_head_dim
+        q_b_output = self._num_heads * (cfg.qk_nope_head_dim + cfg.qk_rope_head_dim)
+        kv_b_output = self._num_heads * (cfg.qk_nope_head_dim + cfg.v_head_dim)
         return [
             ops.ElementWise(f"{prefix}_attn_norm", count, 2 * h, 2 * h, 0.8),
-            ops.GEMM(f"{prefix}_downscale_gemm", count, 2112, h, self.config.gemm_quant_mode),
+            ops.GEMM(f"{prefix}_downscale_gemm", count, downscale_output, h, self.config.gemm_quant_mode),
             ops.GEMM(
                 f"{prefix}_q_b_proj_gemm",
                 count,
-                24576 // tp,
+                q_b_output // tp,
                 cfg.q_lora_rank,
                 self.config.gemm_quant_mode,
             ),
             ops.GEMM(
                 f"{prefix}_kv_b_proj_gemm",
                 count,
-                32768 // tp,
+                kv_b_output // tp,
                 cfg.kv_lora_rank,
                 self.config.gemm_quant_mode,
             ),
@@ -172,6 +175,8 @@ class Step4Model(BaseModel):
         tp = self.config.tp_size
         scale = count * self._mtp_scale_factor
         prefix = f"generation_{label}_mla_approx"
+        downscale_output = cfg.q_lora_rank + cfg.kv_lora_rank + cfg.qk_rope_head_dim
+        q_b_output = self._num_heads * (cfg.qk_nope_head_dim + cfg.qk_rope_head_dim)
         bmm_quant_mode = (
             common.GEMMQuantMode.bfloat16
             if self.config.gemm_quant_mode == common.GEMMQuantMode.bfloat16
@@ -179,11 +184,11 @@ class Step4Model(BaseModel):
         )
         return [
             ops.ElementWise(f"{prefix}_attn_norm", scale, 2 * h, 2 * h, 0.8),
-            ops.GEMM(f"{prefix}_downscale_gemm", scale, 2112, h, self.config.gemm_quant_mode),
+            ops.GEMM(f"{prefix}_downscale_gemm", scale, downscale_output, h, self.config.gemm_quant_mode),
             ops.GEMM(
                 f"{prefix}_q_b_proj_gemm",
                 scale,
-                24576 // tp,
+                q_b_output // tp,
                 cfg.q_lora_rank,
                 self.config.gemm_quant_mode,
             ),

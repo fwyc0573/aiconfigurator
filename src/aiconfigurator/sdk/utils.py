@@ -798,6 +798,9 @@ def _parse_hf_config_json(config: dict) -> dict:
             "qk_nope_head_dim",
             "qk_rope_head_dim",
             "v_head_dim",
+            "moe_intermediate_size",
+            "n_routed_experts",
+            "num_experts_per_tok",
             "shared_expert_intermediate_size",
         )
         for field in required_fields:
@@ -816,13 +819,26 @@ def _parse_hf_config_json(config: dict) -> dict:
             "qk_nope_head_dim",
             "qk_rope_head_dim",
             "v_head_dim",
+            "num_hidden_layers",
+            "hidden_size",
+            "num_attention_heads",
+            "num_key_value_heads",
+            "vocab_size",
+            "max_position_embeddings",
             "intermediate_size",
+            "moe_intermediate_size",
+            "n_routed_experts",
+            "num_experts_per_tok",
             "shared_expert_intermediate_size",
         )
         for field in positive_fields:
             value = config.get(field)
             if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
                 raise ValueError(f"Step4 {field} must be a positive integer, got {value!r}")
+
+        topk = config["num_experts_per_tok"]
+        num_experts = config["n_routed_experts"]
+        moe_inter_size = config["moe_intermediate_size"]
 
         block_types = tuple(config["block_types"])
         if len(block_types) != layers:

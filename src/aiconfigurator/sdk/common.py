@@ -519,6 +519,7 @@ DefaultHFModels = {
     *DEEPSEEK_V4_HF_MODELS,
     # Step4
     "stepfun-ai/Step4",
+    "stepfun-ai/Step4-Pro-V1",
     # Qwen 3 Models
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",

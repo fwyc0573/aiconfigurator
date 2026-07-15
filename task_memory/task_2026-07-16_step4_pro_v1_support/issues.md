@@ -7,6 +7,7 @@
 | 2026-07-16 | Recorded the OMX Team clean-workspace gate and its commit-based resolution. |
 | 2026-07-16 | Reconciled Team decomposition, SOL_FULL, KV-cache, parser-validation, and AFD findings with root-cause resolutions. |
 | 2026-07-16 | Recorded StepCode Claude approval of the bounded SOL_FULL, parser, and AFD resolutions. |
+| 2026-07-16 | Recorded the resolved cached-config block-count defect and focused parser resolution evidence. |
 
 # Issues
 
@@ -61,11 +62,11 @@
 
 ## ISSUE-007: Step4 parsing silently substitutes or accepts malformed geometry
 
-- **Status:** Open for RED/GREEN root-cause correction in this task.
+- **Status:** Resolved in focused RED/GREEN tests; full unit regression remains pending.
 - **Symptom:** Missing/zero `moe_intermediate_size` can inherit dense `intermediate_size`; missing/zero/bool/float `num_experts_per_tok` and boolean core dimensions can pass weak validation.
 - **Root cause:** Step4-specific parsing reuses permissive generic numeric extraction and fallback behavior that was not exposed while only one cached Step4 configuration existed.
 - **Impact:** Malformed Step4-Pro-V1 configuration can build a plausible but incorrect operation graph instead of failing at the configuration boundary.
-- **Planned resolution:** Add a RED validation matrix, require explicit non-boolean positive integers, enforce topology/parallel invariants, and remove routed-MoE substitution. Preserve valid original Step4 behavior.
+- **Resolution:** Added `18` RED cases, required explicit non-boolean positive integers, and directly bound Step4 routed-MoE values after validation. The combined new/original model suites passed `75/75`; parallel-divisibility coverage continues in the graph phase.
 
 ## ISSUE-008: AFD cannot classify Step4 dense SwiGLU operations
 
@@ -74,3 +75,11 @@
 - **Root cause:** The AFD FFN classifier recognizes several activation markers but not `swiglu`, while Step4 emits a dedicated dense SwiGLU operation.
 - **Impact:** A generic claim of every CLI estimate mode would be false even before Step4-Pro-V1 is added.
 - **Resolution for this task:** Cover aggregate/disaggregate SOL and state the AFD boundary explicitly. If AFD becomes required, open a separate RED fix for classifier behavior and both context/generation regressions.
+
+## ISSUE-009: Initial cached config contained one extra SWA block
+
+- **Status:** Resolved by correcting the authoritative block-count contract; no workaround added.
+- **Symptom:** The first post-registration test run reported `Step4 block_types length 81 != num_hidden_layers 80` and failed `3/5` tests.
+- **Root cause:** Manual JSON construction contained `57` identical `moe_swa` entries instead of the authoritative `56`.
+- **Impact:** Offline resolution correctly failed fast rather than accepting an inconsistent operation graph.
+- **Resolution:** Removed the single duplicate entry, independently counted `dense_swa=4`, `moe_full=20`, `moe_swa=56`, and reran the same test file to `5/5 passed`.

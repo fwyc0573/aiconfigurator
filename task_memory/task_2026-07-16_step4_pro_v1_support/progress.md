@@ -7,6 +7,7 @@
 | 2026-07-16 | Recorded the initial OMX Team clean-workspace rejection and planned source-of-truth commit. |
 | 2026-07-16 | Recorded the completed parallel Team audits, report handoff/verification, lifecycle recovery, and clean shutdown. |
 | 2026-07-16 | Recorded the independent StepCode Claude APPROVE verdict and implementation authorization. |
+| 2026-07-16 | Recorded cached-config, fail-fast parser, and config-derived geometry RED/GREEN cycles with numeric evidence. |
 
 # Progress
 
@@ -14,8 +15,9 @@
 
 - Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; passing Step4 baseline; three-lane Team audit; report verification; clean Team shutdown.
 - Completed: Team-finding reconciliation and independent StepCode Claude plan review (`APPROVE`, no BLOCK).
-- In progress: strict RED test construction for cached identity/config, parser validation, and config-derived geometry.
-- Pending: GREEN implementation, graph/roofline/integration coverage, full verification, independent code review, test report, final archive, and Git-history cleanup.
+- Completed: cached identity/config, fail-fast Step4 parser validation, config-derived projection geometry, and original-Step4 focused regression.
+- In progress: Step4-Pro-V1 graph and SOL/SOL_FULL roofline RED/GREEN coverage.
+- Pending: integration/CLI, full verification, independent code review, test report, final archive, and Git-history cleanup.
 
 ## 2026-07-16 — Evidence and worktree setup
 
@@ -65,3 +67,24 @@
 - **Expectation:** The reviewer either approves the minimal scope, identifies WATCH mitigations, or returns a BLOCK for user adjudication.
 - **Method:** Ran `omx ask claude` with the original objective, authoritative numeric evidence, Team reports, revised plan, and six explicit decisions covering SOL_FULL, parser compatibility, AFD, production files, TDD sufficiency, and blockers.
 - **Result:** Verdict `APPROVE`; no BLOCK. Claude approved complete graph execution in SOL, direct SOL_FULL tuple assertions, fail-fast parser correction, and explicit AFD exclusion. It required one additional test contract: original Step4 formulas must explicitly equal `2112`, `24576`, and `32768`. Implementation is authorized to begin in strict plan order.
+
+## 2026-07-16 — Cached identity and authoritative config TDD
+
+- **Motivation:** Prove that the exact Step4-Pro-V1 ID resolves offline and that its cached topology/arithmetic comes from the authoritative CSV.
+- **Expectation:** Tests fail only because registration/config are absent, then pass after the minimal cached identity is added.
+- **Method:** Added five unit tests before production changes; the first RED run selected four new behavior tests and observed `4 failed / 1 deselected` in `0.27 s`. Added the model ID and config. The first GREEN attempt exposed `81` blocks (`4 dense + 20 Full + 57 SWA`) rather than `80`; removed the single duplicated SWA entry and reran.
+- **Result:** Final focused result `5/5 passed` in `0.03 s`. Exact topology is `4 + 20 + 56 = 80`; all dense/MoE/attention/RMS/embedding/activation integer totals close.
+
+## 2026-07-16 — Step4 fail-fast parser TDD
+
+- **Motivation:** Remove silent routed-MoE substitution and Python bool/float coercion at the Step4 config boundary.
+- **Expectation:** Every malformed routed-MoE/core integer case fails with a field-specific error while both valid Step4 configs remain accepted.
+- **Method:** Added `18` missing/zero/bool/float RED cases before parser edits. All `18/18` failed in `0.39 s`, either through silent acceptance or the wrong downstream error. Added Step4-specific required/positive checks and direct reads of `num_experts_per_tok`, `n_routed_experts`, and `moe_intermediate_size`.
+- **Result:** Combined Step4-Pro-V1 and original Step4 model suites passed `75/75` in `0.12 s`; no generic fallback remains on Step4 routed-MoE fields.
+
+## 2026-07-16 — Config-derived projection geometry TDD
+
+- **Motivation:** Remove three hidden single-model assumptions before constructing Step4-Pro-V1 through the shared Step4 graph.
+- **Expectation:** A valid synthetic geometry must produce `1312`, `8192`, and `10240` global projection widths instead of original-Step4 literals.
+- **Method:** Added a synthetic TP=4 registry/model test before editing `step4.py`. RED failed at actual downscale width `2112` versus expected `1312` (`1 failed / 23 deselected`, `0.18 s`). Replaced only the three derived literals with formulas from model/config fields.
+- **Result:** Step4-Pro-V1 plus original Step4 suites passed `76/76` in `0.11 s`; the original formulas are explicitly asserted as `2112`, `24576`, and `32768`. The first `ruff format --check` correctly identified the new test's manual line wrapping; after applying the project formatter, the same `76/76` tests passed in `0.14 s`, Ruff check/format passed, and `git diff --check` was clean.

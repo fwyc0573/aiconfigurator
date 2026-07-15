@@ -7,6 +7,7 @@
 | 2026-07-16 | Recorded the independent Team audit, report verification, and implementation-boundary checkpoint. |
 | 2026-07-16 | Recorded the StepCode Claude APPROVE verdict, WATCH risks, and implementation authorization. |
 | 2026-07-16 | Recorded the graph/roofline implementation checkpoint and affected-regression evidence. |
+| 2026-07-16 | Recorded the integration, CLI, and provenance-documentation checkpoint. |
 
 # Review Log
 
@@ -69,3 +70,13 @@
 | Inspected Artifacts | `tests/unit/sdk/models/test_step4_pro_v1.py`; `tests/unit/sdk/database/test_step4_pro_v1_roofline.py`; `tests/unit/sdk/database/test_base_queries.py`; `src/aiconfigurator/sdk/operations/communication.py`; original Step4 model/roofline/collective tests; fresh pytest and Ruff output |
 | Identified Issues/Anomalies | `CustomAllReduce(SOL_FULL)` returned `(selected, 0, 0)` despite bandwidth-derived transfer time; the first structural-test run used a non-exported `models.ops` symbol; four new test lines exceeded the 120-character format limit. |
 | Remediation/Verification Code Actions Taken | Added the CustomAllReduce memory-roofline RED assertions and minimal `(selected, 0, selected)` root-cause fix; imported the public operations module directly in tests; applied the project formatter to one test file; verified `192/192` affected tests plus targeted Ruff check/format and `git diff --check`, all with exit code 0. |
+
+## Checkpoint 7: Offline SDK/CLI integration and modeling provenance
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Aggregate/disaggregate public SDK execution, real CLI subprocesses, and human-update documentation |
+| Reviewer Agent Identity | Primary Codex leader executing the approved integration plan; independent final code-review lane still pending |
+| Inspected Artifacts | `tests/integration/test_step4_pro_v1_support.py`; `tests/integration/test_step4_prefill_ranking.py`; `docs/step4_pro_v1_modeling.md`; Task single-point APIs; CLI estimate/generate parsers and output; fresh pytest/Ruff/doc-marker output |
+| Identified Issues/Anomalies | Aggregate evidence contains both `mix_step` and `genonly_step`; `mix_step` explicitly marks generation attention as `not_executed`; naive eight-GPU CLI generate success does not prove fit because the command performs no memory validation. |
+| Remediation/Verification Code Actions Taken | Corrected test-only phase/source assumptions without production changes; prohibited network and operation profile loaders; required all executed sources to equal `sol`; documented the generate warning and all human-update items; verified `4/4` integration tests, `66/66` focused/original integration regression, Ruff/format/diff, and 11 required documentation markers. |

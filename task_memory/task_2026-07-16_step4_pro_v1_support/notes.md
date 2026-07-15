@@ -6,6 +6,7 @@
 | 2026-07-16 | Corrected the test environment to the verified `aic-step-design` conda environment after `.venv` reproduction failed. |
 | 2026-07-16 | Added Team shutdown state, report provenance, SOL_FULL/KV/parser/AFD execution reminders, and the preserved test-temp stash. |
 | 2026-07-16 | Recorded the StepCode Claude APPROVE artifact and its explicit original-Step4 formula regression requirement. |
+| 2026-07-16 | Added integration parallelism, per-op source semantics, and CLI generate interpretation reminders. |
 
 # Operational Notes
 
@@ -52,3 +53,11 @@
 - Before modifying `src/aiconfigurator/generator/**`, read `.claude/rules/generator-development.md`. No generator edit is currently planned.
 - Independent plan review artifact: `.omx/artifacts/claude-you-are-the-independent-stepcode-claude-reviewer-for-an-impo-2026-07-15T18-18-40-171Z.md`; verdict `APPROVE`, no BLOCK, implementation authorized.
 - Preserve exact original-Step4 derived widths as explicit assertions: `2112`, `24576`, and `32768`; a passing broad regression alone is not sufficient evidence for this shared-path change.
+
+## Integration and CLI Reminders
+
+- Representative Step4-Pro-V1 formula execution uses `TP=8`, `PP=2`, attention-DP `1`, MoE-TP `8`, and EP `1`; the resulting 16-GPU worker shape is test evidence, not an optimized recommendation.
+- Aggregate `per_ops_source` contains both `mix_step` and `genonly_step`. For OSL greater than one, `mix_step` may explicitly record `generation_attention (not executed)` with zero latency and source `not_executed`; all actually executed operations must remain `source="sol"`.
+- Disaggregate source evidence is separated into `prefill` and `decode`, and every executed entry must be `sol`.
+- CLI `generate --total-gpus 8` is a naive artifact-rendering smoke. The command itself warns that it performs no memory validation or performance optimization, so success must not be reported as eight-GPU feasibility for the 1.490676-trillion-parameter model.
+- CLI `estimate` coverage uses `database_mode=SOL`; the global CLI intentionally excludes `SOL_FULL` from its choices.

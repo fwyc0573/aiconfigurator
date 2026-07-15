@@ -10,6 +10,7 @@
 | 2026-07-16 | Recorded the resolved cached-config block-count defect and focused parser resolution evidence. |
 | 2026-07-16 | Recorded and resolved silent Step4 parallel-geometry truncation. |
 | 2026-07-16 | Recorded and resolved the CustomAllReduce SOL_FULL memory-roofline contract defect. |
+| 2026-07-16 | Documented the naive CLI generate feasibility boundary for the eight-GPU smoke command. |
 
 # Issues
 
@@ -101,3 +102,11 @@
 - **Root cause:** `CustomAllReduce.get_sol()` computes ring-transfer bytes divided by P2P bandwidth, but returned the result only as the selected value. Unlike the adjacent `NCCL` and `P2P` implementations, it incorrectly reported a zero communication-memory component.
 - **Impact:** The shared `SOL_FULL` tuple violated the roofline invariant and prevented a uniform audit across Step4-Pro-V1 operation families; the old base-query test had frozen the incorrect tuple.
 - **Resolution:** Changed the existing test first to require `sol_mem == expected_sol_time` and `sol_time == max(sol_math, sol_mem)`, observed `2/2` RED failures, then returned `(sol_time_ms, 0, sol_time_ms)` from the formula. Targeted GREEN passed `2/2`, and the final six-suite affected regression passed `192/192`.
+
+## ISSUE-012: Naive CLI generate success is not eight-GPU feasibility evidence
+
+- **Status:** Documented product boundary; not a defect in the requested support scope.
+- **Symptom:** `aiconfigurator cli generate --model-path stepfun-ai/Step4-Pro-V1 --total-gpus 8 --system h200_sxm` can render artifacts for a 1,490,676,214,656-parameter model even though the generated command is not a measured or formula-validated deployment point.
+- **Root cause:** `generate` intentionally creates a naive configuration without a parameter sweep and prints an explicit warning that it performs no memory validation or performance optimization.
+- **Impact:** Treating subprocess success as fit/performance evidence would overstate support and could suggest an infeasible deployment.
+- **Resolution for this task:** Assert only cached identity resolution, successful artifact rendering, and the exact CLI summary. Use aggregate/disaggregate `SOL` with the tested `TP=8, PP=2, MoE-TP=8` shape for performance-model integration evidence. Preserve the CLI warning in user documentation.

@@ -10,6 +10,7 @@
 | 2026-07-16 | Recorded cached-config, fail-fast parser, and config-derived geometry RED/GREEN cycles with numeric evidence. |
 | 2026-07-16 | Recorded parallel-geometry truncation root cause, six-case RED/GREEN evidence, and focused regression results. |
 | 2026-07-16 | Recorded formula-only graph coverage, the CustomAllReduce roofline correction, and the 192-test affected regression. |
+| 2026-07-16 | Recorded offline aggregate/disaggregate integration, CLI subprocess coverage, modeling documentation, and focused regression. |
 
 # Progress
 
@@ -18,8 +19,9 @@
 - Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; passing Step4 baseline; three-lane Team audit; report verification; clean Team shutdown.
 - Completed: Team-finding reconciliation and independent StepCode Claude plan review (`APPROVE`, no BLOCK).
 - Completed: cached identity/config, fail-fast Step4 parser validation, config-derived projection geometry, parallel-divisibility validation, and original-Step4 focused regression.
-- In progress: Step4-Pro-V1 graph and SOL/SOL_FULL roofline RED/GREEN coverage.
-- Pending: integration/CLI, full verification, independent code review, test report, final archive, and Git-history cleanup.
+- Completed: Step4-Pro-V1 structural graph, direct SOL/SOL_FULL roofline audit, offline aggregate/disaggregate integration, CLI subprocess coverage, and provenance documentation.
+- In progress: numeric evidence capture and full regression.
+- Pending: independent code review, test report, final archive, and Git-history cleanup.
 
 ## 2026-07-16 — Evidence and worktree setup
 
@@ -111,3 +113,10 @@
 - **Expectation:** New structural assertions pass for Step4-Pro-V1 without changing original Step4 behavior, and every modified path remains formatted and lint-clean.
 - **Method:** Added recursive graph indexing and structural assertions. The first combined run collected `113` tests and reported `5 failed / 108 passed` in `7.71 s`; all failures were the same test-only `AttributeError` because `aiconfigurator.sdk.models` does not export `ops`. Imported `aiconfigurator.sdk.operations as ops`, reran to `113/113 passed` in `7.50 s`, then expanded to all six affected suites. The first Ruff pass identified four `E501` lines and one file requiring formatting; applied only the project formatter to that test file and reran tests/static checks.
 - **Result:** Final affected regression passed `192/192` in `18.67 s`. Targeted `ruff check`, `ruff format --check`, and `git diff --check` all exited `0`. The test-only import and formatting corrections did not alter production behavior.
+
+## 2026-07-16 — Offline SDK/CLI integration and provenance documentation
+
+- **Motivation:** Prove that the cached identity works through complete aggregate/disaggregate public SDK paths and real CLI processes without network, LFS, or profile-loader dependence, while making every approximation visible to users.
+- **Expectation:** Both SDK modes return finite positive TTFT/TPOT with executed per-op `source="sol"`; offline CLI `estimate` and the requested eight-GPU CLI `generate` resolve the exact model ID; one modeling document separates CSV-backed, derived, and Step4-borrowed values.
+- **Method:** Added four integration tests. Network helpers and eight operation profile loaders are monkeypatched to fail for SDK runs; CLI subprocesses set HuggingFace/Transformers offline variables. The first run was `1 failed / 3 passed` in `3.43 s` because the aggregate assertion omitted the public `genonly_step` evidence. After adding it, the next run exposed the intentional zero-latency `generation_attention (not executed)` marker in `mix_step`; updated the assertion to allow only that explicit `not_executed` contract and require every executed source to equal `sol`. Added `docs/step4_pro_v1_modeling.md` with the complete human-update register.
+- **Result:** Integration passed `4/4` in `3.23 s`; Pro model/roofline plus new and original Step4 integration passed `66/66` in `10.80 s`. Ruff check/format and `git diff --check` passed. Documentation validation found all `11/11` required provenance/boundary markers in a `16,889`-byte document. No integration RED required a production change.

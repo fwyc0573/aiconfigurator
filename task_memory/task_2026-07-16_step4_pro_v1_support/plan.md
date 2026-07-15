@@ -5,6 +5,7 @@
 | 2026-07-16 | Created the initial TDD implementation and verification plan for Step4-Pro-V1 support. |
 | 2026-07-16 | Reconciled the completed Team audits, narrowed SOL_FULL and AFD claims, and added fail-fast validation and KV-provenance gates. |
 | 2026-07-16 | Applied the independent StepCode Claude APPROVE verdict and added explicit original-Step4 formula-equivalence assertions. |
+| 2026-07-16 | Marked configuration, graph, roofline, integration, CLI, and provenance-documentation tasks complete after focused verification. |
 
 # Step4-Pro-V1 AIC Support Implementation Plan
 
@@ -40,13 +41,13 @@
 
 **Produces:** A cached local model identity `stepfun-ai/Step4-Pro-V1` that resolves through the existing Step4 family and exposes the exact CSV values.
 
-- [ ] Write tests asserting local cached resolution without network access.
-- [ ] Assert every CSV-provided architecture value and exact `4 dense + 20 full-MoE + 56 SWA-MoE = 80` block composition.
-- [ ] Assert derived counts (`76` MoE layers) and CSV FFN/MoE arithmetic.
-- [ ] Add RED assertions that required integer fields are present, non-boolean, integral, positive, and satisfy `top-k <= routed experts`.
-- [ ] Run the new test and observe expected failure because the config/model ID does not exist.
-- [ ] Add the minimal cached configuration and registry/default-model entry needed to pass.
-- [ ] Run focused tests and existing Step4 model tests.
+- [x] Write tests asserting local cached resolution without network access.
+- [x] Assert every CSV-provided architecture value and exact `4 dense + 20 full-MoE + 56 SWA-MoE = 80` block composition.
+- [x] Assert derived counts (`76` MoE layers) and CSV FFN/MoE arithmetic.
+- [x] Add RED assertions that required integer fields are present, non-boolean, integral, positive, and satisfy `top-k <= routed experts`.
+- [x] Run the new test and observe expected failure because the config/model ID does not exist.
+- [x] Add the minimal cached configuration and registry/default-model entry needed to pass.
+- [x] Run focused tests and existing Step4 model tests.
 
 ### Task 2: Make validation fail fast and shared temporary-MLA geometry config-derived
 
@@ -57,14 +58,14 @@
 
 **Produces:** Both Step4 and Step4-Pro-V1 obtain temporary MLA projection shapes from validated config fields rather than Step4-specific numeric literals.
 
-- [ ] Write tests for exact context/generation projection tensor shapes on both models.
-- [ ] Assert the original Step4 config formulas explicitly remain `1536 + 512 + 64 = 2112`, `128 * (128 + 64) = 24576`, and `128 * (128 + 128) = 32768`.
-- [ ] Add an error-path test for inconsistent geometry.
-- [ ] Observe RED for missing/zero `moe_intermediate_size`, missing/zero/bool/float `num_experts_per_tok`, boolean core dimensions, invalid topology, and non-divisible parallel geometry.
-- [ ] Remove Step4-specific routed-MoE substitution/weak coercion at the parser boundary; do not add compatibility fallback.
-- [ ] Observe RED against current hard-coded dimensions where the test differentiates config-derived behavior.
-- [ ] Replace only the hard-coded derived dimensions with formulas based on existing validated fields.
-- [ ] Re-run both model test suites and verify original Step4 behavior is numerically unchanged.
+- [x] Write tests for exact context/generation projection tensor shapes on both models.
+- [x] Assert the original Step4 config formulas explicitly remain `1536 + 512 + 64 = 2112`, `128 * (128 + 64) = 24576`, and `128 * (128 + 128) = 32768`.
+- [x] Add an error-path test for inconsistent geometry.
+- [x] Observe RED for missing/zero `moe_intermediate_size`, missing/zero/bool/float `num_experts_per_tok`, boolean core dimensions, invalid topology, and non-divisible parallel geometry.
+- [x] Remove Step4-specific routed-MoE substitution/weak coercion at the parser boundary; do not add compatibility fallback.
+- [x] Observe RED against current hard-coded dimensions where the test differentiates config-derived behavior.
+- [x] Replace only the hard-coded derived dimensions with formulas based on existing validated fields.
+- [x] Re-run both model test suites and verify original Step4 behavior is numerically unchanged.
 
 ### Task 3: Validate the complete Step4-Pro-V1 operation graph
 
@@ -75,15 +76,15 @@
 
 **Produces:** Structural and numeric evidence for every context/generation op category and all important branches.
 
-- [ ] Assert operation names, scale factors, counts, tensor dimensions, quant modes, collectives, MoE dispatch, routed/shared overlap, merge, logits, embedding, and P2P.
-- [ ] Assert exact Full/SWA audit counts (`20/60`), dense/MoE counts (`4/76`), expert values (`512/8/2048/2048`), and H/vocab dimensions (`6144/128896`).
-- [ ] Recursively query every op in SOL at representative prefill/decode points.
-- [ ] Query the underlying `PerfDatabase` SOL_FULL methods directly and assert `(selected, math, memory)` with `selected == max(math, memory)`; do not pass SOL_FULL tuples through operation wrappers.
-- [ ] Monkeypatch every perf-data loader to fail if called.
-- [ ] Require all non-zero results to report `source == "sol"`; permit only explicitly proven zero-latency no-ops.
-- [ ] Add boundary/error cases for TP/EP width mismatch, expert count, unsupported backend, invalid database mode, empty/invalid block composition, and `nextn=0/3` generation scaling.
+- [x] Assert operation names, scale factors, counts, tensor dimensions, quant modes, collectives, MoE dispatch, routed/shared overlap, merge, logits, embedding, and P2P.
+- [x] Assert exact Full/SWA audit counts (`20/60`), dense/MoE counts (`4/76`), expert values (`512/8/2048/2048`), and H/vocab dimensions (`6144/128896`).
+- [x] Recursively query every op in SOL at representative prefill/decode points.
+- [x] Query the underlying `PerfDatabase` SOL_FULL methods directly and assert `(selected, math, memory)` with `selected == max(math, memory)`; do not pass SOL_FULL tuples through operation wrappers.
+- [x] Monkeypatch every perf-data loader to fail if called.
+- [x] Require all non-zero results to report `source == "sol"`; permit only explicitly proven zero-latency no-ops.
+- [x] Add boundary/error cases for TP/EP width mismatch, expert count, unsupported backend, invalid database mode, empty/invalid block composition, and `nextn=0/3` generation scaling.
 - [ ] Record SOL per-op latency/source plus direct SOL_FULL math roofline, memory roofline, and selected maximum for numeric audit.
-- [ ] Preserve a regression that documents the current Task-level SOL_FULL tuple/`PerformanceResult` incompatibility; do not refactor the shared operation-query contract without separate approval.
+- [x] Preserve a regression that documents the current Task-level SOL_FULL tuple/`PerformanceResult` incompatibility; do not refactor the shared operation-query contract without separate approval.
 
 ### Task 4: Exercise SDK/CLI integration and document provenance
 
@@ -95,14 +96,14 @@
 
 **Produces:** A complete user-facing support path and a visible human-update register.
 
-- [ ] Write an integration test that constructs and runs a representative vLLM aggregate or disaggregate SOL task using the cached model identity.
-- [ ] Observe RED before the complete integration contract is available.
-- [ ] Implement only missing integration wiring exposed by RED.
-- [ ] Document every CSV value, every Step4-borrowed value, every derived value, and every temporary approximation with source and impact.
-- [ ] Include the exact attention mismatch numbers and prohibit interpreting the approximation as measured performance.
-- [ ] Include the CSV KV-cache target `10.7 GB`, temporary MLA estimate `48.31838208 GB`, absolute gap `37.61838208 GB`, and ratio `4.515736642991x`; prohibit scaling-factor calibration.
-- [ ] State explicitly that aggregate/disaggregate SOL are covered while AFD and support-matrix silicon claims are not.
-- [ ] Run a CLI smoke command that requires no LFS data.
+- [x] Write integration tests that construct and run representative vLLM aggregate and disaggregate SOL tasks using the cached model identity.
+- [x] Observe RED before the complete integration contract is available.
+- [x] Implement only missing integration wiring exposed by RED; no production wiring change was needed, and the RED failures corrected test assumptions about `mix_step`/`genonly_step` evidence.
+- [x] Document every CSV value, every Step4-borrowed value, every derived value, and every temporary approximation with source and impact.
+- [x] Include the exact attention mismatch numbers and prohibit interpreting the approximation as measured performance.
+- [x] Include the CSV KV-cache target `10.7 GB`, temporary MLA estimate `48.31838208 GB`, absolute gap `37.61838208 GB`, and ratio `4.515736642991x`; prohibit scaling-factor calibration.
+- [x] State explicitly that aggregate/disaggregate SOL are covered while AFD and support-matrix silicon claims are not.
+- [x] Run offline CLI `estimate` and requested CLI `generate` subprocess smoke tests that require no LFS data.
 
 ### Task 5: Regression, independent review, and completion archive
 

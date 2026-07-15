@@ -244,7 +244,7 @@ def test_query_custom_allreduce_database_mode_calculation(stub_perf_db):
 def test_query_custom_allreduce_sol_full_returns_full_tuple(stub_perf_db):
     """
     When database_mode == SOL_FULL, query_custom_allreduce returns (sol_time, sol_math, sol_mem).
-    The sol_time value should match the calculated SOL time.
+    Ring transfer time is the communication-memory roofline, so selected == max(math, memory).
     """
     size = 1024
     tp_size = 2
@@ -260,7 +260,8 @@ def test_query_custom_allreduce_sol_full_returns_full_tuple(stub_perf_db):
 
     assert math.isclose(sol_time, expected_sol_time)
     assert math.isclose(sol_math, 0.0)
-    assert math.isclose(sol_mem, 0.0)
+    assert math.isclose(sol_mem, expected_sol_time)
+    assert math.isclose(sol_time, max(sol_math, sol_mem))
 
 
 def test_query_custom_allreduce_non_database_mode_uses_custom_latency(stub_perf_db):

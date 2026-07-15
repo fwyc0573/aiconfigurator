@@ -133,7 +133,8 @@ class CustomAllReduce(Operation):
             # assume all are ring allreduce, ignore constant latency
             # (~1us for hopper, ~2us for two-die blackwell). assume bfloat16.
             sol_time = 2 * size * 2 / tp_size * (tp_size - 1) / p2p_bw
-            return sol_time * 1000, 0, 0
+            sol_time_ms = sol_time * 1000
+            return sol_time_ms, 0, sol_time_ms
 
         def get_empirical(quant_mode: common.CommQuantMode, tp_size: int, size: int) -> float:
             # Data-calibrated: util = SOL/measured read from the collected

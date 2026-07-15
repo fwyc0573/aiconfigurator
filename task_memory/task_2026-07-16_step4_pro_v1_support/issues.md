@@ -9,6 +9,7 @@
 | 2026-07-16 | Recorded StepCode Claude approval of the bounded SOL_FULL, parser, and AFD resolutions. |
 | 2026-07-16 | Recorded the resolved cached-config block-count defect and focused parser resolution evidence. |
 | 2026-07-16 | Recorded and resolved silent Step4 parallel-geometry truncation. |
+| 2026-07-16 | Recorded and resolved the CustomAllReduce SOL_FULL memory-roofline contract defect. |
 
 # Issues
 
@@ -92,3 +93,11 @@
 - **Root cause:** `Step4Model` creates sharded operation dimensions without validating the exact divisibility assumptions of its TP/EP formulas; the shared `BaseModel` checks only attention heads and uses an optimization-removable assertion.
 - **Impact:** Invalid topology can yield a plausible but numerically incomplete graph, and `python -O` can remove the one existing head check.
 - **Resolution:** Added six Step4-specific construction checks in `Step4Model.create()` and field-specific `ValueError` messages. The RED run was `6/6` failed for the expected missing behavior; GREEN was `6/6` passed, and combined new/original Step4 model regression passed `82/82`.
+
+## ISSUE-011: CustomAllReduce SOL_FULL omitted its communication-memory roofline
+
+- **Status:** Resolved by correcting the shared formula contract and its existing unit test.
+- **Symptom:** The direct Step4-Pro-V1 roofline audit returned `(0.44040192, 0, 0)` for `query_custom_allreduce(SOL_FULL)`, so `selected != max(math, memory)` even though the selected time was non-zero.
+- **Root cause:** `CustomAllReduce.get_sol()` computes ring-transfer bytes divided by P2P bandwidth, but returned the result only as the selected value. Unlike the adjacent `NCCL` and `P2P` implementations, it incorrectly reported a zero communication-memory component.
+- **Impact:** The shared `SOL_FULL` tuple violated the roofline invariant and prevented a uniform audit across Step4-Pro-V1 operation families; the old base-query test had frozen the incorrect tuple.
+- **Resolution:** Changed the existing test first to require `sol_mem == expected_sol_time` and `sol_time == max(sol_math, sol_mem)`, observed `2/2` RED failures, then returned `(sol_time_ms, 0, sol_time_ms)` from the formula. Targeted GREEN passed `2/2`, and the final six-suite affected regression passed `192/192`.

@@ -9,7 +9,9 @@ from copy import deepcopy
 
 import pytest
 
+import aiconfigurator.sdk.operations as ops
 from aiconfigurator.sdk import common, config, models, utils
+from aiconfigurator.sdk.models.helpers import calc_expectation
 from aiconfigurator.sdk.models.step4 import Step4Model
 
 pytestmark = pytest.mark.unit
@@ -33,9 +35,38 @@ def _step4_pro_raw_config() -> dict:
     return deepcopy(utils._load_pre_downloaded_hf_config(MODEL_ID))
 
 
+def _walk_operations(operation_list):
+    """Yield top-level operations and nested overlap-group operations."""
+    for operation in operation_list:
+        yield operation
+        if isinstance(operation, ops.OverlapOp):
+            yield from _walk_operations(operation._group_a)
+            yield from _walk_operations(operation._group_b)
+
+
 def _operations_by_name(operation_list) -> dict[str, object]:
-    """Index top-level operations by their unique names."""
-    return {operation._name: operation for operation in operation_list}
+    """Index a graph recursively and reject duplicate operation names."""
+    indexed = {}
+    for operation in _walk_operations(operation_list):
+        assert operation._name not in indexed, f"duplicate operation name: {operation._name}"
+        indexed[operation._name] = operation
+    return indexed
+
+
+def _build_cached_step4_pro_model(*, tp_size: int = 1, moe_tp_size: int = 1, moe_ep_size: int = 1, nextn: int = 0):
+    """Build the package-local Step4-Pro-V1 through the public registry."""
+    model_config = config.ModelConfig(
+        tp_size=tp_size,
+        pp_size=1,
+        attention_dp_size=1,
+        moe_tp_size=moe_tp_size,
+        moe_ep_size=moe_ep_size,
+        nextn=nextn,
+        nextn_accept_rates=[0.85, 0.3, 0.0, 0.0, 0.0],
+    )
+    model = models.get_model(MODEL_ID, model_config, backend_name="vllm")
+    assert isinstance(model, Step4Model)
+    return model
 
 
 def _build_synthetic_step4_model(
@@ -202,6 +233,151 @@ def test_step4_projection_shapes_are_derived_from_synthetic_geometry(monkeypatch
         assert generation[f"{generation_prefix}_q_b_proj_gemm"]._n == 2048
         assert generation[f"{generation_prefix}_bmm_pre"]._num_heads == 16
         assert generation[f"{generation_prefix}_proj_gemm"]._k == 1024
+
+
+def test_step4_pro_v1_graph_consumes_the_csv_operation_composition():
+    """Graph scale factors must encode 4 dense, 20 Full, 60 SWA, and 76 MoE layers."""
+    model = _build_cached_step4_pro_model()
+    context = _operations_by_name(model.context_ops)
+    generation = _operations_by_name(model.generation_ops)
+
+    assert model._layer_counts() == (4, 20, 60)
+    assert context["context_full_mla_approx_attention"]._scale_factor == 20
+    assert context["context_swa_mla_approx_attention"]._scale_factor == 60
+    assert generation["generation_full_mla_approx_attention"]._scale_factor == 20
+    assert generation["generation_swa_mla_approx_attention"]._scale_factor == 60
+
+    for name in (
+        "context_dense_ffn_norm",
+        "context_dense_gate_up_gemm",
+        "context_dense_swiglu",
+        "context_dense_down_gemm",
+        "context_dense_ffn_ar",
+    ):
+        assert context[name]._scale_factor == 4
+    for name in (
+        "context_moe_ffn_norm",
+        "context_moe_router_gemm",
+        "context_moe_pre_dispatch",
+        "context_moe",
+        "context_moe_post_dispatch",
+        "context_shared_gate_up_gemm",
+        "context_shared_swiglu",
+        "context_shared_down_gemm",
+        "context_shared_ffn_ar",
+        "context_moe_shared_merge",
+    ):
+        assert context[name]._scale_factor == 76
+
+
+def test_step4_pro_v1_graph_uses_exact_projection_ffn_and_moe_geometry():
+    """Every major graph family must consume the audited Pro dimensions and quant modes."""
+    model = _build_cached_step4_pro_model()
+    context = _operations_by_name(model.context_ops)
+
+    assert model.config.gemm_quant_mode == common.GEMMQuantMode.fp8
+    assert model.config.moe_quant_mode == common.MoEQuantMode.fp8
+    assert model.config.kvcache_quant_mode == common.KVCacheQuantMode.fp8
+    assert model.config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+
+    assert (
+        context["context_full_mla_approx_downscale_gemm"]._n,
+        context["context_full_mla_approx_downscale_gemm"]._k,
+    ) == (
+        2112,
+        6144,
+    )
+    assert (
+        context["context_full_mla_approx_q_b_proj_gemm"]._n,
+        context["context_full_mla_approx_q_b_proj_gemm"]._k,
+    ) == (
+        24576,
+        1536,
+    )
+    assert (
+        context["context_full_mla_approx_kv_b_proj_gemm"]._n,
+        context["context_full_mla_approx_kv_b_proj_gemm"]._k,
+    ) == (
+        32768,
+        512,
+    )
+    assert context["context_full_mla_approx_attention"]._num_heads == 128
+    assert (context["context_full_mla_approx_proj_gemm"]._n, context["context_full_mla_approx_proj_gemm"]._k) == (
+        6144,
+        16384,
+    )
+
+    assert (context["context_dense_gate_up_gemm"]._n, context["context_dense_gate_up_gemm"]._k) == (32768, 6144)
+    assert (context["context_dense_swiglu"]._dim_in, context["context_dense_swiglu"]._dim_out) == (32768, 16384)
+    assert (context["context_dense_down_gemm"]._n, context["context_dense_down_gemm"]._k) == (6144, 16384)
+
+    assert (context["context_moe_router_gemm"]._n, context["context_moe_router_gemm"]._k) == (512, 6144)
+    routed = context["context_moe"]
+    assert (routed._hidden_size, routed._inter_size, routed._topk, routed._num_experts) == (6144, 2048, 8, 512)
+    assert (context["context_shared_gate_up_gemm"]._n, context["context_shared_gate_up_gemm"]._k) == (4096, 6144)
+    assert (context["context_shared_swiglu"]._dim_in, context["context_shared_swiglu"]._dim_out) == (4096, 2048)
+    assert (context["context_shared_down_gemm"]._n, context["context_shared_down_gemm"]._k) == (6144, 2048)
+    assert (context["context_moe_shared_merge"]._dim_in, context["context_moe_shared_merge"]._dim_out) == (
+        12288,
+        6144,
+    )
+    assert (context["context_logits_gemm"]._n, context["context_logits_gemm"]._k) == (128896, 6144)
+
+
+def test_step4_pro_v1_generation_overlaps_routed_and_shared_moe_paths():
+    """Decode must overlap the routed and shared paths without hiding either branch."""
+    model = _build_cached_step4_pro_model()
+    generation = _operations_by_name(model.generation_ops)
+    overlap = generation["generation_moe_overlap"]
+
+    assert isinstance(overlap, ops.OverlapOp)
+    assert [operation._name for operation in overlap._group_a] == [
+        "generation_moe_router_gemm",
+        "generation_moe_pre_dispatch",
+        "generation_moe",
+        "generation_moe_post_dispatch",
+    ]
+    assert [operation._name for operation in overlap._group_b] == [
+        "generation_shared_gate_up_gemm",
+        "generation_shared_swiglu",
+        "generation_shared_down_gemm",
+        "generation_shared_ffn_ar",
+    ]
+    assert generation["generation_moe_pre_dispatch"]._reduce_results is False
+    assert generation["generation_moe"]._is_context is False
+    assert generation["generation_moe_post_dispatch"]._is_context is False
+
+
+def test_step4_pro_v1_kv_and_mtp_scaling_contracts_are_explicit():
+    """Temporary MLA KV size and nextn=3 scaling must remain numerically inspectable."""
+    baseline = _build_cached_step4_pro_model(nextn=0)
+    mtp = _build_cached_step4_pro_model(nextn=3)
+    expected_scale = 1.0 / (1.0 + calc_expectation(3, [0.85, 0.3, 0.0, 0.0, 0.0])) * (80 + 3) / 80
+
+    assert baseline.activation_hidden_size == 6144
+    assert baseline.get_kvcache_elements_per_token() == 80 * (512 + 64) == 46080
+    assert baseline._mtp_scale_factor == 1.0
+    assert mtp._mtp_scale_factor == pytest.approx(expected_scale)
+
+    baseline_context = {
+        operation._name: operation._scale_factor for operation in _walk_operations(baseline.context_ops)
+    }
+    mtp_context = {operation._name: operation._scale_factor for operation in _walk_operations(mtp.context_ops)}
+    assert mtp_context == baseline_context
+
+    baseline_generation = {
+        operation._name: operation._scale_factor
+        for operation in _walk_operations(baseline.generation_ops)
+        if not isinstance(operation, ops.OverlapOp)
+    }
+    mtp_generation = {
+        operation._name: operation._scale_factor
+        for operation in _walk_operations(mtp.generation_ops)
+        if not isinstance(operation, ops.OverlapOp)
+    }
+    assert mtp_generation.keys() == baseline_generation.keys()
+    for name, scale_factor in baseline_generation.items():
+        assert mtp_generation[name] == pytest.approx(scale_factor * expected_scale), name
 
 
 @pytest.mark.parametrize(

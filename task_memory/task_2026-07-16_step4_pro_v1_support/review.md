@@ -6,6 +6,7 @@
 | 2026-07-16 | Recorded the baseline and Team preflight checkpoint. |
 | 2026-07-16 | Recorded the independent Team audit, report verification, and implementation-boundary checkpoint. |
 | 2026-07-16 | Recorded the StepCode Claude APPROVE verdict, WATCH risks, and implementation authorization. |
+| 2026-07-16 | Recorded the graph/roofline implementation checkpoint and affected-regression evidence. |
 
 # Review Log
 
@@ -58,3 +59,13 @@
 | Inspected Artifacts | Original objective; `requirements.md`; revised `plan.md`; `issues.md`; all three Team reports; Step4 config/parser/model/tests; authoritative arithmetic; `.omx/artifacts/claude-you-are-the-independent-stepcode-claude-reviewer-for-an-impo-2026-07-15T18-18-40-171Z.md` |
 | Identified Issues/Anomalies | No BLOCK. WATCH: future variants may be rejected by over-broad parser constraints; SOL_FULL validation can be mistaken for execution support; KV overestimate can leak into sizing; shared geometry formulas must preserve original Step4 numeric identity; cached registration alone does not prove performance correctness. |
 | Remediation/Verification Code Actions Taken | Verdict `APPROVE`. Limited parser checks to fields Step4 consumes; retained direct SOL_FULL tuple tests and known-TypeError regression; required explicit `2112/24576/32768` original-Step4 formula assertions; kept AFD out of scope; required full graph integration rather than discovery-only evidence. Implementation may begin. |
+
+## Checkpoint 6: Step4-Pro-V1 structural graph and roofline implementation
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Exact graph composition/geometry, recursive formula-only execution, and direct SOL_FULL component audit |
+| Reviewer Agent Identity | Primary Codex leader executing the approved TDD plan; independent final code-review lane still pending |
+| Inspected Artifacts | `tests/unit/sdk/models/test_step4_pro_v1.py`; `tests/unit/sdk/database/test_step4_pro_v1_roofline.py`; `tests/unit/sdk/database/test_base_queries.py`; `src/aiconfigurator/sdk/operations/communication.py`; original Step4 model/roofline/collective tests; fresh pytest and Ruff output |
+| Identified Issues/Anomalies | `CustomAllReduce(SOL_FULL)` returned `(selected, 0, 0)` despite bandwidth-derived transfer time; the first structural-test run used a non-exported `models.ops` symbol; four new test lines exceeded the 120-character format limit. |
+| Remediation/Verification Code Actions Taken | Added the CustomAllReduce memory-roofline RED assertions and minimal `(selected, 0, selected)` root-cause fix; imported the public operations module directly in tests; applied the project formatter to one test file; verified `192/192` affected tests plus targeted Ruff check/format and `git diff --check`, all with exit code 0. |

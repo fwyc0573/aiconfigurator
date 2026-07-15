@@ -9,6 +9,7 @@
 | 2026-07-16 | Recorded the independent StepCode Claude APPROVE verdict and implementation authorization. |
 | 2026-07-16 | Recorded cached-config, fail-fast parser, and config-derived geometry RED/GREEN cycles with numeric evidence. |
 | 2026-07-16 | Recorded parallel-geometry truncation root cause, six-case RED/GREEN evidence, and focused regression results. |
+| 2026-07-16 | Recorded formula-only graph coverage, the CustomAllReduce roofline correction, and the 192-test affected regression. |
 
 # Progress
 
@@ -96,3 +97,17 @@
 - **Expectation:** Six non-divisible geometries must fail at the Step4 construction boundary with field-specific `ValueError` messages before `BaseModel` assertions or operation creation.
 - **Method:** Added parameterized RED cases for `num_attention_heads % tp_size`, `vocab_size % tp_size`, dense/shared intermediate sizes `% tp_size`, `n_routed_experts % moe_ep_size`, and `moe_intermediate_size % moe_tp_size`. The fresh RED run selected six tests: the head case reached the shared `AssertionError`, and the other five did not raise. Added only Step4-specific checks in `Step4Model.create()` so the shared model contract remains unchanged.
 - **Result:** RED was `6 failed / 24 deselected` in `0.22 s`; GREEN was `6 passed / 24 deselected` in `0.04 s`. After project formatting, the combined Step4-Pro-V1 and original Step4 suites passed `82/82` in `0.13 s`; targeted Ruff check/format and `git diff --check` passed.
+
+## 2026-07-16 — Formula-only graph and direct SOL_FULL roofline TDD
+
+- **Motivation:** Prove that every Step4-Pro-V1 operation can be evaluated from auditable formulas without loading profile/LFS data, while preserving the approved Task-level `SOL_FULL` boundary.
+- **Expectation:** Complete aggregate/disaggregate graph requests accept only `SOL`/`SOL_FULL`; complete graphs run in `SOL`; each representative direct `SOL_FULL` tuple satisfies `selected == max(math, memory)` and equals the scalar `SOL` result.
+- **Method:** Added a dedicated roofline suite covering nine direct database query families, three valid parallel layouts, recursive context/decode operation trees, loader-fail guards, OSL=1/decode attention accounting, and the known Task-level tuple `TypeError`. The first complete Pro roofline run produced `26 passed / 1 failed` in `7.53 s`: only `query_custom_allreduce(SOL_FULL)` returned `(0.44040192, 0, 0)`. Updated the existing base-query expectation first and observed `2 failed` in `4.27 s`, then changed `CustomAllReduce.get_sol()` to classify ring-transfer time as the communication-memory roofline.
+- **Result:** The targeted correction passed `2/2` in `4.04 s`; the then-affected database regression passed `106/106` in `18.03 s`. `CustomAllReduce(SOL_FULL)` now returns `(selected, 0, selected)`, consistent with `NCCL`, `P2P`, and the universal roofline invariant. No fallback, scaling factor, or empirical loader was introduced.
+
+## 2026-07-16 — Structural graph completion and affected regression
+
+- **Motivation:** Verify exact CSV composition, Pro projection/FFN/MoE geometry, quant modes, decode overlap branches, temporary KV arithmetic, and MTP scaling before committing the graph/roofline slice.
+- **Expectation:** New structural assertions pass for Step4-Pro-V1 without changing original Step4 behavior, and every modified path remains formatted and lint-clean.
+- **Method:** Added recursive graph indexing and structural assertions. The first combined run collected `113` tests and reported `5 failed / 108 passed` in `7.71 s`; all failures were the same test-only `AttributeError` because `aiconfigurator.sdk.models` does not export `ops`. Imported `aiconfigurator.sdk.operations as ops`, reran to `113/113 passed` in `7.50 s`, then expanded to all six affected suites. The first Ruff pass identified four `E501` lines and one file requiring formatting; applied only the project formatter to that test file and reran tests/static checks.
+- **Result:** Final affected regression passed `192/192` in `18.67 s`. Targeted `ruff check`, `ruff format --check`, and `git diff --check` all exited `0`. The test-only import and formatting corrections did not alter production behavior.

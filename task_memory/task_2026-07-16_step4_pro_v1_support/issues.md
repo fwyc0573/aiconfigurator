@@ -6,6 +6,7 @@
 | 2026-07-16 | Recorded and resolved the invalid repository `.venv` baseline environment. |
 | 2026-07-16 | Recorded the OMX Team clean-workspace gate and its commit-based resolution. |
 | 2026-07-16 | Reconciled Team decomposition, SOL_FULL, KV-cache, parser-validation, and AFD findings with root-cause resolutions. |
+| 2026-07-16 | Recorded StepCode Claude approval of the bounded SOL_FULL, parser, and AFD resolutions. |
 
 # Issues
 
@@ -68,7 +69,7 @@
 
 ## ISSUE-008: AFD cannot classify Step4 dense SwiGLU operations
 
-- **Status:** Open outside the minimum Step4-Pro-V1 scope, pending independent plan review confirmation.
+- **Status:** Confirmed outside the minimum Step4-Pro-V1 scope by independent StepCode Claude review.
 - **Symptom:** Existing Step4 context and generation AFD partitioning fail on `context_dense_swiglu` and `generation_dense_swiglu`.
 - **Root cause:** The AFD FFN classifier recognizes several activation markers but not `swiglu`, while Step4 emits a dedicated dense SwiGLU operation.
 - **Impact:** A generic claim of every CLI estimate mode would be false even before Step4-Pro-V1 is added.

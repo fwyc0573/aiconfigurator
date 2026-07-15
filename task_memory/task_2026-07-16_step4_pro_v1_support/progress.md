@@ -6,14 +6,16 @@
 | 2026-07-16 | Recorded the failed `.venv` baseline, root cause, corrected conda rerun, and exact passing counts. |
 | 2026-07-16 | Recorded the initial OMX Team clean-workspace rejection and planned source-of-truth commit. |
 | 2026-07-16 | Recorded the completed parallel Team audits, report handoff/verification, lifecycle recovery, and clean shutdown. |
+| 2026-07-16 | Recorded the independent StepCode Claude APPROVE verdict and implementation authorization. |
 
 # Progress
 
 ## Status
 
 - Completed: repository/history/CSV discovery; original-request decision resolution; isolated worktree creation; passing Step4 baseline; three-lane Team audit; report verification; clean Team shutdown.
-- In progress: Team-finding reconciliation and independent StepCode Claude plan review.
-- Pending: strict RED/GREEN implementation, integration, full verification, independent code review, test report, final archive, and Git-history cleanup.
+- Completed: Team-finding reconciliation and independent StepCode Claude plan review (`APPROVE`, no BLOCK).
+- In progress: strict RED test construction for cached identity/config, parser validation, and config-derived geometry.
+- Pending: GREEN implementation, graph/roofline/integration coverage, full verification, independent code review, test report, final archive, and Git-history cleanup.
 
 ## 2026-07-16 — Evidence and worktree setup
 
@@ -56,3 +58,10 @@
 - **Expectation:** Convert every audit anomaly into either an approved minimal fix, an explicit scope boundary, or a human-update item.
 - **Method:** Reproduced/inspected SOL_FULL tuple incompatibility, temporary MLA KV arithmetic, parser fallback acceptance, and AFD `dense_swiglu` classification failure; compared each against the original request and no-fallback/root-cause rules.
 - **Result:** The revised plan uses SOL for complete graph execution, direct SOL_FULL database assertions for roofline components, fail-fast Step4 config validation, explicit `48.31838208 GB vs 10.7 GB` KV disclosure, and no AFD claim. These decisions now await independent StepCode Claude review before RED tests begin.
+
+## 2026-07-16 — Independent StepCode Claude plan review
+
+- **Motivation:** Obtain a separate cross-model decision before committing to shared parser and model-geometry changes.
+- **Expectation:** The reviewer either approves the minimal scope, identifies WATCH mitigations, or returns a BLOCK for user adjudication.
+- **Method:** Ran `omx ask claude` with the original objective, authoritative numeric evidence, Team reports, revised plan, and six explicit decisions covering SOL_FULL, parser compatibility, AFD, production files, TDD sufficiency, and blockers.
+- **Result:** Verdict `APPROVE`; no BLOCK. Claude approved complete graph execution in SOL, direct SOL_FULL tuple assertions, fail-fast parser correction, and explicit AFD exclusion. It required one additional test contract: original Step4 formulas must explicitly equal `2112`, `24576`, and `32768`. Implementation is authorized to begin in strict plan order.

@@ -5,6 +5,7 @@
 | 2026-07-16 | Recorded authoritative inputs, branch constraints, environment notes, and safety boundaries. |
 | 2026-07-16 | Corrected the test environment to the verified `aic-step-design` conda environment after `.venv` reproduction failed. |
 | 2026-07-16 | Added Team shutdown state, report provenance, SOL_FULL/KV/parser/AFD execution reminders, and the preserved test-temp stash. |
+| 2026-07-16 | Recorded the StepCode Claude APPROVE artifact and its explicit original-Step4 formula regression requirement. |
 
 # Operational Notes
 
@@ -49,3 +50,5 @@
 - Add fail-fast RED coverage before changing Step4 parsing: missing/zero `moe_intermediate_size`, missing/zero/bool/float `num_experts_per_tok`, boolean core dimensions, invalid block composition, `top-k > experts`, and non-divisible parallel geometry.
 - Existing Step4 AFD partitioning fails on `context_dense_swiglu` and `generation_dense_swiglu`. The minimum delivery covers aggregate/disaggregate SOL only; do not claim AFD or silicon support-matrix coverage.
 - Before modifying `src/aiconfigurator/generator/**`, read `.claude/rules/generator-development.md`. No generator edit is currently planned.
+- Independent plan review artifact: `.omx/artifacts/claude-you-are-the-independent-stepcode-claude-reviewer-for-an-impo-2026-07-15T18-18-40-171Z.md`; verdict `APPROVE`, no BLOCK, implementation authorized.
+- Preserve exact original-Step4 derived widths as explicit assertions: `2112`, `24576`, and `32768`; a passing broad regression alone is not sufficient evidence for this shared-path change.

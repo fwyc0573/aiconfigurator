@@ -4,6 +4,7 @@
 |---|---|
 | 2026-07-16 | Created the initial TDD implementation and verification plan for Step4-Pro-V1 support. |
 | 2026-07-16 | Reconciled the completed Team audits, narrowed SOL_FULL and AFD claims, and added fail-fast validation and KV-provenance gates. |
+| 2026-07-16 | Applied the independent StepCode Claude APPROVE verdict and added explicit original-Step4 formula-equivalence assertions. |
 
 # Step4-Pro-V1 AIC Support Implementation Plan
 
@@ -57,6 +58,7 @@
 **Produces:** Both Step4 and Step4-Pro-V1 obtain temporary MLA projection shapes from validated config fields rather than Step4-specific numeric literals.
 
 - [ ] Write tests for exact context/generation projection tensor shapes on both models.
+- [ ] Assert the original Step4 config formulas explicitly remain `1536 + 512 + 64 = 2112`, `128 * (128 + 64) = 24576`, and `128 * (128 + 128) = 32768`.
 - [ ] Add an error-path test for inconsistent geometry.
 - [ ] Observe RED for missing/zero `moe_intermediate_size`, missing/zero/bool/float `num_experts_per_tok`, boolean core dimensions, invalid topology, and non-divisible parallel geometry.
 - [ ] Remove Step4-specific routed-MoE substitution/weak coercion at the parser boundary; do not add compatibility fallback.

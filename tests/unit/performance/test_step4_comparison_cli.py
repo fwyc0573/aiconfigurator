@@ -520,6 +520,28 @@ def test_write_final_artifacts_emits_strict_json_csv_and_markdown(tmp_path):
     ) in report
 
 
+def test_write_final_artifacts_reports_missing_rows_without_fabricated_values(tmp_path):
+    """Empty result sets must be described explicitly rather than encoded as zero-valued rows."""
+    artifact = {
+        "summary": {
+            "mode_run_count": 1,
+            "normalized_row_count": 0,
+            "ranked_row_count": 0,
+            "paired_comparison_count": 0,
+            "unpaired_comparison_count": 0,
+        },
+        "comparison_metrics": ["ranking_metric_value"],
+        "ranked_rows": [],
+        "comparisons": [],
+    }
+
+    report = runner.write_final_artifacts(tmp_path, artifact)["markdown"].read_text()
+
+    assert "No rank-one results were produced." in report
+    assert "No paired model deltas were available." in report
+    assert "| None |" not in report
+
+
 def test_parse_args_rejects_nonpositive_caps():
     with pytest.raises(SystemExit):
         runner.parse_args(["--output-dir", "results", "--initial-agg-cap", "0"])

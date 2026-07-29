@@ -3219,7 +3219,7 @@ def _render_markdown_report(artifact: Mapping[str, Any]) -> str:
             f"{row['canonical_config_id']} |"
         )
     if not rank_one_rows:
-        lines.append("| None | None | None | 0 | 0 | 0 | None | None | 0 | 0 | None |")
+        lines.extend(["", "No rank-one results were produced."])
     lines.extend(
         [
             "",
@@ -3251,7 +3251,7 @@ def _render_markdown_report(artifact: Mapping[str, Any]) -> str:
             )
             paired_metric_count += 1
     if paired_metric_count == 0:
-        lines.append("| None | 0 | 0 | 0 | 0 | None | None |")
+        lines.extend(["", "No paired model deltas were available."])
     lines.append("")
     return "\n".join(lines)
 

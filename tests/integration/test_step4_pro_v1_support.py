@@ -14,9 +14,13 @@ from pathlib import Path
 import pytest
 
 from aiconfigurator.sdk import utils
+from aiconfigurator.sdk.operations.attention import ContextAttention, GenerationAttention
 from aiconfigurator.sdk.operations.communication import NCCL, CustomAllReduce
+from aiconfigurator.sdk.operations.dsv4 import (
+    ContextDeepSeekV4AttentionModule,
+    GenerationDeepSeekV4AttentionModule,
+)
 from aiconfigurator.sdk.operations.gemm import GEMM
-from aiconfigurator.sdk.operations.mla import ContextMLA, GenerationMLA, MLABmm
 from aiconfigurator.sdk.operations.moe import MoE, MoEDispatch
 from aiconfigurator.sdk.task_v2 import SinglePointEvaluation, Task
 
@@ -51,7 +55,17 @@ def _prohibit_external_formula_inputs(monkeypatch) -> None:
 
         return classmethod(fail_load_data)
 
-    for operation_class in (GEMM, ContextMLA, GenerationMLA, MLABmm, MoE, MoEDispatch, CustomAllReduce, NCCL):
+    for operation_class in (
+        GEMM,
+        ContextAttention,
+        GenerationAttention,
+        ContextDeepSeekV4AttentionModule,
+        GenerationDeepSeekV4AttentionModule,
+        MoE,
+        MoEDispatch,
+        CustomAllReduce,
+        NCCL,
+    ):
         monkeypatch.setattr(operation_class, "load_data", fail_loader(operation_class.__name__))
 
 
@@ -68,8 +82,13 @@ def _assert_formula_sources(evaluation: SinglePointEvaluation, *, phases: tuple[
                 assert data[name] == 0.0
             else:
                 assert source == "sol"
-        assert any("full_mla_approx" in name for name in sources)
-        assert any("swa_mla_approx" in name for name in sources)
+        assert not any("mla_approx" in name for name in sources)
+        if any(name.startswith("context_layer_") for name in sources):
+            assert any(name.startswith("context_layer_004_full_attention") for name in sources)
+            assert any(name.startswith("context_layer_024_nonfull_hca_attention") for name in sources)
+        if any(name.startswith("generation_layer_") for name in sources):
+            assert any(name.startswith("generation_layer_004_full_attention") for name in sources)
+            assert any(name.startswith("generation_layer_024_nonfull_hca_attention") for name in sources)
 
 
 def test_step4_pro_v1_aggregate_sol_runs_offline_with_formula_evidence(monkeypatch):

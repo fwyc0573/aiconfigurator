@@ -177,6 +177,31 @@ class TestContextAttention:
         ][b]
         assert math.isclose(result, expected, rel_tol=1e-6)
 
+    def test_context_attention_keeps_heads_exact_and_interpolates_workload_axes(
+        self, comprehensive_perf_db, monkeypatch
+    ):
+        original = interpolation.interp_2d_fixed_first_axis
+        calls = []
+
+        def tracked(*args, **kwargs):
+            calls.append((args, kwargs))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(interpolation, "interp_2d_fixed_first_axis", tracked)
+        result = comprehensive_perf_db.query_context_attention(
+            2,
+            33,
+            0,
+            16,
+            4,
+            common.KVCacheQuantMode.bfloat16,
+            common.FMHAQuantMode.bfloat16,
+            database_mode=common.DatabaseMode.SILICON,
+        )
+
+        assert result > 0
+        assert calls and calls[0][0][0] == 16
+
     def test_query_context_attention_non_sol_mode_small_s(self, comprehensive_perf_db):
         """
         Test that query context attention works even when s is smaller than what exists
@@ -226,6 +251,29 @@ class TestGenerationAttention:
         expected = max(sol_math, sol_mem)
 
         assert math.isclose(result, expected, rel_tol=1e-6)
+
+    def test_generation_attention_keeps_heads_exact_and_interpolates_workload_axes(
+        self, comprehensive_perf_db, monkeypatch
+    ):
+        original = interpolation.interp_2d_fixed_first_axis
+        calls = []
+
+        def tracked(*args, **kwargs):
+            calls.append((args, kwargs))
+            return original(*args, **kwargs)
+
+        monkeypatch.setattr(interpolation, "interp_2d_fixed_first_axis", tracked)
+        result = comprehensive_perf_db.query_generation_attention(
+            2,
+            33,
+            16,
+            4,
+            common.KVCacheQuantMode.bfloat16,
+            database_mode=common.DatabaseMode.SILICON,
+        )
+
+        assert result > 0
+        assert calls and calls[0][0][0] == 16
 
     def test_query_generation_attention_sol_full_mode(self, comprehensive_perf_db):
         """Test SOL_FULL mode returns (sol_time, sol_math, sol_mem)."""

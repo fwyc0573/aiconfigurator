@@ -883,9 +883,13 @@ class MoE(Operation):
                 elif database.backend == common.BackendName.vllm.value:
                     database._moe_data.raise_if_not_loaded()
                     quant_data = util_empirical.require_data_slice(database._moe_data, quant_mode)
-                    used_workload_distribution = (
-                        workload_distribution if workload_distribution in quant_data else "uniform"
-                    )
+                    if workload_distribution not in quant_data:
+                        available = sorted(str(key) for key in quant_data)
+                        raise PerfDataNotAvailableError(
+                            "Missing exact MoE workload distribution for vLLM SILICON query; "
+                            f"requested='{workload_distribution}', available={available}."
+                        )
+                    used_workload_distribution = workload_distribution
                     moe_dict = util_empirical.require_data_slice(
                         quant_data,
                         used_workload_distribution,
@@ -1344,7 +1348,11 @@ class MoEDispatch(Operation):
 
             # Add allreduce latency when TP > 1
             if self._attention_tp_size > 1 and self._reduce_results:
-                comm_latency += database.query_custom_allreduce(common.CommQuantMode.half, self.num_gpus, volume)
+                comm_latency += database.query_custom_allreduce(
+                    common.CommQuantMode.half,
+                    self._attention_tp_size,
+                    volume,
+                )
 
             if self._attention_dp_size > 1:
                 comm_latency += database.query_nccl(

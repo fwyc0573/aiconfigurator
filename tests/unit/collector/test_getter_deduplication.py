@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import importlib.util
+import math
 import sys
 import types
 from dataclasses import replace
@@ -372,3 +373,190 @@ def test_vllm_nemotron_topk22_nvfp4_artifacts_are_not_scheduled(monkeypatch, mod
     monkeypatch.setattr(module, "_nvfp4_available", True)
 
     assert module.get_moe_test_cases() == []
+
+
+def test_vllm_019_fp8_moe_selects_modular_backend_only_for_exact_version(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    selector = getattr(module, "_use_modular_fp8_moe", None)
+    assert selector is not None, "exact-version modular FP8 MoE policy is missing"
+    assert selector("fp8", "0.19.0", "stepfun-ai/Step4-Pro-V3", 1) is True
+    assert selector("fp8", "0.19.0", "stepfun-ai/Step4-Pro-V4", 1) is True
+    assert selector("fp8", "0.19.0", "stepfun-ai/Step4-Pro-V3", 2) is False
+    assert selector("fp8", "0.19.0", "model-a", 1) is False
+    assert selector("fp8", "0.19.0.post15", "stepfun-ai/Step4-Pro-V3", 1) is False
+    assert selector("fp8", "0.20.0", "stepfun-ai/Step4-Pro-V3", 1) is False
+    assert selector("fp8_block", "0.19.0", "stepfun-ai/Step4-Pro-V3", 1) is False
+    assert selector("bfloat16", "0.19.0", "stepfun-ai/Step4-Pro-V3", 1) is False
+
+
+def test_vllm_modular_fp8_moe_softmax_receives_fp32_weights(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    normalizer = getattr(module, "_softmax_moe_topk_weights", None)
+    assert normalizer is not None, "modular FP8 routing-weight normalization is missing"
+
+    fp32_weights = object()
+
+    class RoutingWeights:
+        def float(self):
+            return fp32_weights
+
+    observed = {}
+
+    def fake_softmax(weights, *, dim):
+        observed.update(weights=weights, dim=dim)
+        return "normalized"
+
+    monkeypatch.setattr(module.F, "softmax", fake_softmax, raising=False)
+
+    assert normalizer(RoutingWeights(), force_fp32=True) == "normalized"
+    assert observed == {"weights": fp32_weights, "dim": -1}
+
+
+def test_vllm_modular_fp8_moe_reports_flashinfer_cutlass_kernel_source(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    source_for_path = getattr(module, "_moe_kernel_source", None)
+    assert source_for_path is not None, "truthful MoE kernel-source policy is missing"
+    assert source_for_path(use_modular_fp8=True, use_mxfp4=False, use_nvfp4=False, use_int4_wo=False) == (
+        "vllm_flashinfer_cutlass_moe"
+    )
+
+
+def test_vllm_modular_fp8_moe_parallel_contract_is_linear_rank_zero(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    validator = getattr(module, "_validate_modular_fp8_moe_contract", None)
+    assert validator is not None, "modular FP8 EP contract validation is missing"
+    validator(num_experts=1024, local_num_experts=16, moe_tp_size=1, moe_ep_size=64)
+
+    with pytest.raises(ValueError, match="moe_tp_size=1"):
+        validator(num_experts=1024, local_num_experts=16, moe_tp_size=2, moe_ep_size=64)
+    with pytest.raises(ValueError, match="divisible"):
+        validator(num_experts=1024, local_num_experts=16, moe_tp_size=1, moe_ep_size=63)
+    with pytest.raises(ValueError, match="contiguous rank-0 shard"):
+        validator(num_experts=1024, local_num_experts=15, moe_tp_size=1, moe_ep_size=64)
+
+
+def test_vllm_modular_fp8_moe_allocates_fp8_weights_and_scalar_positive_scales(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    class FakeTensor:
+        def __init__(self, shape, dtype, value=None):
+            self.shape = shape
+            self.dtype = dtype
+            self.ndim = len(shape)
+            self.value = value
+
+        def fill_(self, value):
+            self.value = value
+            return self
+
+    class NoGrad:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *_args):
+            return False
+
+    class FakeTorch:
+        float8_e4m3fn = "float8_e4m3fn"
+        float32 = "float32"
+
+        @staticmethod
+        def empty(*shape, dtype, device):
+            assert device == "cpu"
+            return FakeTensor(shape, dtype)
+
+        @staticmethod
+        def ones(size, *, dtype, device):
+            assert device == "cpu"
+            return FakeTensor((size,), dtype, value=1.0)
+
+        @staticmethod
+        def tensor(value, *, dtype, device):
+            assert device == "cpu"
+            return FakeTensor((), dtype, value=value)
+
+        @staticmethod
+        def no_grad():
+            return NoGrad()
+
+    monkeypatch.setattr(module, "torch", FakeTorch)
+
+    allocator = getattr(module, "_allocate_modular_fp8_moe_tensors", None)
+    assert allocator is not None, "direct FP8 MoE tensor allocation is missing"
+    w1, w2, w1_scale, w2_scale, a1_scale, a2_scale = allocator(
+        device="cpu",
+        local_num_experts=2,
+        hidden_size=16,
+        local_inter_size=8,
+    )
+
+    assert w1.shape == (2, 16, 16)
+    assert w2.shape == (2, 16, 8)
+    assert w1.dtype == FakeTorch.float8_e4m3fn
+    assert w2.dtype == FakeTorch.float8_e4m3fn
+    assert w1_scale.shape == (2,)
+    assert w2_scale.shape == (2,)
+    assert a1_scale.ndim == 0
+    assert a2_scale.ndim == 0
+    assert math.isfinite(w1_scale.value) and w1_scale.value > 0
+    assert math.isfinite(w2_scale.value) and w2_scale.value > 0
+    assert math.isfinite(a1_scale.value) and a1_scale.value > 0
+    assert math.isfinite(a2_scale.value) and a2_scale.value > 0
+
+
+def test_vllm_modular_fp8_moe_apply_preserves_global_expert_ids(monkeypatch):
+    _install_vllm_stubs(monkeypatch)
+    module = _load_collector(monkeypatch, "collector.vllm.collect_moe", "collector/vllm/collect_moe.py")
+
+    apply_kernel = getattr(module, "_apply_modular_fp8_moe", None)
+    assert apply_kernel is not None, "modular FP8 kernel application contract is missing"
+
+    observed = {}
+
+    class Kernel:
+        def apply(self, *args):
+            observed["args"] = args
+            return "output"
+
+    hidden_states = object()
+    w1 = object()
+    w2 = object()
+    topk_weights = object()
+    global_topk_ids = object()
+    activation = object()
+    expert_map = object()
+
+    assert (
+        apply_kernel(
+            Kernel(),
+            hidden_states,
+            w1,
+            w2,
+            topk_weights,
+            global_topk_ids,
+            activation,
+            1024,
+            expert_map,
+        )
+        == "output"
+    )
+    assert observed["args"] == (
+        hidden_states,
+        w1,
+        w2,
+        topk_weights,
+        global_topk_ids,
+        activation,
+        1024,
+        expert_map,
+        False,
+    )

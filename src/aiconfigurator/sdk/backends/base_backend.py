@@ -57,6 +57,7 @@ class BaseBackend:
         "DEEPSEEKV32",
         "DEEPSEEKV4",
         "KIMIK25",
+        "STEP4",
     )
 
     # Minimum activation memory, in bytes (clamps from below).
@@ -83,6 +84,11 @@ class BaseBackend:
         attention expansion. TRT-LLM overrides this to use the raw ``h`` for
         the DEEPSEEK family (legacy accounting, predates V4).
         """
+        if model_family == "STEP4":
+            extra_params = getattr(model, "extra_params", None)
+            routed_width = getattr(extra_params, "latent_moe_dim", 0)
+            if routed_width:
+                return routed_width
         return getattr(model, "_hidden_size", h)
 
     def _mix_step_gen_tokens(self, b: int, ctx_tokens: int, isl: int, osl: int) -> int:

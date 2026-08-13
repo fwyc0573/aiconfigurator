@@ -48,6 +48,7 @@ from collector.case_generator import (
     get_attention_context_shape_sweeps,
     get_attention_generation_shape_sweeps,
     get_attention_head_configs,
+    get_attention_kv_cache_dtype_options,
 )
 from collector.helper import EXIT_CODE_RESTART, benchmark_with_power, get_sm_version, log_perf
 from collector.vllm.utils import (
@@ -450,9 +451,10 @@ def get_context_attention_test_cases(if_unit_test=False):
     else:
         shape_sweeps = get_attention_context_shape_sweeps("vllm")
 
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
+    kv_cache_dtype_list = get_attention_kv_cache_dtype_options(
+        os.environ.get("COLLECTOR_MODEL_PATH", "").strip() or None,
+        sm_version=get_sm_version(),
+    )
 
     for shape_sweep in shape_sweeps:
         batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]
@@ -521,9 +523,10 @@ def _generation_target_sequence_lengths(batch_sizes, sequence_lengths, num_heads
 def get_generation_attention_test_cases():
     test_cases = []
 
-    kv_cache_dtype_list = [False]
-    if get_sm_version() > 86:
-        kv_cache_dtype_list.append(True)
+    kv_cache_dtype_list = get_attention_kv_cache_dtype_options(
+        os.environ.get("COLLECTOR_MODEL_PATH", "").strip() or None,
+        sm_version=get_sm_version(),
+    )
 
     for shape_sweep in get_attention_generation_shape_sweeps("vllm"):
         batch_sizes = [int(value) for value in shape_sweep["batch_sizes"]]

@@ -379,6 +379,8 @@ def _known_exception_rule(raw_exception: dict[str, Any], match_spec: dict[str, A
     }
     if raw_exception.get("version_prefixes") is not None:
         rule["version_prefixes"] = raw_exception["version_prefixes"]
+    if raw_exception.get("versions") is not None:
+        rule["versions"] = raw_exception["versions"]
     if raw_exception.get("conditions") is not None:
         rule["conditions"] = raw_exception["conditions"]
     return rule
@@ -837,7 +839,14 @@ def _computed_condition_matches(condition: dict[str, Any], fields: list[str], te
 
 
 def _version_matches(rule: dict[str, Any], runtime_version: str | None) -> bool:
+    versions = rule.get("versions")
     prefixes = rule.get("version_prefixes")
+    if versions is not None and prefixes is not None:
+        raise ValueError("rule versions and version_prefixes are mutually exclusive")
+    if versions is not None:
+        if runtime_version is None:
+            return False
+        return runtime_version in {str(version) for version in _as_list(versions, field_name="versions")}
     if prefixes is None:
         return True
     if runtime_version is None:

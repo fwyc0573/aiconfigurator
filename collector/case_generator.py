@@ -1170,54 +1170,69 @@ def get_common_moe_test_cases():
 
     test_cases: list[MoeCommonTestCase] = []
 
-    for (
-        num_gpu,  # starting from fewer gpus. workaround for potential buffer bug in moe impl.
-        model_config,
-        tp,
-        ep,
-        (token_distribution, power_law_alpha),
-    ) in itertools.product(
-        num_gpu_list,
-        model_config_list,
-        tp_list,
-        ep_list,
-        token_distributions,
-    ):
+    for model_config in model_config_list:
+        model_num_gpu_list = _as_int_list(
+            model_config.get("gpu_counts", num_gpu_list),
+            field_name="model_case_values.moe.gpu_counts",
+        )
+        model_tp_list = _as_int_list(
+            model_config.get("tensor_parallel_sizes", tp_list),
+            field_name="model_case_values.moe.tensor_parallel_sizes",
+        )
+        model_ep_list = _as_int_list(
+            model_config.get("expert_parallel_sizes", ep_list),
+            field_name="model_case_values.moe.expert_parallel_sizes",
+        )
+        raw_model_distributions = model_config.get("token_expert_distributions")
+        model_token_distributions = (
+            token_distributions
+            if raw_model_distributions is None
+            else _moe_token_expert_distributions({"token_expert_distributions": raw_model_distributions})
+        )
+        # Expand model-scoped overrides after resolving the shared defaults so
+        # targeted profiles cannot cross unrelated model dimensions.
+        expanded_cases = itertools.product(
+            model_num_gpu_list,
+            model_tp_list,
+            model_ep_list,
+            model_token_distributions,
+        )
         hs = int(model_config["hidden_size"])
         inter_s = int(model_config["inter_size"])
         topk = int(model_config["topk"])
         num_experts = int(model_config["num_experts"])
         model_name = str(model_config["model_path"])
 
-        max_tp_exclusive = model_config.get("max_tp_exclusive")
-        if max_tp_exclusive is not None and tp >= int(max_tp_exclusive):
-            continue
+        for num_gpu, tp, ep, (token_distribution, power_law_alpha) in expanded_cases:
+            max_tp_exclusive = model_config.get("max_tp_exclusive")
+            if max_tp_exclusive is not None and tp >= int(max_tp_exclusive):
+                continue
 
-        if tp * ep != num_gpu:
-            continue
-        if ep > num_experts:
-            continue
-        if num_experts % ep != 0:
-            continue
-        # we need to ensure inter_s can be divided by tp.
-        if inter_s % tp != 0:
-            continue
+            if tp * ep != num_gpu:
+                continue
+            if ep > num_experts:
+                continue
+            if num_experts % ep != 0:
+                continue
+            # we need to ensure inter_s can be divided by tp.
+            if inter_s % tp != 0:
+                continue
 
-        test_cases.append(
-            MoeCommonTestCase(
-                num_tokens_list=num_tokens,
-                hidden_size=hs,
-                inter_size=inter_s,
-                topk=topk,
-                num_experts=num_experts,
-                tp=tp,
-                ep=ep,
-                model_name=model_name,
-                token_expert_distribution=token_distribution,
-                power_law_alpha=power_law_alpha,
-                architecture=str(model_config.get("architecture") or ""),
+            test_cases.append(
+                MoeCommonTestCase(
+                    num_tokens_list=num_tokens,
+                    hidden_size=hs,
+                    inter_size=inter_s,
+                    topk=topk,
+                    num_experts=num_experts,
+                    tp=tp,
+                    ep=ep,
+                    model_name=model_name,
+                    token_expert_distribution=token_distribution,
+                    power_law_alpha=power_law_alpha,
+                    architecture=str(model_config.get("architecture") or ""),
+                )
             )
-        )
 
     return test_cases
 
@@ -1227,6 +1242,25 @@ class GemmCommonTestCase:
     x: int
     n: int
     k: int
+    # Targeted model profiles carry the exact dtypes emitted by the built
+    # operation graph.  Generic/raw cases leave this unset and use the
+    # backend's runtime-supported dtype list.
+    gemm_types: tuple[str, ...] | None = None
+
+
+def get_gemm_types_for_case(case: GemmCommonTestCase, default_types: list[str]) -> list[str]:
+    """Resolve the dtype selector without importing a framework runtime.
+
+    Targeted model cases must preserve the graph-emitted dtype identity;
+    generic cases retain the existing backend/SM policy.  An empty targeted
+    selector is invalid because it would silently schedule no benchmark.
+    """
+
+    if case.gemm_types is None:
+        return list(default_types)
+    if not case.gemm_types:
+        raise ValueError(f"GEMM case ({case.x}, {case.n}, {case.k}) has no allowed dtypes")
+    return list(case.gemm_types)
 
 
 def _as_int_list(value, *, field_name: str) -> list[int]:
@@ -1275,6 +1309,76 @@ def get_gemm_case_specs(backend: str | None = None) -> list[GemmCommonTestCase]:
                     test_cases.append(GemmCommonTestCase(x=token_count, n=output_features, k=input_features))
 
     return test_cases
+
+
+def get_step4_model_gemm_case_specs(model_path: str, *, backend: str = "vllm") -> list[GemmCommonTestCase]:
+    """Extract Step4 GEMM N/K identities from the built model graph.
+
+    Targeted Step4 collection reuses only the shared M/token sweep from the
+    base GEMM YAML. Structural N/K values come from each legal TP-built graph;
+    the returned list is stably deduplicated on the persisted physical key.
+    """
+    if model_path not in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}:
+        raise ValueError(f"Step4 model-scoped GEMM extraction does not support {model_path!r}")
+
+    from aiconfigurator.sdk import common, config, models
+
+    token_counts = sorted(
+        {
+            int(token_count)
+            for shape_sweep in _get_base_gemm_shape_sweeps(backend)
+            for token_count in _as_int_list(shape_sweep.get("token_counts"), field_name="gemm.token_counts")
+        },
+        reverse=True,
+    )
+    structural_types: dict[tuple[int, int], set[str]] = {}
+    # Build every dtype that the targeted Step4 graph can emit.  This is
+    # deliberately independent of SM90's generic fp8_block capability: a
+    # dtype is scheduled only when the model graph actually owns that identity.
+    for gemm_quant_mode in (common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.fp8):
+        for tp_size in (1, 2, 4):
+            model_config = config.ModelConfig(
+                tp_size=tp_size,
+                pp_size=1,
+                gemm_quant_mode=gemm_quant_mode,
+                moe_quant_mode=common.MoEQuantMode.fp8,
+                kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+                fmha_quant_mode=common.FMHAQuantMode.bfloat16,
+                moe_tp_size=1,
+                moe_ep_size=tp_size,
+            )
+            model = models.get_model(model_path, model_config, backend)
+            stack = [*model.context_ops, *model.generation_ops]
+            visited: set[int] = set()
+            while stack:
+                operation = stack.pop()
+                if id(operation) in visited:
+                    continue
+                visited.add(id(operation))
+                for group_name in ("_group_a", "_group_b"):
+                    stack.extend(getattr(operation, group_name, ()) or ())
+                if operation.__class__.__name__ != "GEMM":
+                    continue
+                shape = (int(operation._n), int(operation._k))
+                operation_dtype = getattr(getattr(operation, "_quant_mode", None), "name", None)
+                if not operation_dtype:
+                    raise RuntimeError(f"Built Step4 GEMM has no quantization identity: {shape}")
+                structural_types.setdefault(shape, set()).add(str(operation_dtype))
+
+    if not structural_types:
+        raise RuntimeError(f"Built Step4 graph emitted no GEMM identities for {model_path!r}")
+    return [
+        GemmCommonTestCase(x=token_count, n=n, k=k, gemm_types=tuple(sorted(gemm_types)))
+        for token_count in token_counts
+        for (n, k), gemm_types in sorted(structural_types.items(), reverse=True)
+    ]
+
+
+def get_attention_kv_cache_dtype_options(model_path: str | None, *, sm_version: int) -> list[bool]:
+    """Return the targeted attention KV-cache precision policy."""
+    if model_path in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}:
+        return [True] if sm_version > 86 else []
+    return [False, True] if sm_version > 86 else [False]
 
 
 def get_gemm_type_specs(backend: str) -> list[str]:

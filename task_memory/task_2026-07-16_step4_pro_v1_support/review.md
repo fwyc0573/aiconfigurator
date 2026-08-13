@@ -9,6 +9,8 @@
 | 2026-07-16 | Recorded the graph/roofline implementation checkpoint and affected-regression evidence. |
 | 2026-07-16 | Recorded the integration, CLI, and provenance-documentation checkpoint. |
 | 2026-07-16 | Recorded the full-unit/static validation checkpoint and independent final StepCode Claude APPROVE verdict. |
+| 2026-07-16 | Recorded the standalone roofline-document audit, focused regression, and independent Claude APPROVE verdict. |
+| 2026-07-16 | Recorded the independent Task 7 hybrid-attention architecture APPROVE verdict and required pre-implementation clarifications. |
 
 # Review Log
 
@@ -101,3 +103,23 @@
 | Inspected Artifacts | Complete Git diff and changed files; `AGENTS.md`; requirements/plan/issues/review; `docs/step4_pro_v1_modeling.md`; fresh focused/full regression and static evidence; `.omx/artifacts/claude-act-as-the-independent-final-code-reviewer-for-the-step4-pro-2026-07-15T19-36-24-039Z.md` |
 | Identified Issues/Anomalies | Verdict `APPROVE`; no Critical and no BLOCK. Two low-severity Important observations required no action: CustomAllReduce SOL_FULL semantics are shared, and Step4-local routed-MoE assignments intentionally shadow generic variables. Three Minor test-maintenance observations cover exact CLI warning text and private test-helper access. |
 | Remediation/Verification Code Actions Taken | Confirmed the shared CustomAllReduce correction is semantically necessary, original Step4 parser behavior is preserved, and all observations are already covered by regression evidence. No code remediation was requested. Artifact SHA256: `15669234b47250e4b9d1f07577f90b942139fbf4eeaa710b4283adad05aec9b2`. Reviewer explicitly authorized final archival/reporting. |
+
+## Checkpoint 10: Standalone roofline-model document review
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Human-reviewable two-level inventory and source-faithful formula/memory audit for every current Step4-Pro-V1 operation |
+| Reviewer Agent Identity | Primary Codex author/auditor; independent StepCode Claude `claude-opus-4-6[1m]`, `effort=max`, read-only reviewer |
+| Inspected Artifacts | `docs/step4_pro_v1_roofline_model_review.md`; cached Pro config; Step4 graph/runtime runner; GEMM, MLA, MoE, communication, elementwise, embedding, overlap, memory-query, quant, and KV-capacity source; focused model/roofline/integration tests; formula/reference outputs; `.omx/artifacts/claude-act-as-the-independent-technical-reviewer-for-the-documentat-2026-07-16T07-37-30-818Z.md` |
+| Identified Issues/Anomalies | Reviewer verdict `APPROVE`, with no Critical or Important findings. Minor 1: numeric table could be mistaken for real H200 specs. Minor 2: Attention mismatch needed an inline standard-GQA derivation. Minor 3: reviewer suspected the vLLM dispatch line range was approximate; local source proves `moe.py:1333-1355` is exact. Independent source audit additionally identified small-token EP floor-to-zero and unproven vLLM routed/shared full overlap as open model limits. |
+| Remediation/Verification Code Actions Taken | Explicitly labeled the `1 TFLOPS / 1 TB/s` simplified fixture; added the complete Full/SWA standard-GQA derivation; retained the exact locally verified dispatch reference; validated `44` references with zero errors, key formula arithmetic with zero errors, `git diff --check`, and `65/65` focused tests in `13.35 s`. Claude artifact: `7,407` bytes, SHA256 `b8cf0d82d4c1af74b260eebe54646d7dfbbba4fffd821c31f66b0cfdae93a1ab`. |
+
+## Checkpoint 11: Task 7 hybrid-attention architecture decision
+
+| Field | Record |
+|---|---|
+| Target Component/Phase | Pre-implementation decision for the Step4-Pro-only schema union, full MHA candidate, non-full HCA candidate, per-layer graph, parameter definition, KV formulas, and legacy isolation |
+| Reviewer Agent Identity | Independent StepCode Claude `claude-opus-4-6[1m]`, `effort=max`, read-only architecture reviewer |
+| Inspected Artifacts | Self-contained Task 7 decision packet derived from `requirements.md`, `plan.md`, `notes.md`, `issues.md`, the attachment, Step4/DeepSeek-V4 config/model/operation code, affected tests, exact parameter arithmetic, and the TP1 1M-token KV comparison; raw artifact `.omx/artifacts/claude-you-are-the-independent-stepcode-claude-reviewer-read-only-r-2026-07-16T08-53-12-302Z.md` |
+| Identified Issues/Anomalies | Verdict `APPROVE`; no Critical and no BLOCK. Important 1: separate six trainable HCA matrix terms from `65,632` FP32 resident-state elements. Important 2: append explicit HCA `CustomAllReduce` because the reused formula contains no network term. Minor: emit the 24.1x KV conflict at warning level and prove MTP is applied exactly once after per-layer conversion. Watched risks cover downstream capacity misuse, future full-KV evidence, accidental SWA-to-HCA perf fallback, and graph wall-clock cost. |
+| Remediation/Verification Code Actions Taken | Updated Task 7 before RED: selected matrix-only `compute_parameter_count()`, added named resident-state reporting, explicit HCA reduction tests/implementation, warning-level KV evidence, MTP regression, and formula-only loader prohibition. Artifact is `12,729` bytes with SHA256 `c0fa487fbe3a643a1e0178036d857349395f398570d84969e8ab4666843735a6`. Implementation authorized. |

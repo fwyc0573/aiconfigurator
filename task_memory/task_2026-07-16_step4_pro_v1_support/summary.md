@@ -4,6 +4,7 @@
 |---|---|
 | 2026-07-16 | Initialized the completion archive; final inventory and validation remain pending. |
 | 2026-07-16 | Finalized the English archive with exact deliverable hashes, requirement traceability, validation metrics, independent-review status, and bounded future work. |
+| 2026-07-16 | Added the standalone roofline-model review deliverable, validation evidence, independent approval, and newly exposed MoE/overlap open items. |
 
 # Summary: Step4-Pro-V1 AIC Support
 
@@ -15,6 +16,8 @@ Performance execution is deliberately formula-only. Complete graph execution use
 
 The missing Step4-Pro-V1 attention, latent-MLA, KV-cache, MTP, and quantization details retain the existing Step4 treatment and are explicitly marked for human replacement. The model-support code review range is `fdd869b..e4a1083`; the final independent StepCode Claude verdict is `APPROVE` with no Critical finding and no BLOCK.
 
+The follow-up documentation pass adds one standalone, two-level human review covering all `33` context operations, all `28` generation top-level operations and the `8` nested MoE-overlap children. It records concrete FLOPs, memory bytes, parallel slicing, roofline selection, Attention/MoE algorithm mapping, and `PASS`/`CONDITIONAL`/`OPEN` verdicts. No production or test logic changed. A second independent StepCode Claude review returned `APPROVE` with zero Critical/Important findings.
+
 ## Deliverables Inventory
 
 Hashes below are SHA256 values of the final file contents before the archive commit. They cover every production, test, documentation, task-governance, and Team-evidence deliverable changed or created by this task.
@@ -22,6 +25,7 @@ Hashes below are SHA256 values of the final file contents before the archive com
 | Path | Bytes | SHA256 |
 |---|---:|---|
 | `docs/step4_pro_v1_modeling.md` | `18533` | `5df8f19a2f9caa00c32784c45dab3fecd4ba062db4d09b4701fc662c4af20c6d` |
+| `docs/step4_pro_v1_roofline_model_review.md` | `44366` | `e8e65b385e172fd72d614e62245fd98928defdddbb34549ccc55f881c8c7ec16` |
 | `src/aiconfigurator/model_configs/stepfun-ai--Step4-Pro-V1_config.json` | `2163` | `9d3e05d28bce1b0a8a48f04a937a01a3ae14587527bb0b25076a2f65ea91612a` |
 | `src/aiconfigurator/sdk/common.py` | `38938` | `64aeef1a431db95aed7a2032108ba101e1b7a2506a048d3b9f3319f504e037c4` |
 | `src/aiconfigurator/sdk/models/step4.py` | `18296` | `21d7ecc75c42a9284701ecdae9a39b0a44a2c2ba3bc4b0ed3e4b5c1704233939` |
@@ -32,14 +36,14 @@ Hashes below are SHA256 values of the final file contents before the archive com
 | `tests/unit/sdk/database/test_step4_pro_v1_roofline.py` | `12560` | `08ca8de9a8e44035cf46bce1700aa854ee3e1f614a43b6131e1e7471d881c210` |
 | `tests/unit/sdk/models/test_step4_pro_v1.py` | `19392` | `b0afb6002bd09319e488a3ebfe7057c3b154931c3dbca794e296cd012c710339` |
 | `task_memory/env_handbook.md` | `12355` | `ae98c499397c34330fe491eb71040c169534a1aec9758687bb04e9d97770edeb` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/requirements.md` | `2213` | `ab7a6a802eae7f46b9543a770568cd9eb72e50005c00034eddb5f7768ec1d61b` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/plan.md` | `10161` | `2b8456e8bcaee03d1701d2f40423bdbbc444d20819bea75b387a52dadf760ceb` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/requirements.md` | `3291` | `66368779d95ffa98533a8144cf1a7361c170ffec6281a779ec855c9967b9a8fc` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/plan.md` | `12154` | `5eba6f9af5cd9a9764bd53a897c946b75f35c17e3dd58ac5887fe0e31170ae86` |
 | `task_memory/task_2026-07-16_step4_pro_v1_support/notes.md` | `7888` | `cd6bdaf23badb184b97c27ea3f77a6e2676c5573075fec40c45e8093c69518bc` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/progress.md` | `22749` | `3eee0c2a3d158a9ac39cc215a548bb9ee0fde5eed79eaa3e03bf06fa4b18b64f` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/issues.md` | `16100` | `341208e836c60254202ffc1d7ab85ac4742f7e210f03498dabf0920a3105ae1f` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/review.md` | `11849` | `7442124a2f1327a7a8a046820eb7fa5123fcf30556235c8a22c80493c81159f2` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/progress.md` | `25584` | `4a48ce67ec0066f939a146d7540c8b923ef032ca07f56e5e06619b32404ac1c2` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/issues.md` | `18284` | `f7a819d9a4cbe5d246205a1494a0dd9679d623eb529891d20624807b0369709b` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/review.md` | `13744` | `71b6bfcdce3b3e2b9e94748d1a88b8758aa000dc8f5493ab83579026639035e6` |
 | `task_memory/task_2026-07-16_step4_pro_v1_support/lessons.md` | `2430` | `a8d68a17f6a3fb6fedff2fa8c68c4503b9cd54510f71ea808b719c28811f007d` |
-| `task_memory/task_2026-07-16_step4_pro_v1_support/test_report_2026-07-16_step4_pro_v1_support.md` | `29752` | `fa3c0f0aeeb71cc1732f6df41135f0caa14d9f56a1a7d15d33e6b0064eb0427e` |
+| `task_memory/task_2026-07-16_step4_pro_v1_support/test_report_2026-07-16_step4_pro_v1_support.md` | `33530` | `d33200c7519c3bd6941325975a83d482c5a3c344ffabbd3bc7c4468d936a94ad` |
 | `task_memory/task_2026-07-16_step4_pro_v1_support/team_architecture_mapping.md` | `20581` | `4a07f9a97d603aa083b4b22a23fa5c9a8fa2d6c693f27fdaae6a35736315e0f7` |
 | `task_memory/task_2026-07-16_step4_pro_v1_support/team_roofline_audit.md` | `13748` | `005796a87e7f3874132802461523f58d302d670f3013b42d7514599ce52478ef` |
 | `task_memory/task_2026-07-16_step4_pro_v1_support/team_test_integration_audit.md` | `30146` | `40fa52a2708209c8def342767ee1a6ba55b5e5d142375bea2a21bb8691977e72` |
@@ -59,6 +63,8 @@ Hashes below are SHA256 values of the final file contents before the archive com
 | Borrow unresolved values from Step4 and expose them for human update | `docs/step4_pro_v1_modeling.md`, Issues 001/005/006/008/013, explicit mismatch tables | PASS |
 | Use isolated `step4-pro` worktree/branch | `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro`, branch `step4-pro` | PASS |
 | Use parallel Team/subagents | OMX Team `step4-pro-v1-pre-impl-0ddff5cf` completed `6/6`; three independent reports preserved | PASS |
+| Create one standalone, two-level human roofline review | `docs/step4_pro_v1_roofline_model_review.md`; complete operation inventories and detailed formulas | PASS |
+| Deeply review Attention and MoE algorithm/memory correctness | Full/SWA/MLA/KV and router/dispatch/routed/shared/overlap sections with explicit verdicts and open evidence | PASS |
 
 ### Test Outcome Matrix
 
@@ -74,6 +80,9 @@ Hashes below are SHA256 values of the final file contents before the archive com
 | Ruff format delivery surface | PASS | `432` Git-tracked Python files formatted; explicit `tests/.tmp` exclusion also passed |
 | Git whitespace | PASS | `0` `git diff --check` errors |
 | Independent final review | APPROVE | `0` Critical, `0` BLOCK, no required remediation |
+| Follow-up focused regression | PASS | `65 passed` in `13.35 s`; exit `0` |
+| Roofline document references/formulas | PASS | `44` valid references, `0` errors; exact projection/Attention/KV recomputation |
+| Independent roofline-document review | APPROVE | `0` Critical, `0` Important, `3` Minor; two clarifications applied |
 
 The first full-unit run produced `13` environment failures because an `81`-character task-local `TMPDIR` expanded to a representative `113`-character SyncManager AF_UNIX listener path. The same test failed under the long path and passed under `/tmp`; the full rerun then passed. No production or test logic was changed for this environment issue.
 
@@ -101,3 +110,5 @@ The complete per-operation latency/source tables, RED failures, traceback root c
 4. Add AFD support only through a separate RED fix for `context_dense_swiglu` and `generation_dense_swiglu` classification.
 5. Design a block-aware generic naive weight estimator before using generated TP/memory output as Step4-Pro-V1 feasibility evidence. Any generator change must first follow `.claude/rules/generator-development.md`.
 6. Add empirical profile coverage and silicon support-matrix certification only after measured data and explicit hardware/backend scope are provided.
+7. Correct routed-MoE small-token EP accounting after defining average-rank versus busiest-rank semantics; current floor division can report zero work when `X × topk < EP`.
+8. Validate the vLLM routed/shared execution timeline before treating `generation_moe_overlap = max(routed, shared)` as complete overlap.

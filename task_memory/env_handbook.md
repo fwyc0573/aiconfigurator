@@ -9,6 +9,8 @@
 | 2026-07-15 | Added the verified pytest temp-directory recipe for `/tmp` inode exhaustion. |
 | 2026-07-15 | Added the verified repository-local Git author identity recovery recipe. |
 | 2026-07-16 | Added the verified short-`TMPDIR` recipe for Python multiprocessing AF_UNIX socket paths and documented pytest-native timing when `/usr/bin/time` is unavailable. |
+| 2026-07-19 | Extended the AIC Rust recipe with a verified locked/offline current-worktree in-place build and source/binary isolation checks. |
+| 2026-08-13 | Added the verified Git LFS installation and post-checkout hook recovery recipe. |
 
 # Environment Handbook
 
@@ -20,6 +22,7 @@
 - If `cargo` is unavailable, `maturin` may invoke `puccinialin` to bootstrap Rust; on this host that path timed out while downloading `rustup-init` from `static.rust-lang.org`.
 - Ubuntu default `cargo/rustc 1.75` is too old for dependencies requiring `edition2024`.
 - Cargo sparse registry access can hang behind the company network/proxy, while git registry protocol with CLI fetch completed successfully.
+- A conda editable installation may point to a different AIC checkout. `PYTHONPATH=src:.` then selects the current Python source while the current checkout still lacks its own native extension; borrowing the other checkout's `.so` creates a Python/Rust source mismatch rather than fixing the environment.
 
 ### Verified Recipe
 
@@ -68,6 +71,62 @@ CARGO_HTTP_TIMEOUT=120 \
 $CONDA_ENV/bin/python -m pip install -e . --no-deps --no-build-isolation
 ```
 
+For a current worktree that must keep the conda environment's existing editable installation untouched, build the extension in place from the current checkout. First prove that the locked dependency cache is complete. In the 2026-07-19 incident, the offline probe named exactly one missing archive; only that exact archive was transferred after checksum validation:
+
+```bash
+EXPECTED_LINUX_RAW_SYS_SHA=32a66949e030da00e8c7d4434b251670a91556f4144941d37452769c25d58a53
+SOURCE_CRATE=/home/i-fengyicheng/.cargo/registry/cache/index.crates.io-1949cf8c6b5b557f/linux-raw-sys-0.12.1.crate
+TARGET_CRATE=/tmp/aic-cargo-home-git/registry/cache/github.com-25cdd57fae9f0462/linux-raw-sys-0.12.1.crate
+
+test "$(sha256sum "$SOURCE_CRATE" | awk '{print $1}')" = "$EXPECTED_LINUX_RAW_SYS_SHA"
+mkdir -p "$(dirname "$TARGET_CRATE")"
+cp "$SOURCE_CRATE" "$TARGET_CRATE"
+test "$(sha256sum "$TARGET_CRATE" | awk '{print $1}')" = "$EXPECTED_LINUX_RAW_SYS_SHA"
+
+PATH=/tmp/aic-rust-185-bin:$CONDA_ENV/bin:$PATH \
+RUSTC=/usr/bin/rustc-1.85 \
+CARGO_HOME=/tmp/aic-cargo-home-git \
+CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git \
+CARGO_NET_GIT_FETCH_WITH_CLI=true \
+CARGO_NET_OFFLINE=true \
+cargo metadata \
+  --locked \
+  --offline \
+  --format-version 1 \
+  --manifest-path rust/aiconfigurator-core/Cargo.toml \
+  --features pyo3/extension-module \
+  >tests/.tmp/aic-cargo-metadata-current-worktree.json
+
+PATH=/tmp/aic-rust-185-bin:$CONDA_ENV/bin:$PATH \
+RUSTC=/usr/bin/rustc-1.85 \
+CARGO_HOME=/tmp/aic-cargo-home-git \
+CARGO_REGISTRIES_CRATES_IO_PROTOCOL=git \
+CARGO_NET_GIT_FETCH_WITH_CLI=true \
+CARGO_NET_OFFLINE=true \
+$CONDA_ENV/bin/python -m maturin develop \
+  --skip-install \
+  --locked \
+  --offline \
+  --verbose \
+  --target-dir /data/ycfeng/tmp/aic-step4-pro-target
+
+PYTHONPATH=src:. "$CONDA_ENV/bin/python" - <<'PY'
+from pathlib import Path
+
+import aiconfigurator
+import aiconfigurator_core
+from aiconfigurator.sdk import engine
+
+root = Path.cwd().resolve()
+for module in (aiconfigurator, aiconfigurator_core, engine):
+    assert str(Path(module.__file__).resolve()).startswith(str(root))
+assert aiconfigurator_core._build_smoke() == 1
+print(Path(aiconfigurator_core.__file__).parent / "_aiconfigurator_core.abi3.so")
+PY
+```
+
+The archive transfer above is not a generic retry or fallback. Use it only when `cargo metadata --locked --offline` identifies that exact locked archive as missing and the source hash matches the recorded value. A different missing crate or hash is a new environment issue and must stop for root-cause analysis.
+
 ### Verification Evidence
 
 Observed on 2026-07-04:
@@ -81,11 +140,25 @@ usage: aiconfigurator [-h] {cli,version} ...
 ...
 ```
 
+Observed on 2026-07-19 for the locked/offline current-worktree build:
+
+```text
+cargo metadata: exit 0, 505353 bytes, 112 packages, 1 workspace member
+maturin/cargo: exit 0, dev profile finished in 37.26 s
+extension: src/aiconfigurator_core/_aiconfigurator_core.abi3.so
+extension SHA-256: fbd7fc733fe7f183603377812b18f1a269f9e6ea65ae70c597b6f04541954061
+Python: 3.11.15
+_build_smoke(): 1
+import smoke: exit 0
+```
+
 ### Do Not Use
 
 - Do not patch `src/aiconfigurator/__init__.py` or fake package metadata to bypass the native extension build.
 - Do not rely on Ubuntu `cargo/rustc 1.75` for this checkout; it fails on `edition2024` dependencies.
 - Do not prefer the `puccinialin` Rust bootstrap path on this host unless network behavior changes and is re-verified.
+- Do not copy a compiled AIC extension from another checkout. Build from the current checkout and assert every imported module path is under the current root.
+- Do not copy arbitrary crate archives into the task Cargo home. Require an exact locked-version diagnosis and checksum match first.
 
 ## Importing AIC performance runners for validation
 
@@ -307,3 +380,45 @@ Effective repository-local user.email: 935953068@qq.com
 ```
 
 Do not set or overwrite global Git identity as an implicit repair. If repository history does not establish the intended author, stop and request the identity instead of guessing.
+
+## Git LFS missing from PATH during branch/worktree checkout
+
+### Root Cause
+
+- The repository installs a `post-checkout` hook that invokes `git-lfs`.
+- A branch switch can complete while the hook returns exit code 2 when the
+  `git-lfs` binary is absent.
+- Deleting or bypassing the hook hides the missing dependency and can leave
+  LFS-managed files unresolved.
+
+### Verified Recipe
+
+The company Ubuntu mirror provides the supported package:
+
+```bash
+apt-cache policy git-lfs
+sudo -n apt-get install -y git-lfs
+git lfs version
+```
+
+Re-run the existing hook with the current revision to verify the same path
+that failed:
+
+```bash
+HOOK="$(git rev-parse --git-common-dir)/hooks/post-checkout"
+"$HOOK" "$(git rev-parse HEAD)" "$(git rev-parse HEAD)" 1
+git lfs env
+```
+
+### Verification Evidence
+
+Observed on 2026-08-13:
+
+```text
+git-lfs/3.4.1
+post-checkout hook exit code: 0
+```
+
+Do not remove the repository hook or set `GIT_LFS_SKIP_SMUDGE` as an implicit
+repair. Diagnose registry/authentication separately if a later LFS fetch
+fails.

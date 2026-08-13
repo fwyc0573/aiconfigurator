@@ -567,6 +567,223 @@ def _parse_nemotron_block_configs(block_configs: list[dict]) -> list[BlockConfig
     return grouped_configs if grouped_configs else None
 
 
+def _require_step4_pro_fields(section_name: str, section: dict, required_fields: tuple[str, ...]) -> None:
+    """Require every field in one Step4-Pro schema section."""
+    for field in required_fields:
+        if field not in section:
+            raise ValueError(f"Step4-Pro {section_name} missing required field '{field}'")
+
+
+_STEP4_MFA_ATTENTION_FIELDS = (
+    "attention_type",
+    "num_query_heads",
+    "output_groups",
+    "q_lora_rank",
+    "o_lora_rank",
+    "projection_head_dim",
+    "cache_projection_width",
+    "cache_entry_width",
+    "rope_head_dim",
+    "retention_mode",
+    "window_size",
+    "compression_ratio",
+    "window_allocation_policy",
+    "cache_tp_policy",
+    "inference_source",
+    "target_parameter_count",
+    "index_n_heads",
+    "index_head_dim",
+    "index_topk",
+)
+
+
+def _parse_step4_mfa_attention_config(
+    section_name: str,
+    section: dict,
+    *,
+    hidden_size: int,
+) -> common.Step4MFAAttentionConfig:
+    """Parse one exact Step4-Pro MFA section without ignored compatibility fields."""
+    if not isinstance(section, dict):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
+        )
+    _require_step4_pro_fields(section_name, section, _STEP4_MFA_ATTENTION_FIELDS)
+    unsupported_fields = sorted(set(section) - set(_STEP4_MFA_ATTENTION_FIELDS))
+    if unsupported_fields:
+        raise ValueError(f"Step4-Pro {section_name} has unsupported field {unsupported_fields[0]!r}")
+
+    try:
+        return common.Step4MFAAttentionConfig(hidden_size=hidden_size, **section)
+    except ValueError as error:
+        raise ValueError(f"{section_name}.{error}") from error
+
+
+_STEP4_MQA_ATTENTION_FIELDS = (
+    "attention_type",
+    "num_query_heads",
+    "num_kv_heads",
+    "head_dim",
+    "retention_mode",
+    "window_size",
+    "target_parameter_count",
+    "inference_source",
+    "q_lora_rank",
+    "projection_head_dim",
+    "cache_projection_width",
+    "cache_projection_matrix_count",
+    "auxiliary_rank_vector_count",
+    "cache_entry_width",
+    "output_groups",
+)
+
+
+def _parse_step4_mqa_attention_config(
+    section_name: str,
+    section: dict,
+    *,
+    hidden_size: int,
+) -> common.Step4MQAAttentionConfig:
+    """Parse the independent MQA schema used by Step4-Pro V3/V4."""
+    if not isinstance(section, dict):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
+        )
+    _require_step4_pro_fields(section_name, section, _STEP4_MQA_ATTENTION_FIELDS)
+    unsupported_fields = sorted(set(section) - set(_STEP4_MQA_ATTENTION_FIELDS))
+    if unsupported_fields:
+        raise ValueError(f"Step4-Pro {section_name} has unsupported field {unsupported_fields[0]!r}")
+    try:
+        return common.Step4MQAAttentionConfig(hidden_size=hidden_size, **section)
+    except ValueError as error:
+        raise ValueError(f"{section_name}.{error}") from error
+
+
+def _parse_step4_pro_config(config: dict, *, num_hidden_layers: int, hidden_size: int) -> common.Step4ProConfig:
+    """Parse the explicit Step4-Pro layer and attention schema."""
+    raw_layers = config["layers"]
+    if not isinstance(raw_layers, list):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro layers must be a list, got {type(raw_layers).__name__}"
+        )
+    if len(raw_layers) != num_hidden_layers:
+        raise ValueError(f"Step4-Pro layers length {len(raw_layers)} != num_hidden_layers {num_hidden_layers}")
+
+    layers = []
+    for layer_index, raw_layer in enumerate(raw_layers):
+        if not isinstance(raw_layer, dict):
+            raise ValueError(f"Step4-Pro layer {layer_index} must be a mapping")  # noqa: TRY004
+        _require_step4_pro_fields("layer", raw_layer, ("layer_id", "attention_type", "ffn_type"))
+
+        layer_id = raw_layer["layer_id"]
+        if type(layer_id) is not int or layer_id < 0:
+            raise ValueError(f"Step4-Pro layer {layer_index} layer_id must be a non-negative integer, got {layer_id!r}")
+        if layer_id != layer_index:
+            raise ValueError(
+                f"Step4-Pro layer {layer_index} must have contiguous layer_id {layer_index}, got {layer_id}"
+            )
+
+        attention_type = raw_layer["attention_type"]
+        if attention_type not in {"full", "nonfull"}:
+            raise ValueError(f"Step4-Pro layer {layer_index} has unsupported attention_type {attention_type!r}")
+        ffn_type = raw_layer["ffn_type"]
+        if ffn_type not in {"dense", "moe"}:
+            raise ValueError(f"Step4-Pro layer {layer_index} has unsupported ffn_type {ffn_type!r}")
+        layers.append(
+            common.Step4LayerSpec(
+                layer_id=layer_id,
+                attention_type=attention_type,
+                ffn_type=ffn_type,
+            )
+        )
+
+    full = _parse_step4_mfa_attention_config(
+        "full_attention",
+        config["full_attention"],
+        hidden_size=hidden_size,
+    )
+    nonfull = _parse_step4_mfa_attention_config(
+        "nonfull_attention",
+        config["nonfull_attention"],
+        hidden_size=hidden_size,
+    )
+
+    return common.Step4ProConfig(
+        layers=tuple(layers),
+        full_attention=full,
+        nonfull_attention=nonfull,
+        dense_inter_size=config["intermediate_size"],
+        shared_expert_inter_size=config["shared_expert_intermediate_size"],
+    )
+
+
+def _parse_step4_pro_mqa_config(config: dict, *, num_hidden_layers: int, hidden_size: int) -> common.Step4ProMQAConfig:
+    """Parse V3/V4's explicit per-layer MQA schema."""
+    raw_layers = config.get("layers")
+    if not isinstance(raw_layers, list):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro layers must be a list, got {type(raw_layers).__name__}"
+        )
+    if len(raw_layers) != num_hidden_layers:
+        raise ValueError(f"Step4-Pro layers length {len(raw_layers)} != num_hidden_layers {num_hidden_layers}")
+    layers = []
+    for index, raw_layer in enumerate(raw_layers):
+        if not isinstance(raw_layer, dict):
+            raise ValueError(f"Step4-Pro layer {index} must be a mapping")  # noqa: TRY004
+        _require_step4_pro_fields("layer", raw_layer, ("layer_id", "attention_type", "ffn_type"))
+        if type(raw_layer["layer_id"]) is not int or raw_layer["layer_id"] != index:
+            raise ValueError(f"Step4-Pro layer {index} must have contiguous layer_id {index}")
+        if raw_layer["attention_type"] not in {"full", "nonfull"}:
+            raise ValueError(f"Step4-Pro layer {index} has unsupported attention_type {raw_layer['attention_type']!r}")
+        if raw_layer["ffn_type"] not in {"dense", "moe"}:
+            raise ValueError(f"Step4-Pro layer {index} has unsupported ffn_type {raw_layer['ffn_type']!r}")
+        layers.append(common.Step4LayerSpec(index, raw_layer["attention_type"], raw_layer["ffn_type"]))
+
+    full = _parse_step4_mqa_attention_config("full_attention", config["full_attention"], hidden_size=hidden_size)
+    nonfull = _parse_step4_mqa_attention_config(
+        "nonfull_attention", config["nonfull_attention"], hidden_size=hidden_size
+    )
+    latent_moe_dim = config.get("latent_moe_dim", 0)
+    if type(latent_moe_dim) is not int or latent_moe_dim < 0:
+        raise ValueError(f"Step4-Pro latent_moe_dim must be a non-negative integer, got {latent_moe_dim!r}")
+    return common.Step4ProMQAConfig(
+        layers=tuple(layers),
+        full_attention=full,
+        nonfull_attention=nonfull,
+        dense_inter_size=config["intermediate_size"],
+        shared_expert_inter_size=config["shared_expert_intermediate_size"],
+        latent_moe_dim=latent_moe_dim,
+    )
+
+
+def _validate_step4_pro_layers(raw_layers: object, *, num_hidden_layers: int) -> None:
+    """Validate layer records shared by the MFA and MQA Step4-Pro schemas."""
+    if not isinstance(raw_layers, list):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro layers must be a list, got {type(raw_layers).__name__}"
+        )
+    if len(raw_layers) != num_hidden_layers:
+        raise ValueError(f"Step4-Pro layers length {len(raw_layers)} != num_hidden_layers {num_hidden_layers}")
+    for layer_index, raw_layer in enumerate(raw_layers):
+        if not isinstance(raw_layer, dict):
+            raise ValueError(f"Step4-Pro layer {layer_index} must be a mapping")  # noqa: TRY004
+        _require_step4_pro_fields("layer", raw_layer, ("layer_id", "attention_type", "ffn_type"))
+
+        layer_id = raw_layer["layer_id"]
+        if type(layer_id) is not int or layer_id < 0:
+            raise ValueError(f"Step4-Pro layer {layer_index} layer_id must be a non-negative integer, got {layer_id!r}")
+        if layer_id != layer_index:
+            raise ValueError(
+                f"Step4-Pro layer {layer_index} must have contiguous layer_id {layer_index}, got {layer_id}"
+            )
+        attention_type = raw_layer["attention_type"]
+        if attention_type not in {"full", "nonfull"}:
+            raise ValueError(f"Step4-Pro layer {layer_index} has unsupported attention_type {attention_type!r}")
+        ffn_type = raw_layer["ffn_type"]
+        if ffn_type not in {"dense", "moe"}:
+            raise ValueError(f"Step4-Pro layer {layer_index} has unsupported ffn_type {ffn_type!r}")
+
+
 def _parse_hf_config_json(config: dict) -> dict:
     """
     Convert a HuggingFace config.json dictionary into model configuration parameters.
@@ -785,7 +1002,8 @@ def _parse_hf_config_json(config: dict) -> dict:
             f"hc_mult={extra_params.hc_mult}"
         )
     elif architecture == "Step4ForCausalLM":
-        required_fields = (
+        pro_schema_fields = ("layers", "full_attention", "nonfull_attention")
+        legacy_schema_fields = (
             "block_types",
             "full_num_attention_heads",
             "full_num_key_value_heads",
@@ -798,27 +1016,32 @@ def _parse_hf_config_json(config: dict) -> dict:
             "qk_nope_head_dim",
             "qk_rope_head_dim",
             "v_head_dim",
+        )
+        present_legacy_fields = tuple(field for field in legacy_schema_fields if field in config)
+        present_pro_fields = tuple(field for field in pro_schema_fields if field in config)
+        if present_legacy_fields and present_pro_fields:
+            raise ValueError("Step4 config cannot define both 'block_types' and the Step4-Pro attention schema")
+        if not present_legacy_fields and len(present_pro_fields) != len(pro_schema_fields):
+            if present_pro_fields:
+                raise ValueError(
+                    "Step4-Pro config requires 'layers', 'full_attention', and 'nonfull_attention' together"
+                )
+            raise ValueError(
+                "Step4 config must define exactly one attention schema: legacy 'block_types' or Step4-Pro "
+                "'layers', 'full_attention', and 'nonfull_attention'"
+            )
+
+        shared_required_fields = (
             "moe_intermediate_size",
             "n_routed_experts",
             "num_experts_per_tok",
             "shared_expert_intermediate_size",
         )
-        for field in required_fields:
+        for field in shared_required_fields:
             if field not in config:
                 raise ValueError(f"Step4 config missing required field '{field}'")
 
-        positive_fields = (
-            "full_num_attention_heads",
-            "full_num_key_value_heads",
-            "sliding_num_attention_heads",
-            "sliding_num_key_value_heads",
-            "attention_head_dim",
-            "sliding_window_size",
-            "q_lora_rank",
-            "kv_lora_rank",
-            "qk_nope_head_dim",
-            "qk_rope_head_dim",
-            "v_head_dim",
+        shared_positive_fields = (
             "num_hidden_layers",
             "hidden_size",
             "num_attention_heads",
@@ -831,47 +1054,100 @@ def _parse_hf_config_json(config: dict) -> dict:
             "num_experts_per_tok",
             "shared_expert_intermediate_size",
         )
-        for field in positive_fields:
+        for field in shared_positive_fields:
             value = config.get(field)
-            if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+            if type(value) is not int or value <= 0:
                 raise ValueError(f"Step4 {field} must be a positive integer, got {value!r}")
 
         topk = config["num_experts_per_tok"]
         num_experts = config["n_routed_experts"]
         moe_inter_size = config["moe_intermediate_size"]
-
-        block_types = tuple(config["block_types"])
-        if len(block_types) != layers:
-            raise ValueError(f"Step4 block_types length {len(block_types)} != num_hidden_layers {layers}")
-        supported_block_types = {"dense_swa", "moe_full", "moe_swa"}
-        for block_type in block_types:
-            if block_type not in supported_block_types:
-                raise ValueError(f"Step4 unsupported block type '{block_type}'")
         if topk > num_experts:
             raise ValueError(f"Step4 num_experts_per_tok {topk} exceeds n_routed_experts {num_experts}")
 
-        extra_params = common.Step4Config(
-            block_types=block_types,
-            full_num_attention_heads=config["full_num_attention_heads"],
-            full_num_key_value_heads=config["full_num_key_value_heads"],
-            sliding_num_attention_heads=config["sliding_num_attention_heads"],
-            sliding_num_key_value_heads=config["sliding_num_key_value_heads"],
-            attention_head_dim=config["attention_head_dim"],
-            sliding_window_size=config["sliding_window_size"],
-            q_lora_rank=config["q_lora_rank"],
-            kv_lora_rank=config["kv_lora_rank"],
-            qk_nope_head_dim=config["qk_nope_head_dim"],
-            qk_rope_head_dim=config["qk_rope_head_dim"],
-            v_head_dim=config["v_head_dim"],
-            dense_inter_size=config["intermediate_size"],
-            shared_expert_inter_size=config["shared_expert_intermediate_size"],
-        )
-        logger.info(
-            "Step4 config: dense_swa=%d, moe_full=%d, moe_swa=%d, temporary_attention=mla_all_layers",
-            block_types.count("dense_swa"),
-            block_types.count("moe_full"),
-            block_types.count("moe_swa"),
-        )
+        if present_legacy_fields:
+            for field in legacy_schema_fields:
+                if field not in config:
+                    raise ValueError(f"Step4 config missing required field '{field}'")
+            for field in legacy_schema_fields[1:]:
+                value = config[field]
+                if type(value) is not int or value <= 0:
+                    raise ValueError(f"Step4 {field} must be a positive integer, got {value!r}")
+
+            block_types = tuple(config["block_types"])
+            if len(block_types) != layers:
+                raise ValueError(f"Step4 block_types length {len(block_types)} != num_hidden_layers {layers}")
+            supported_block_types = {"dense_swa", "moe_full", "moe_swa"}
+            for block_type in block_types:
+                if block_type not in supported_block_types:
+                    raise ValueError(f"Step4 unsupported block type '{block_type}'")
+
+            extra_params = common.Step4Config(
+                block_types=block_types,
+                full_num_attention_heads=config["full_num_attention_heads"],
+                full_num_key_value_heads=config["full_num_key_value_heads"],
+                sliding_num_attention_heads=config["sliding_num_attention_heads"],
+                sliding_num_key_value_heads=config["sliding_num_key_value_heads"],
+                attention_head_dim=config["attention_head_dim"],
+                sliding_window_size=config["sliding_window_size"],
+                q_lora_rank=config["q_lora_rank"],
+                kv_lora_rank=config["kv_lora_rank"],
+                qk_nope_head_dim=config["qk_nope_head_dim"],
+                qk_rope_head_dim=config["qk_rope_head_dim"],
+                v_head_dim=config["v_head_dim"],
+                dense_inter_size=config["intermediate_size"],
+                shared_expert_inter_size=config["shared_expert_intermediate_size"],
+            )
+            logger.info(
+                "Step4 config: dense_swa=%d, moe_full=%d, moe_swa=%d, temporary_attention=mla_all_layers",
+                block_types.count("dense_swa"),
+                block_types.count("moe_full"),
+                block_types.count("moe_swa"),
+            )
+        else:
+            # Validate the shared Step4-Pro structure before inspecting the
+            # attention discriminator.  This keeps malformed layers and
+            # section mappings fail-fast, and avoids leaking ``AttributeError``
+            # from calling ``.get`` on user-provided non-mappings.
+            _validate_step4_pro_layers(config.get("layers"), num_hidden_layers=layers)
+
+            attention_types = set()
+            for section_name in ("full_attention", "nonfull_attention"):
+                section = config.get(section_name)
+                if not isinstance(section, dict):
+                    raise ValueError(  # noqa: TRY004
+                        f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
+                    )
+                _require_step4_pro_fields(section_name, section, ("attention_type",))
+                attention_types.add(section["attention_type"])
+            if attention_types == {"mqa"}:
+                extra_params = _parse_step4_pro_mqa_config(
+                    config,
+                    num_hidden_layers=layers,
+                    hidden_size=hidden_size,
+                )
+                logger.info(
+                    "Step4-Pro MQA config: full=%d, nonfull=%d, dense=%d, moe=%d",
+                    sum(layer.attention_type == "full" for layer in extra_params.layers),
+                    sum(layer.attention_type == "nonfull" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "dense" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "moe" for layer in extra_params.layers),
+                )
+            elif attention_types == {"mfa"}:
+                extra_params = _parse_step4_pro_config(
+                    config,
+                    num_hidden_layers=layers,
+                    hidden_size=hidden_size,
+                )
+                logger.info(
+                    "Step4-Pro MFA config: full=%d, nonfull=%d, dense=%d, moe=%d",
+                    sum(layer.attention_type == "full" for layer in extra_params.layers),
+                    sum(layer.attention_type == "nonfull" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "dense" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "moe" for layer in extra_params.layers),
+                )
+            else:
+                raise ValueError("Step4-Pro full_attention and nonfull_attention must use one attention_type")
     elif architecture in {"Qwen3ForCausalLM", "Qwen3MoeForCausalLM", "MiniMaxM2ForCausalLM"}:
         # Qwen3-family and MiniMax-M2 attention include per-layer Q/K normalization.
         extra_params = {"architecture": architecture, "use_qk_norm": True}

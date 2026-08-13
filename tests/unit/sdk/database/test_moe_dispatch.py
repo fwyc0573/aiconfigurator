@@ -501,7 +501,7 @@ class TestVllmReduceResults:
         db.query_nccl.assert_called_once()
         assert db.query_nccl.call_args[0][2] == collective
 
-    def test_actual_group_eight_queries_are_used_when_attention_dp_is_two(self):
+    def test_attention_tp_and_moe_world_queries_use_distinct_group_sizes(self):
         db = _make_mock_db(
             sm_version=100,
             num_gpus_per_node=4,
@@ -520,7 +520,7 @@ class TestVllmReduceResults:
         assert float(result) == 3.5
         db.query_custom_allreduce.assert_called_once_with(
             common.CommQuantMode.half,
-            8,
+            4,
             16 * 1024,
         )
         db.query_nccl.assert_called_once_with(
@@ -528,6 +528,31 @@ class TestVllmReduceResults:
             8,
             "all_gather",
             16 * 1024 * 2,
+        )
+
+    def test_step4_ep64_uses_local_tp_group_for_allreduce_and_world_group_for_nccl(self):
+        db = _make_mock_db(sm_version=90, num_gpus_per_node=8, backend="vllm")
+        dispatch = _make_dispatch(
+            moe_tp_size=1,
+            moe_ep_size=64,
+            attention_dp_size=32,
+            pre_dispatch=False,
+            hidden_size=6144,
+        )
+
+        result = dispatch.query(db, x=1024)
+
+        assert float(result) == 3.5
+        db.query_custom_allreduce.assert_called_once_with(
+            common.CommQuantMode.half,
+            2,
+            1024 * 6144,
+        )
+        db.query_nccl.assert_called_once_with(
+            common.CommQuantMode.half,
+            64,
+            "reduce_scatter",
+            1024 * 6144 * 32,
         )
 
 

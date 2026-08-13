@@ -389,6 +389,68 @@ def interp_2d_linear(x: int, y: int, data: dict, extracted_metrics_cache: dict |
     return {"latency": latency, "power": 0.0, "energy": 0.0}
 
 
+def _interp_2d_scalar(x: int, y: int, data: dict, method: str) -> float:
+    """Interpolate one scalar 2-D workload slice without crossing a structural axis."""
+    if x in data and y in data[x]:
+        return validate_interpolation_result(data[x][y])
+
+    x_left, x_right = nearest_1d_point_helper(x, list(data.keys()))
+    y_bounds = [nearest_1d_point_helper(y, list(data[x_value].keys())) for x_value in (x_left, x_right)]
+    points = []
+    values = []
+    for x_value, (y_left, y_right) in zip((x_left, x_right), y_bounds, strict=True):
+        for y_value in (y_left, y_right):
+            points.append([x_value, y_value])
+            values.append(data[x_value][y_value])
+
+    if method == "cubic":
+        return validate_interpolation_result(_reduced_griddata(points, values, (x, y), "cubic"))
+    if method == "linear":
+        return validate_interpolation_result(_linear_griddata(points, values, (x, y)))
+    if method == "bilinear":
+        if y_bounds[0] != y_bounds[1]:
+            raise InterpolationDataNotAvailableError(
+                "Bilinear workload interpolation requires a rectangular two-axis slice"
+            )
+        y_left, y_right = y_bounds[0]
+        return validate_interpolation_result(interp_2d_rectangular_slice(x_left, x_right, y_left, y_right, x, y, data))
+    raise NotImplementedError(f"Unsupported 2-D interpolation method: {method}")
+
+
+def interp_2d_fixed_first_axis(
+    structural_value: int,
+    workload_x: int,
+    workload_y: int,
+    data: dict,
+    method: str,
+    extracted_metrics_cache: dict | None = None,
+) -> dict:
+    """Require an exact structural key and interpolate only its two workload axes."""
+    if structural_value not in data:
+        raise InterpolationDataNotAvailableError(f"Exact structural axis value is unavailable: {structural_value}")
+    workload_slice = data[structural_value]
+    sample_value = get_sample_leaf_value(workload_slice)
+    if isinstance(sample_value, dict):
+        if extracted_metrics_cache is None:
+            extracted_metrics_cache = {}
+        latency_data, energy_data = _get_cached_extracted_metrics(
+            extracted_metrics_cache,
+            2,
+            workload_slice,
+            extract_latency_and_energy_2d,
+        )
+        return {
+            "latency": _interp_2d_scalar(workload_x, workload_y, latency_data, method),
+            "power": 0.0,
+            "energy": _interp_2d_scalar(workload_x, workload_y, energy_data, method),
+        }
+    return {
+        "latency": _interp_2d_scalar(workload_x, workload_y, workload_slice, method),
+        "power": 0.0,
+        "energy": 0.0,
+    }
+
+
 # ---------------------------------------------------------------------------
 # 3-D linear interpolation
 # ---------------------------------------------------------------------------

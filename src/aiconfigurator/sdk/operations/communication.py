@@ -60,6 +60,17 @@ def _cache_key(database: PerfDatabase) -> tuple:
     )
 
 
+def _require_exact_custom_allreduce_tp(*, requested_tp: int, node_gpus: int) -> int:
+    """Require a measured CustomAllReduce rank, without cross-node scaling."""
+    if requested_tp > node_gpus:
+        raise PerfDataNotAvailableError(
+            "No exact CustomAllReduce path is available for "
+            f"requested tp_size={requested_tp} across a {node_gpus}-GPU node; "
+            "collect the runtime-selected multi-node collective instead."
+        )
+    return requested_tp
+
+
 class CustomAllReduce(Operation):
     """
     Custom AllReduce operation with power tracking.
@@ -195,7 +206,10 @@ class CustomAllReduce(Operation):
             # combinations. Validate explicitly so upstream callers see a structured
             # PerfDataNotAvailableError instead of an internal AssertionError from
             # _nearest_1d_point_helper when the CSV has no rows for this bucket.
-            effective_tp = min(tp_size, database.system_spec["node"]["num_gpus_per_node"])
+            effective_tp = _require_exact_custom_allreduce_tp(
+                requested_tp=tp_size,
+                node_gpus=database.system_spec["node"]["num_gpus_per_node"],
+            )
             by_tp = data_wrapper.get(quant_mode, {})
             strategy_dict = by_tp.get(effective_tp, {})
             comm_dict = strategy_dict.get("AUTO", {})
@@ -220,20 +234,6 @@ class CustomAllReduce(Operation):
             else:
                 lat = result
                 energy = 0.0
-
-            if tp_size > database.system_spec["node"]["num_gpus_per_node"]:
-                base_bw = database._get_p2p_bandwidth(database.system_spec["node"]["num_gpus_per_node"])
-                target_bw = database._get_p2p_bandwidth(tp_size)
-                scale_factor = (
-                    (tp_size - 1)
-                    / tp_size
-                    * database.system_spec["node"]["num_gpus_per_node"]
-                    / (database.system_spec["node"]["num_gpus_per_node"] - 1)
-                    * base_bw
-                    / target_bw
-                )
-                lat = lat * scale_factor
-                energy = energy * scale_factor
 
             return database._interp_pr(lat, energy=energy)
 

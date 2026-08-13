@@ -1,0 +1,90 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: Step4ForCausalLM
+model_path: stepfun-ai/Step4-Pro-V3
+model_paths:
+  - stepfun-ai/Step4-Pro-V3
+  - stepfun-ai/Step4-Pro-V4
+include_base: true
+base_ops:
+  - attention_context
+  - attention_generation
+  - gemm
+model_ops:
+  - moe
+description: >
+  Targeted vLLM 0.19.0 Step4-Pro-V3/V4 operation population for H800 SM90.
+  Structural attention profiles remain correlated; MoE uses only FP8,
+  moe_tp=1, legal EP, and power_law_1.2.
+
+model_case_values:
+  attention:
+    - id: step4_v3_full_attention
+      model_path: stepfun-ai/Step4-Pro-V3
+      num_attention_heads: 96
+      num_key_value_heads: 12
+      head_dim: 128
+      window_sizes: [0]
+      tensor_parallel_sizes: [1, 2, 4]
+    - id: step4_v3_swa_attention
+      model_path: stepfun-ai/Step4-Pro-V3
+      num_attention_heads: 128
+      num_key_value_heads: 16
+      head_dim: 128
+      window_sizes: [512]
+      tensor_parallel_sizes: [1, 2, 4]
+    - id: step4_v4_full_attention
+      model_path: stepfun-ai/Step4-Pro-V4
+      num_attention_heads: 96
+      num_key_value_heads: 12
+      head_dim: 128
+      window_sizes: [0]
+      tensor_parallel_sizes: [1, 2, 4]
+    - id: step4_v4_swa_attention
+      model_path: stepfun-ai/Step4-Pro-V4
+      num_attention_heads: 128
+      num_key_value_heads: 16
+      head_dim: 128
+      window_sizes: [512]
+      tensor_parallel_sizes: [1, 2, 4]
+  moe:
+    - model_path: stepfun-ai/Step4-Pro-V3
+      hidden_size: 6144
+      inter_size: 2048
+      topk: 16
+      num_experts: 1024
+      tensor_parallel_sizes: [1]
+      expert_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
+      gpu_counts: [1, 2, 4, 8, 16, 32, 64]
+      token_expert_distributions:
+        - name: power_law
+          power_law_alpha: 1.2
+      framework_quantization:
+        vllm:
+          allowed_modes: [fp8]
+    - model_path: stepfun-ai/Step4-Pro-V4
+      hidden_size: 9216
+      inter_size: 3584
+      topk: 8
+      num_experts: 384
+      tensor_parallel_sizes: [1]
+      expert_parallel_sizes: [1, 2, 4, 8, 16, 32, 64]
+      gpu_counts: [1, 2, 4, 8, 16, 32, 64]
+      token_expert_distributions:
+        - name: power_law
+          power_law_alpha: 1.2
+      framework_quantization:
+        vllm:
+          allowed_modes: [fp8]
+
+all_frameworks_op_cases:
+  attention_context:
+    cases: all
+  attention_generation:
+    cases: all
+  gemm:
+    cases: all
+  moe:
+    cases: all

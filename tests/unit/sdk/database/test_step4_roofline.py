@@ -67,16 +67,15 @@ def _fail_formula_loader(operation_name):
     return classmethod(fail_load_data)
 
 
-@pytest.mark.parametrize("database_mode", ["SOL", "SOL_FULL"])
-def test_step4_task_validation_never_loads_perfdb_in_formula_only_modes(monkeypatch, database_mode):
-    """Formula-only validation must not inspect profiling support tables."""
+def test_step4_task_sol_validation_never_loads_perfdb(monkeypatch):
+    """Scalar SOL validation must not inspect profiling support tables."""
     task = Task(
         serving_mode="agg",
         model_path="stepfun-ai/Step4",
         system_name="h200_sxm",
         backend_name="vllm",
         backend_version="0.22.0",
-        database_mode=database_mode,
+        database_mode="SOL",
     )
 
     def fail_load_database(*_args, **_kwargs):
@@ -112,15 +111,15 @@ def _step4_task_kwargs(serving_mode, database_mode):
 
 
 @pytest.mark.parametrize("serving_mode", ["agg", "disagg"])
-@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL"])
-def test_step4_task_constructor_rejects_non_formula_database_modes(serving_mode, database_mode):
-    with pytest.raises(ValueError, match=r"Step4.*SOL.*SOL_FULL"):
+@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL", "SOL_FULL"])
+def test_step4_task_constructor_rejects_unsupported_database_modes(serving_mode, database_mode):
+    with pytest.raises(ValueError, match=r"Step4.*database_mode.*SOL"):
         Task(**_step4_task_kwargs(serving_mode, database_mode))
 
 
 @pytest.mark.parametrize("serving_mode", ["agg", "disagg"])
-@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL"])
-def test_step4_task_validation_rejects_mutated_non_formula_mode_before_database_checks(
+@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL", "SOL_FULL"])
+def test_step4_task_validation_rejects_mutated_unsupported_mode_before_database_checks(
     monkeypatch,
     serving_mode,
     database_mode,
@@ -130,15 +129,15 @@ def test_step4_task_validation_rejects_mutated_non_formula_mode_before_database_
     database_check = MagicMock()
     monkeypatch.setattr(task, "_check_role_against_db", database_check)
 
-    with pytest.raises(ValueError, match=r"Step4.*SOL.*SOL_FULL"):
+    with pytest.raises(ValueError, match=r"Step4.*database_mode.*SOL"):
         task.validate()
 
     database_check.assert_not_called()
 
 
 @pytest.mark.parametrize("serving_mode", ["agg", "disagg"])
-@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL"])
-def test_step4_task_run_validate_false_rejects_mutated_non_formula_mode_before_perfdb_load(
+@pytest.mark.parametrize("database_mode", [None, "SILICON", "HYBRID", "EMPIRICAL", "SOL_FULL"])
+def test_step4_task_run_validate_false_rejects_mutated_unsupported_mode_before_perfdb_load(
     monkeypatch,
     serving_mode,
     database_mode,
@@ -150,7 +149,7 @@ def test_step4_task_run_validate_false_rejects_mutated_non_formula_mode_before_p
     monkeypatch.setattr("aiconfigurator.sdk.sweep.sweep_agg", MagicMock(return_value=pd.DataFrame()))
     monkeypatch.setattr("aiconfigurator.sdk.sweep.sweep_disagg", MagicMock(return_value=pd.DataFrame()))
 
-    with pytest.raises(ValueError, match=r"Step4.*SOL.*SOL_FULL"):
+    with pytest.raises(ValueError, match=r"Step4.*database_mode.*SOL"):
         task.run(validate=False)
 
     load_database.assert_not_called()

@@ -30,7 +30,7 @@ use crate::common::enums::{FmhaQuantMode, KvCacheQuantMode};
 use crate::common::error::AicError;
 use crate::common::system_spec::SystemSpec;
 use super::interpolation::{
-    interp_1d, interp_2d_1d_grid, interp_2d_1d_grid_strict, nearest_neighbors, Grid3,
+    interp_1d, interp_2d_1d_grid, nearest_neighbors, Grid3,
 };
 use crate::perf_database::parquet_loader::PerfReader;
 
@@ -142,15 +142,18 @@ impl AttentionTable {
             .by_keys
             .get(&key)
             .ok_or_else(|| missing_gen_key(&self.data_root, &key))?;
+        if !grid.contains_key(&n) {
+            return Err(AicError::PerfDatabase(format!(
+                "exact generation-attention structural num_heads value is unavailable: {n}"
+            )));
+        }
         // Mirror Python `GenerationAttention._query_generation_attention_table`
         // `get_silicon`: average 5 interp samples over s ∈ [0.9s, 1.1s].
         //   s_min = max(1, int(s*0.9)); s_max = max(s_min, int(s*1.1))
         //   s_samples[i] = s_min + (s_max - s_min) * i // (sample_cnt - 1)
-        // Each sample calls `interp_3d(n, b, s_i, ...)` which is 1-D over n
-        // and bilinear over (b, s) — hence `interp_2d_1d_grid_strict(grid, n,
-        // b, s_i)` with the `[n][b][s]` grid. `interp_3d` uses
-        // `allow_singleton_axes=False`, so the strict variant surfaces the same
-        // `_require_3d_axis_coverage` error on degenerate grids.
+        // Each sample keeps the exact structural n slice and interpolates only
+        // the measured workload axes (b, s), matching Python's
+        // `interp_2d_fixed_first_axis` contract.
         let s = kv_seq_tokens;
         let s_min = ((s as f64 * 0.9) as u32).max(1);
         let s_max = ((s as f64 * 1.1) as u32).max(s_min);
@@ -159,7 +162,7 @@ impl AttentionTable {
         for i in 0..SAMPLE_CNT {
             // Match Python integer arithmetic: multiply before integer divide.
             let s_i = s_min + ((u64::from(s_max - s_min) * u64::from(i)) / u64::from(SAMPLE_CNT - 1)) as u32;
-            latency_sum += interp_2d_1d_grid_strict(grid, n, b, s_i, "3-D bilinear interpolation")?;
+            latency_sum += interp_2d_1d_grid(grid, n, b, s_i)?;
         }
         Ok(latency_sum / SAMPLE_CNT as f64)
     }
@@ -630,6 +633,19 @@ mod tests {
         SystemSpec::load(&systems_yaml).expect("gb200.yaml must parse")
     }
 
+    fn h800_vllm_data_root() -> PathBuf {
+        PathBuf::from(REPO_ROOT_HINT)
+            .join("../..")
+            .join("src/aiconfigurator/systems/data/h800_sxm/vllm/0.19.0")
+    }
+
+    fn h800_sxm_spec() -> SystemSpec {
+        let systems_yaml = PathBuf::from(REPO_ROOT_HINT)
+            .join("../..")
+            .join("src/aiconfigurator/systems/h800_sxm.yaml");
+        SystemSpec::load(&systems_yaml).expect("h800_sxm.yaml must parse")
+    }
+
     #[test]
     fn generation_query_ragged_corner_matches_python() {
         // Pins the exact regime this parity fix targets: large batch x long kv,
@@ -715,6 +731,21 @@ mod tests {
     }
 
     #[test]
+    fn generation_attention_single_structural_head_matches_python() {
+        // Step4-Pro-V3 TP4 full-attention generation has one exact structural
+        // head-count slice (n=24, n_kv=3). Python keeps that structural axis
+        // fixed and interpolates only the measured batch/sequence axes.
+        let table = AttentionTable::new(h800_vllm_data_root(), h800_sxm_spec());
+        let latency = table
+            .query_generation(1, 1536, 24, 3, 128, 0, KvCacheQuantMode::Fp8)
+            .expect("single structural head-count query must succeed");
+        assert!(
+            (latency - 0.012_401_995_900_048_254).abs() < 1e-12,
+            "expected Python-parity Step4 latency, got {latency}"
+        );
+    }
+
+    #[test]
     fn context_attention_mha_normalizes_n_kv_to_zero() {
         // Real MHA row from vLLM b200 context attention:
         // b=4 isl=16384 n=64 n_kv=64 head=128 fmha=bfloat16 kv=fp8 latency=9.98
@@ -760,10 +791,16 @@ mod tests {
     }
 
     #[test]
-    fn encoder_attention_absent_on_vllm_b200_errors_clearly() {
-        // vLLM b200 doesn't ship encoder_attention_perf.txt; expect a clear
-        // IO error from the lazy loader.
-        let table = AttentionTable::new(b200_vllm_data_root(), b200_sxm_spec());
+    fn encoder_attention_missing_file_errors_clearly() {
+        // Use an explicitly absent data root instead of relying on the mutable
+        // repository inventory for a particular system/backend/version.
+        let missing_root = std::env::temp_dir().join(format!(
+            "aic-missing-encoder-{}-{}",
+            std::process::id(),
+            line!()
+        ));
+        assert!(!missing_root.exists());
+        let table = AttentionTable::new(missing_root, b200_sxm_spec());
         let err = table
             .query_encoder(1, 1024, 16, 64, FmhaQuantMode::Bfloat16)
             .unwrap_err();

@@ -3,6 +3,7 @@
 | Date | Summary of Changes |
 |---|---|
 | 2026-07-16 | Created the final Step4-Pro-V1 test report with TDD history, full regression, static checks, direct rooflines, SDK/CLI metrics, environment diagnostics, and independent-review evidence. |
+| 2026-07-16 | Added validation evidence for the standalone roofline-model review document and independent Claude approval. |
 
 # Test Report: Step4-Pro-V1 AIC Support
 
@@ -496,3 +497,64 @@ The following are intentionally **not** claimed as complete support: Task-level 
 
 - Numeric evidence JSON: `tests/.tmp/step4_pro_v1_numeric_evidence.json`, `32,593` bytes, SHA256 `ec8d9a1b37f343a56aa4ef52b57e1ebca2f33685eca9f0e4cc25a3ea39582555`.
 - The JSON and generated CLI artifacts remain untracked under `tests/.tmp/` and are not part of the product commit. Their required numeric content is transcribed above.
+
+## 5. Follow-up Roofline-Review Document Validation
+
+### Test Script Information
+
+- Document: `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/docs/step4_pro_v1_roofline_model_review.md`
+- Focused test files:
+  - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/unit/sdk/models/test_step4_pro_v1.py`
+  - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/unit/sdk/database/test_step4_pro_v1_roofline.py`
+  - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/integration/test_step4_pro_v1_support.py`
+- Environment: conda env `/home/i-fengyicheng/miniconda3/envs/aic-step-design`, Python `3.11.15`, pytest `8.4.2`, `PYTHONPATH=src:.`, `MPLBACKEND=Agg`, `TMPDIR=/data/ycfeng/tmp`.
+- Reproducible focused command:
+
+```bash
+cd /data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro
+PYTHONPATH=src:. MPLBACKEND=Agg TMPDIR=/data/ycfeng/tmp \
+  /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python -m pytest -q \
+  tests/unit/sdk/models/test_step4_pro_v1.py \
+  tests/unit/sdk/database/test_step4_pro_v1_roofline.py \
+  tests/integration/test_step4_pro_v1_support.py
+```
+
+### Validation Criteria
+
+- One standalone document contains both required levels.
+- Inventory count equals `33` context top-level ops and `28` generation top-level ops; generation includes `8` nested children, `36` recursive nodes, and `35` executable leaves.
+- Every source `path:line-range` exists.
+- Projection widths, TP8 local widths, Attention gaps, and KV mismatch reproduce exactly.
+- Existing model/roofline/integration behavior remains unchanged.
+- Independent Claude returns no BLOCK.
+
+### Test Results and Numeric Evidence
+
+| Check | Expected | Actual | Delta / Result |
+|---|---:|---:|---|
+| Context top-level operations | 33 | 33 | 0, PASS |
+| Generation top-level operations | 28 | 28 | 0, PASS |
+| Generation recursive / executable leaves | 36 / 35 | 36 / 35 | 0 / 0, PASS |
+| Source references | all valid | 44 valid, 0 errors | PASS |
+| Markdown table rows | complete two-level artifact | 241 | PASS |
+| Projection widths | 2,112 / 24,576 / 32,768 / 16,384 | exact match | 0, PASS |
+| TP8 local widths | 3,072 / 4,096 / 2,048 / 2,048 / 256 / 16,112 | exact match | 0, PASS |
+| Full Attention gap | 39,849,024 / 26.0289125137% | exact match | 0, PASS |
+| SWA Attention gap | 50,333,792 / 23.5301782164% | exact match | 0, PASS |
+| Temporary KV vs CSV | 48.31838208 GB vs 10.7 GB | gap 37.61838208 GB; ratio 4.515736642991x | PASS audit |
+| Focused regression | zero failures | 65 passed in 13.35 s | PASS, exit 0 |
+| `git diff --check` | 0 errors | 0 errors | PASS, exit 0 |
+| Independent review | APPROVE/WATCH, no BLOCK | APPROVE; 0 Critical, 0 Important, 3 Minor | PASS |
+
+Markdown lint was not available on the host (`markdownlint` and `markdownlint-cli2` were absent). The document was instead checked for heading hierarchy, table presence, source references, formula arithmetic, whitespace, and focused behavioral regression.
+
+Independent review artifact:
+
+```text
+.omx/artifacts/claude-act-as-the-independent-technical-reviewer-for-the-documentat-2026-07-16T07-37-30-818Z.md
+bytes: 7,407
+SHA256: b8cf0d82d4c1af74b260eebe54646d7dfbbba4fffd821c31f66b0cfdae93a1ab
+verdict: APPROVE
+```
+
+Two Minor clarifications were applied: the numeric fixture is now explicitly labeled as simplified rather than real H200 peak, and the Full/SWA standard-GQA mismatch includes a complete derivation. The third line-range observation was checked against the current source; `moe.py:1333-1355` is the exact vLLM branch, so no change was appropriate.

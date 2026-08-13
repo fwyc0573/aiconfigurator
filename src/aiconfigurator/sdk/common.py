@@ -3,6 +3,7 @@
 
 import csv
 import json
+import math
 from collections import namedtuple
 from dataclasses import dataclass
 from enum import Enum
@@ -29,6 +30,7 @@ SupportMatrixSystemOrder = (
     "gb300",
     "rtx_pro_6000",
     "h200",
+    "h800",
     "h100",
     "l40s",
     "a100",
@@ -270,6 +272,367 @@ class Step4Config:
     qk_nope_head_dim: int
     qk_rope_head_dim: int
     v_head_dim: int
+    dense_inter_size: int
+    shared_expert_inter_size: int
+
+
+@dataclass(frozen=True)
+class Step4LayerSpec:
+    """One Step4-Pro trunk layer with explicit attention and FFN identities."""
+
+    layer_id: int
+    attention_type: str
+    ffn_type: str
+
+
+@dataclass(frozen=True)
+class Step4MFAAttentionConfig:
+    """Explicit factorized-MFA geometry and replicated runtime-cache contract."""
+
+    hidden_size: int
+    attention_type: str
+    num_query_heads: int
+    output_groups: int
+    q_lora_rank: int
+    o_lora_rank: int
+    projection_head_dim: int
+    cache_projection_width: int
+    cache_entry_width: int
+    rope_head_dim: int
+    retention_mode: str
+    window_size: int
+    compression_ratio: int
+    window_allocation_policy: str
+    cache_tp_policy: str
+    inference_source: str
+    target_parameter_count: int
+    index_n_heads: int
+    index_head_dim: int
+    index_topk: int
+
+    def __post_init__(self) -> None:
+        """Reject malformed or internally inconsistent MFA configurations."""
+        positive_integer_fields = (
+            "hidden_size",
+            "num_query_heads",
+            "output_groups",
+            "q_lora_rank",
+            "o_lora_rank",
+            "projection_head_dim",
+            "cache_projection_width",
+            "cache_entry_width",
+            "rope_head_dim",
+            "target_parameter_count",
+        )
+        for field_name in positive_integer_fields:
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer, got {value!r}")
+
+        if type(self.window_size) is not int or self.window_size < 0:
+            raise ValueError(f"window_size must be a non-negative integer, got {self.window_size!r}")
+        if type(self.compression_ratio) is not int or self.compression_ratio < 0:
+            raise ValueError(f"compression_ratio must be a non-negative integer, got {self.compression_ratio!r}")
+        for field_name in ("index_n_heads", "index_head_dim", "index_topk"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value != 0:
+                raise ValueError(f"{field_name} must be the integer 0, got {value!r}")
+
+        if self.attention_type != "mfa":
+            raise ValueError(f"attention_type must be 'mfa', got {self.attention_type!r}")
+        if self.retention_mode not in {"full", "swa"}:
+            raise ValueError(f"retention_mode must be 'full' or 'swa', got {self.retention_mode!r}")
+        if self.window_allocation_policy not in {"none", "sequence_capped", "fixed_capacity"}:
+            raise ValueError(
+                "window_allocation_policy must be 'none', 'sequence_capped', or "
+                f"'fixed_capacity', got {self.window_allocation_policy!r}"
+            )
+        if self.cache_tp_policy != "replicated":
+            raise ValueError(f"cache_tp_policy must be 'replicated', got {self.cache_tp_policy!r}")
+        if self.inference_source != "csv_reverse_inference":
+            raise ValueError(f"inference_source must be 'csv_reverse_inference', got {self.inference_source!r}")
+
+        if self.num_query_heads % 8 != 0:
+            raise ValueError(f"num_query_heads must be divisible by 8, got {self.num_query_heads}")
+        expected_output_groups = self.num_query_heads // 8
+        if self.output_groups != expected_output_groups:
+            raise ValueError(
+                f"output_groups must equal num_query_heads // 8 ({expected_output_groups}), got {self.output_groups}"
+            )
+        if self.q_lora_rank != self.o_lora_rank:
+            raise ValueError(f"q_lora_rank and o_lora_rank must match, got {self.q_lora_rank} and {self.o_lora_rank}")
+        if self.rope_head_dim > self.projection_head_dim:
+            raise ValueError(
+                f"rope_head_dim {self.rope_head_dim} exceeds projection_head_dim {self.projection_head_dim}"
+            )
+
+        if self.retention_mode == "full":
+            if self.window_size != 0:
+                raise ValueError(f"full retention requires window_size 0, got {self.window_size}")
+            if self.window_allocation_policy != "none":
+                raise ValueError(
+                    f"full retention requires window_allocation_policy 'none', got {self.window_allocation_policy!r}"
+                )
+        else:
+            if self.window_size <= 0:
+                raise ValueError(f"swa retention requires positive window_size, got {self.window_size}")
+            if self.window_allocation_policy not in {"sequence_capped", "fixed_capacity"}:
+                raise ValueError(
+                    "swa retention requires window_allocation_policy 'sequence_capped' or "
+                    f"'fixed_capacity', got {self.window_allocation_policy!r}"
+                )
+
+    def compute_parameter_count(self) -> int:
+        """Return the exact shared MFA trainable-parameter formula."""
+        shared_parameters = (
+            self.hidden_size * self.q_lora_rank
+            + 2 * self.q_lora_rank * self.num_query_heads * self.projection_head_dim
+            + self.output_groups * self.o_lora_rank * self.hidden_size
+        )
+        if self.retention_mode == "full":
+            mode_parameters = (
+                4 * self.hidden_size * self.cache_projection_width + 3 * self.q_lora_rank + self.num_query_heads
+            )
+        else:
+            mode_parameters = (
+                2 * self.hidden_size * self.cache_projection_width + 2 * self.q_lora_rank + self.num_query_heads
+            )
+        return shared_parameters + mode_parameters
+
+    def compute_kv_cache_bytes(self, seq_len: int, *, tp_size: int, bytes_per_element: float) -> float:
+        """Return one layer's replicated retained-entry bytes for one sequence."""
+        if type(seq_len) is not int or seq_len < 0:
+            raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if type(tp_size) is not int or tp_size <= 0:
+            raise ValueError(f"tp_size must be a positive integer, got {tp_size!r}")
+        if (
+            isinstance(bytes_per_element, bool)
+            or not isinstance(bytes_per_element, int | float)
+            or bytes_per_element <= 0
+            or not math.isfinite(bytes_per_element)
+        ):
+            raise ValueError(f"bytes_per_element must be positive and finite, got {bytes_per_element!r}")
+
+        if self.retention_mode == "full":
+            retained_entries = seq_len if self.compression_ratio == 0 else seq_len // self.compression_ratio
+        else:
+            if self.window_allocation_policy == "sequence_capped":
+                retained_entries = min(seq_len, self.window_size)
+            else:
+                retained_entries = self.window_size
+            if self.compression_ratio > 0:
+                retained_entries += seq_len // self.compression_ratio
+
+        return float(retained_entries * self.cache_entry_width * bytes_per_element)
+
+
+@dataclass(frozen=True)
+class Step4MQAAttentionConfig:
+    """Independent MQA attention geometry and inferred projection ledger.
+
+    V3/V4 expose MQA Full and MQA SWA(512) topology.  The CSV parameter targets
+    require an explicit factorized projection ledger; these fields are reverse
+    inferred from the published target and are not DeepSeek-V4 runtime fields.
+    ``num_kv_heads`` is the runtime interpretation of the published
+    ``Output Groups`` value and is retained for operation construction.
+    """
+
+    hidden_size: int
+    attention_type: str
+    num_query_heads: int
+    num_kv_heads: int
+    head_dim: int
+    retention_mode: str
+    window_size: int
+    target_parameter_count: int
+    inference_source: str
+    q_lora_rank: int
+    projection_head_dim: int
+    cache_projection_width: int
+    cache_projection_matrix_count: int
+    auxiliary_rank_vector_count: int
+    cache_entry_width: int
+    output_groups: int
+
+    def __post_init__(self) -> None:
+        for field_name in (
+            "hidden_size",
+            "num_query_heads",
+            "num_kv_heads",
+            "head_dim",
+            "target_parameter_count",
+            "q_lora_rank",
+            "projection_head_dim",
+            "cache_projection_width",
+            "cache_projection_matrix_count",
+            "auxiliary_rank_vector_count",
+            "cache_entry_width",
+            "output_groups",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer, got {value!r}")
+        if self.attention_type != "mqa":
+            raise ValueError(f"attention_type must be 'mqa', got {self.attention_type!r}")
+        if self.num_query_heads % self.num_kv_heads != 0:
+            raise ValueError(
+                f"num_query_heads must be divisible by num_kv_heads, got {self.num_query_heads} and {self.num_kv_heads}"
+            )
+        if self.output_groups != self.num_kv_heads:
+            raise ValueError(
+                "output_groups must equal num_kv_heads for the inferred runtime mapping, "
+                f"got {self.output_groups} and {self.num_kv_heads}"
+            )
+        if self.retention_mode not in {"full", "swa"}:
+            raise ValueError(f"retention_mode must be 'full' or 'swa', got {self.retention_mode!r}")
+        if type(self.window_size) is not int or self.window_size < 0:
+            raise ValueError(f"window_size must be a non-negative integer, got {self.window_size!r}")
+        if self.retention_mode == "full" and self.window_size != 0:
+            raise ValueError("full attention requires window_size=0")
+        if self.retention_mode == "swa" and self.window_size <= 0:
+            raise ValueError("SWA attention requires a positive window_size")
+        if self.inference_source != "csv_reverse_inference":
+            raise ValueError(f"inference_source must be 'csv_reverse_inference', got {self.inference_source!r}")
+        if self.compute_parameter_count() != self.target_parameter_count:
+            raise ValueError(
+                "target_parameter_count does not match the inferred MQA projection ledger: "
+                f"expected {self.compute_parameter_count()}, got {self.target_parameter_count}"
+            )
+
+    def compute_standard_mqa_parameter_count(self) -> int:
+        """Return the dense Q/K/V/O count for comparison with the inferred ledger."""
+        projection_width_q = self.num_query_heads * self.head_dim
+        projection_width_kv = self.num_kv_heads * self.head_dim
+        return self.hidden_size * (projection_width_q + 2 * projection_width_kv) + projection_width_q * self.hidden_size
+
+    def compute_parameter_count(self) -> int:
+        """Return the exact factorized MQA projection-ledger parameter count."""
+        return (
+            self.hidden_size * self.q_lora_rank
+            + 2 * self.q_lora_rank * self.num_query_heads * self.projection_head_dim
+            + self.cache_projection_matrix_count * self.hidden_size * self.cache_projection_width
+            + self.output_groups * self.q_lora_rank * self.hidden_size
+            + self.auxiliary_rank_vector_count * self.q_lora_rank
+            + self.num_query_heads
+        )
+
+    def compute_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
+        """Return one layer's retained-entry bytes using the inferred 512-wide cache entry."""
+        if type(seq_len) is not int or seq_len < 0:
+            raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if (
+            isinstance(bytes_per_element, bool)
+            or not isinstance(bytes_per_element, int | float)
+            or bytes_per_element <= 0
+            or not math.isfinite(bytes_per_element)
+        ):
+            raise ValueError(f"bytes_per_element must be positive and finite, got {bytes_per_element!r}")
+        retained_tokens = seq_len if self.retention_mode == "full" else min(seq_len, self.window_size)
+        return float(retained_tokens * self.cache_entry_width * bytes_per_element)
+
+
+@dataclass(frozen=True)
+class Step4ProMQAConfig:
+    """Per-layer Step4-Pro V3/V4 MQA attention, KV, and FFN contract."""
+
+    layers: tuple[Step4LayerSpec, ...]
+    full_attention: Step4MQAAttentionConfig
+    nonfull_attention: Step4MQAAttentionConfig
+    dense_inter_size: int
+    shared_expert_inter_size: int
+    latent_moe_dim: int = 0
+
+    def compute_attention_parameter_count(self) -> int:
+        """Return attention parameters summed over all configured layers."""
+        return sum(
+            (
+                self.full_attention if layer.attention_type == "full" else self.nonfull_attention
+            ).compute_parameter_count()
+            for layer in self.layers
+        )
+
+    def compute_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> int:
+        """Return total retained KV bytes across all layers for one sequence."""
+        return int(
+            sum(
+                (
+                    self.full_attention if layer.attention_type == "full" else self.nonfull_attention
+                ).compute_kv_cache_bytes(seq_len, bytes_per_element=bytes_per_element)
+                for layer in self.layers
+            )
+        )
+
+    def compute_moe_parameter_count(
+        self,
+        *,
+        hidden_size: int,
+        num_experts: int,
+        topk: int,
+        moe_inter_size: int,
+        shared_expert_inter_size: int,
+        active: bool = False,
+    ) -> int:
+        """Return total or active parameters for one routed MoE layer.
+
+        Latent-MoE adds hidden↔latent projections and sizes routed experts by
+        ``latent_moe_dim``; the shared expert remains in hidden space.
+        """
+        values = (hidden_size, num_experts, topk, moe_inter_size, shared_expert_inter_size)
+        if any(type(value) is not int or value < 0 for value in values):
+            raise ValueError("MoE dimensions and counts must be non-negative integers")
+        if hidden_size <= 0 or num_experts <= 0 or topk <= 0 or moe_inter_size <= 0 or shared_expert_inter_size <= 0:
+            raise ValueError("MoE dimensions and counts must be positive")
+        if topk > num_experts:
+            raise ValueError("topk cannot exceed num_experts")
+        routed_width = self.latent_moe_dim or hidden_size
+        latent_projection = 2 * hidden_size * self.latent_moe_dim if self.latent_moe_dim else 0
+        routed_expert_count = topk if active else num_experts
+        return (
+            latent_projection
+            + hidden_size * num_experts
+            + 3 * routed_width * routed_expert_count * moe_inter_size
+            + 3 * hidden_size * shared_expert_inter_size
+        )
+
+    def _moe_layer_count(self) -> int:
+        return sum(layer.ffn_type == "moe" for layer in self.layers)
+
+    def _model_parameter_count(self, model_info: dict, *, active: bool) -> int:
+        hidden_size = model_info["hidden_size"]
+        num_experts = model_info["num_experts"]
+        topk = model_info["topk"]
+        moe_inter_size = model_info["moe_inter_size"]
+        moe_count = self._moe_layer_count()
+        dense_count = len(self.layers) - moe_count
+        attention = self.compute_attention_parameter_count()
+        dense = dense_count * 3 * hidden_size * self.dense_inter_size
+        moe = moe_count * self.compute_moe_parameter_count(
+            hidden_size=hidden_size,
+            num_experts=num_experts,
+            topk=topk,
+            moe_inter_size=moe_inter_size,
+            shared_expert_inter_size=self.shared_expert_inter_size,
+            active=active,
+        )
+        normalization = 2 * hidden_size * len(self.layers)
+        return attention + dense + moe + normalization
+
+    def compute_total_parameter_count(self, model_info: dict) -> int:
+        """Return all trunk parameters (excluding embeddings and output head)."""
+        return self._model_parameter_count(model_info, active=False)
+
+    def compute_active_parameter_count(self, model_info: dict) -> int:
+        """Return per-token active trunk parameters (top-k routed experts only)."""
+        return self._model_parameter_count(model_info, active=True)
+
+
+@dataclass(frozen=True)
+class Step4ProConfig:
+    """Explicit per-layer hybrid attention and FFN contract for Step4-Pro."""
+
+    layers: tuple[Step4LayerSpec, ...]
+    full_attention: Step4MFAAttentionConfig
+    nonfull_attention: Step4MFAAttentionConfig
     dense_inter_size: int
     shared_expert_inter_size: int
 
@@ -520,6 +883,8 @@ DefaultHFModels = {
     # Step4
     "stepfun-ai/Step4",
     "stepfun-ai/Step4-Pro-V1",
+    "stepfun-ai/Step4-Pro-V3",
+    "stepfun-ai/Step4-Pro-V4",
     # Qwen 3 Models
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
@@ -578,6 +943,7 @@ SupportedSystems = {
     "h100_sxm",
     "h100_pcie",
     "h200_sxm",
+    "h800_sxm",
     "b200_sxm",
     "b300_sxm",
     "gb200",

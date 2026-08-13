@@ -1,0 +1,34 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# H800 SXM system identity. Kernel measurements and runtime facts collected by
+# this task are installed below data/h800_sxm; no H100 rows are aliased here.
+data_dir: data/h800_sxm
+gpu:
+  mem_bw: 3350000000000
+  mem_bw_empirical_scaling_factor: 1.0
+  mem_empirical_constant_latency: 0.0
+  mem_capacity: 85029158912
+  bfloat16_tc_flops: 989000000000000
+  int8_tc_flops: 1978000000000000
+  fp8_tc_flops: 1978000000000000
+  power: 700
+  sm_version: 90
+
+node:
+  num_gpus_per_node: 8
+  inter_node_bw: 50000000000
+  intra_node_bw: 450000000000
+  pcie_bw: 64000000000
+  p2p_latency: 0.00001
+
+misc:
+  # Neutral until P4/P6 records fresh runtime measurements; these are not
+  # copied from an H100 empirical correction table.
+  nccl_mem:
+    1: 0
+    2: 0
+    4: 0
+    8: 0
+  other_mem: 0
+  nccl_version: "2.27.5"

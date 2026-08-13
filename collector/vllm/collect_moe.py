@@ -14,6 +14,7 @@ __compat__ = "vllm>=0.17.0"
 import inspect
 import json
 import os
+from types import SimpleNamespace
 
 import torch
 import torch.nn.functional as F
@@ -108,6 +109,116 @@ from collector.helper import balanced_logits, benchmark_with_power, get_sm_versi
 
 aic_debug = int(os.getenv("aic_moe_debug", "0"))  # noqa: SIM112
 _WORKSPACE_MANAGER_DEVICES: set[str] = set()
+_MODULAR_FP8_MOE_VERSION = "0.19.0"
+_MODULAR_FP8_MOE_MODELS = frozenset(
+    {
+        "stepfun-ai/Step4-Pro-V3",
+        "stepfun-ai/Step4-Pro-V4",
+    }
+)
+
+
+def _use_modular_fp8_moe(moe_type: str, runtime_version: str, model_name: str, moe_tp_size: int) -> bool:
+    return (
+        moe_type == "fp8"
+        and runtime_version == _MODULAR_FP8_MOE_VERSION
+        and model_name in _MODULAR_FP8_MOE_MODELS
+        and moe_tp_size == 1
+    )
+
+
+def _softmax_moe_topk_weights(weights, *, force_fp32: bool):
+    return F.softmax(weights.float() if force_fp32 else weights, dim=-1)
+
+
+def _moe_kernel_source(*, use_modular_fp8: bool, use_mxfp4: bool, use_nvfp4: bool, use_int4_wo: bool) -> str:
+    if use_modular_fp8:
+        return "vllm_flashinfer_cutlass_moe"
+    if use_mxfp4:
+        return "vllm_mxfp4_moe"
+    if use_nvfp4:
+        return "vllm_flashinfer_trtllm_moe_fp4"
+    if use_int4_wo:
+        return "vllm_marlin_int4_moe"
+    return "vllm_fused_moe"
+
+
+def _validate_modular_fp8_moe_contract(
+    *,
+    num_experts: int,
+    local_num_experts: int,
+    moe_tp_size: int,
+    moe_ep_size: int,
+) -> None:
+    if moe_tp_size != 1:
+        raise ValueError(f"Step4 modular FP8 MoE requires moe_tp_size=1, got {moe_tp_size}")
+    if moe_ep_size < 1 or num_experts % moe_ep_size != 0:
+        raise ValueError(
+            f"Step4 modular FP8 MoE requires num_experts divisible by moe_ep_size, got {num_experts=} {moe_ep_size=}"
+        )
+    expected_local_experts = num_experts // moe_ep_size
+    if local_num_experts != expected_local_experts:
+        raise ValueError(
+            "Step4 modular FP8 MoE requires the contiguous rank-0 shard: "
+            f"expected {expected_local_experts} local experts, got {local_num_experts}"
+        )
+
+
+def _allocate_modular_fp8_moe_tensors(
+    *,
+    device: str,
+    local_num_experts: int,
+    hidden_size: int,
+    local_inter_size: int,
+):
+    fp8_dtype = torch.float8_e4m3fn
+    w1 = torch.empty(
+        local_num_experts,
+        2 * local_inter_size,
+        hidden_size,
+        dtype=fp8_dtype,
+        device=device,
+    )
+    w2 = torch.empty(
+        local_num_experts,
+        hidden_size,
+        local_inter_size,
+        dtype=fp8_dtype,
+        device=device,
+    )
+    with torch.no_grad():
+        w1.fill_(0.25)
+        w2.fill_(0.25)
+
+    w1_scale = torch.ones(local_num_experts, dtype=torch.float32, device=device)
+    w2_scale = torch.ones(local_num_experts, dtype=torch.float32, device=device)
+    a1_scale = torch.tensor(1.0, dtype=torch.float32, device=device)
+    a2_scale = torch.tensor(1.0, dtype=torch.float32, device=device)
+    return w1, w2, w1_scale, w2_scale, a1_scale, a2_scale
+
+
+def _apply_modular_fp8_moe(
+    kernel,
+    hidden_states,
+    w1,
+    w2,
+    topk_weights,
+    topk_ids,
+    activation,
+    num_experts: int,
+    expert_map,
+):
+    return kernel.apply(
+        hidden_states,
+        w1,
+        w2,
+        topk_weights,
+        topk_ids,
+        activation,
+        num_experts,
+        expert_map,
+        False,
+    )
 
 
 def _moe_execution_key(common_moe_testcase, moe_type: str):
@@ -165,6 +276,102 @@ def _ensure_workspace_manager(device: str) -> None:
 
     init_workspace_manager(torch_device)
     _WORKSPACE_MANAGER_DEVICES.add(device_key)
+
+
+def _build_vllm_019_modular_fp8_moe(
+    *,
+    device: str,
+    num_experts: int,
+    local_num_experts: int,
+    hidden_size: int,
+    local_inter_size: int,
+    topk: int,
+    moe_tp_size: int,
+    moe_ep_size: int,
+):
+    from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+    from vllm.model_executor.layers.fused_moe.config import (
+        FusedMoEConfig,
+        FusedMoEParallelConfig,
+        RoutingMethodType,
+    )
+    from vllm.model_executor.layers.fused_moe.flashinfer_cutlass_moe import FlashInferExperts
+    from vllm.model_executor.layers.fused_moe.oracle.fp8 import (
+        Fp8MoeBackend,
+        convert_to_fp8_moe_kernel_format,
+        make_fp8_moe_kernel,
+        make_fp8_moe_quant_config,
+    )
+
+    _validate_modular_fp8_moe_contract(
+        num_experts=num_experts,
+        local_num_experts=local_num_experts,
+        moe_tp_size=moe_tp_size,
+        moe_ep_size=moe_ep_size,
+    )
+    _ensure_workspace_manager(device)
+    w1, w2, w1_scale, w2_scale, a1_scale, a2_scale = _allocate_modular_fp8_moe_tensors(
+        device=device,
+        local_num_experts=local_num_experts,
+        hidden_size=hidden_size,
+        local_inter_size=local_inter_size,
+    )
+
+    parallel_config = FusedMoEParallelConfig(
+        tp_size=1,
+        pcp_size=1,
+        dp_size=1,
+        ep_size=moe_ep_size,
+        tp_rank=0,
+        pcp_rank=0,
+        dp_rank=0,
+        ep_rank=0,
+        sp_size=1,
+        use_ep=moe_ep_size > 1,
+        all2all_backend="allgather_reducescatter",
+        enable_eplb=False,
+    )
+    moe_config = FusedMoEConfig(
+        num_experts=num_experts,
+        experts_per_token=topk,
+        hidden_dim=hidden_size,
+        intermediate_size_per_partition=local_inter_size,
+        num_local_experts=local_num_experts,
+        num_logical_experts=num_experts,
+        activation=MoEActivation.SILU,
+        device=torch.device(device),
+        routing_method=RoutingMethodType.Renormalize,
+        moe_parallel_config=parallel_config,
+        in_dtype=torch.bfloat16,
+        moe_backend="flashinfer_cutlass",
+    )
+    layer = SimpleNamespace(moe_config=moe_config, activation=MoEActivation.SILU)
+    w1, w2, w1_scale, w2_scale = convert_to_fp8_moe_kernel_format(
+        Fp8MoeBackend.FLASHINFER_CUTLASS,
+        layer,
+        w1,
+        w2,
+        w1_scale,
+        w2_scale,
+        a1_scale,
+        a2_scale,
+    )
+    quant_config = make_fp8_moe_quant_config(
+        Fp8MoeBackend.FLASHINFER_CUTLASS,
+        w1_scale,
+        w2_scale,
+        a1_scale,
+        a2_scale,
+    )
+    vllm_config = VllmConfig()
+    with set_current_vllm_config(vllm_config):
+        kernel = make_fp8_moe_kernel(
+            quant_config,
+            moe_config,
+            FlashInferExperts,
+            Fp8MoeBackend.FLASHINFER_CUTLASS,
+        )
+    return kernel, w1, w2, vllm_config, MoEActivation.SILU
 
 
 def get_moe_test_cases():
@@ -273,24 +480,40 @@ def run_moe_torch(
     # Calculate local number of experts
     local_inter_size = inter_size // moe_tp_size
     local_num_experts, expert_map, _ = determine_expert_map(moe_ep_size, 0, num_experts)
+    use_modular_fp8 = _use_modular_fp8_moe(moe_type, vllm_version, model_name, moe_tp_size)
+    modular_fp8_kernel = None
+    modular_fp8_vllm_cfg = None
+    modular_fp8_activation = None
 
     # Create weight tensors
     # w1: gate + up projection weights [num_experts, 2 * inter_size, hidden_size]
     # w2: down projection weights [num_experts, hidden_size, inter_size]
-    w1 = torch.randn(
-        local_num_experts,
-        2 * local_inter_size,
-        hidden_size,
-        dtype=torch.bfloat16,
-        device=device,
-    )
-    w2 = torch.randn(
-        local_num_experts,
-        hidden_size,
-        local_inter_size,
-        dtype=torch.bfloat16,
-        device=device,
-    )
+    if use_modular_fp8:
+        modular_fp8_kernel, w1, w2, modular_fp8_vllm_cfg, modular_fp8_activation = _build_vllm_019_modular_fp8_moe(
+            device=device,
+            num_experts=num_experts,
+            local_num_experts=local_num_experts,
+            hidden_size=hidden_size,
+            local_inter_size=local_inter_size,
+            topk=topk,
+            moe_tp_size=moe_tp_size,
+            moe_ep_size=moe_ep_size,
+        )
+    else:
+        w1 = torch.randn(
+            local_num_experts,
+            2 * local_inter_size,
+            hidden_size,
+            dtype=torch.bfloat16,
+            device=device,
+        )
+        w2 = torch.randn(
+            local_num_experts,
+            hidden_size,
+            local_inter_size,
+            dtype=torch.bfloat16,
+            device=device,
+        )
 
     # INT4_WO path: W4A16 via vLLM's Marlin kernel using int4_w4a16_moe_quant_config.
     # Weights are packed uint8 (2 int4 per byte, shape K//2). Scales are per-group
@@ -464,7 +687,9 @@ def run_moe_torch(
 
     elif moe_type in ["fp8", "fp8_block"]:
         dtype = torch.float8_e4m3fn
-        if moe_type == "fp8_block":
+        if use_modular_fp8:
+            pass
+        elif moe_type == "fp8_block":
             block_shape = [128, 128]
 
             if per_block_cast_to_fp8 is None:
@@ -489,15 +714,16 @@ def run_moe_torch(
             a1_scale = torch.randn(1, dtype=torch.float32, device=device)
             a2_scale = torch.randn(1, dtype=torch.float32, device=device)
 
-        quant_config = fp8_w8a8_moe_quant_config(
-            w1_scale=w1_scale,
-            w2_scale=w2_scale,
-            a1_scale=a1_scale,
-            a2_scale=a2_scale,
-            block_shape=block_shape,
-        )
+        if not use_modular_fp8:
+            quant_config = fp8_w8a8_moe_quant_config(
+                w1_scale=w1_scale,
+                w2_scale=w2_scale,
+                a1_scale=a1_scale,
+                a2_scale=a2_scale,
+                block_shape=block_shape,
+            )
 
-    if not use_mxfp4 and dtype == torch.float8_e4m3fn:
+    if not use_mxfp4 and not use_modular_fp8 and dtype == torch.float8_e4m3fn:
         w1 = w1.to(dtype)
         w2 = w2.to(dtype)
 
@@ -542,9 +768,10 @@ def run_moe_torch(
                     .to(device)
                 )
                 weights, ids = torch.topk(logits, topk, dim=-1)
-                topk_weights = F.softmax(weights, dim=-1)
-                if use_int4_wo:
-                    topk_weights = topk_weights.float()
+                topk_weights = _softmax_moe_topk_weights(
+                    weights,
+                    force_fp32=use_int4_wo or use_modular_fp8,
+                )
                 topk_weights_list.append(topk_weights)
                 topk_ids_list.append(ids)
 
@@ -553,9 +780,10 @@ def run_moe_torch(
         elif distributed == "balanced":
             actual_logits = balanced_logits(num_tokens, num_experts, topk).bfloat16().to(device)
             topk_weights, topk_ids = torch.topk(actual_logits, topk, dim=-1)
-            topk_weights = F.softmax(topk_weights, dim=-1)
-            if use_int4_wo:
-                topk_weights = topk_weights.float()
+            topk_weights = _softmax_moe_topk_weights(
+                topk_weights,
+                force_fp32=use_int4_wo or use_modular_fp8,
+            )
 
         else:
             raise ValueError(f"Unsupported distributed mode: {distributed}")
@@ -655,6 +883,32 @@ def run_moe_torch(
                         _run_nvfp4_once(hidden_states[: tw.shape[0]], tw, ti)
                 else:
                     _run_nvfp4_once(hidden_states, topk_weights, topk_ids)
+            elif use_modular_fp8:
+                if distributed == "power_law":
+                    for tw, ti in zip(topk_weights_list, topk_ids_list, strict=True):
+                        _apply_modular_fp8_moe(
+                            modular_fp8_kernel,
+                            hidden_states[: tw.shape[0]],
+                            w1,
+                            w2,
+                            tw,
+                            ti,
+                            modular_fp8_activation,
+                            num_experts,
+                            expert_map,
+                        )
+                else:
+                    _apply_modular_fp8_moe(
+                        modular_fp8_kernel,
+                        hidden_states,
+                        w1,
+                        w2,
+                        topk_weights,
+                        topk_ids,
+                        modular_fp8_activation,
+                        num_experts,
+                        expert_map,
+                    )
             elif distributed == "power_law":
                 for i, (tw, ti) in enumerate(zip(topk_weights_list, topk_ids_list, strict=True)):
                     local_num_tokens = tw.shape[0]
@@ -700,7 +954,12 @@ def run_moe_torch(
             return results["latency_ms"] / num_iter, results["power_stats"]
 
         try:
-            vllm_cfg = mxfp4_vllm_cfg if use_mxfp4 else VllmConfig()
+            if use_mxfp4:
+                vllm_cfg = mxfp4_vllm_cfg
+            elif use_modular_fp8:
+                vllm_cfg = modular_fp8_vllm_cfg
+            else:
+                vllm_cfg = VllmConfig()
             with set_current_vllm_config(vllm_cfg), set_forward_context({}, vllm_cfg):
                 latency, power_stats = run_iterations()
         except torch.OutOfMemoryError:
@@ -711,14 +970,12 @@ def run_moe_torch(
 
         print(f"moe latency: {latency}")
 
-        if use_mxfp4:
-            source = "vllm_mxfp4_moe"
-        elif use_nvfp4:
-            source = "vllm_flashinfer_trtllm_moe_fp4"
-        elif use_int4_wo:
-            source = "vllm_marlin_int4_moe"
-        else:
-            source = "vllm_fused_moe"
+        source = _moe_kernel_source(
+            use_modular_fp8=use_modular_fp8,
+            use_mxfp4=use_mxfp4,
+            use_nvfp4=use_nvfp4,
+            use_int4_wo=use_int4_wo,
+        )
 
         log_perf(
             item_list=[

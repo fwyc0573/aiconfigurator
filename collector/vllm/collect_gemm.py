@@ -21,7 +21,7 @@ from vllm.model_executor.layers.quantization.fp8 import Fp8Config
 from vllm.utils.deep_gemm import per_block_cast_to_fp8
 from vllm.version import __version__ as vllm_version
 
-from collector.case_generator import get_gemm_case_specs
+from collector.case_generator import get_gemm_case_specs, get_gemm_types_for_case, get_step4_model_gemm_case_specs
 from collector.helper import benchmark_with_power, get_sm_version, log_perf
 from collector.vllm.utils import setup_distributed, with_exit_stack
 
@@ -54,6 +54,21 @@ def _skip_vllm_sm89_022_fp8_gemm(gemm_type: str) -> bool:
     return vllm_version.startswith("0.22.0") and get_sm_version() == 89 and gemm_type == "fp8"
 
 
+def _use_cuda_graph_for_gemm(gemm_type: str, runtime_version: str) -> bool:
+    """Select the execution mode supported by the installed vLLM GEMM path.
+
+    vLLM 0.19.0's dynamic FP8 input quantization performs a CPU-side scalar
+    conversion during the forward pass, which CUDA Graph capture rejects. Keep
+    that path eager and record the mode in the persisted row instead of
+    swallowing a capture failure or silently substituting a different kernel.
+    Blockwise FP8 already uses eager execution for the same provenance reason.
+    """
+
+    if gemm_type == "fp8_block":
+        return False
+    return not (runtime_version == "0.19.0" and gemm_type == "fp8")
+
+
 def get_gemm_test_cases():
     sm = get_sm_version()
 
@@ -74,11 +89,17 @@ def get_gemm_test_cases():
 
     test_cases = []
 
-    for gemm_common_testcase in get_gemm_case_specs():
+    model_path = os.environ.get("COLLECTOR_MODEL_PATH", "").strip()
+    case_specs = (
+        get_step4_model_gemm_case_specs(model_path, backend="vllm")
+        if model_path in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}
+        else get_gemm_case_specs()
+    )
+    for gemm_common_testcase in case_specs:
         x = gemm_common_testcase.x
         n = gemm_common_testcase.n
         k = gemm_common_testcase.k
-        for gemm_type in gemm_list:
+        for gemm_type in get_gemm_types_for_case(gemm_common_testcase, gemm_list):
             if _skip_vllm_sm89_022_fp8_gemm(gemm_type):
                 continue
             if gemm_type in ("nvfp4", "fp8_block") and (n < 128 or k < 128):
@@ -229,13 +250,17 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
         for op in op_list:
             op.forward(x)
 
+    use_cuda_graph = _use_cuda_graph_for_gemm(gemm_type, vllm_version)
+    if not use_cuda_graph:
+        print(f"GEMM execution mode: eager (gemm_type={gemm_type}, vllm={vllm_version})")
+
     with benchmark_with_power(
         device=device,
         kernel_func=kernel_func,
         num_warmups=3,
         num_runs=6,
         repeat_n=1,
-        use_cuda_graph=gemm_type != "fp8_block",
+        use_cuda_graph=use_cuda_graph,
     ) as results:
         pass
 
@@ -246,6 +271,7 @@ def run_gemm(exit_stack, gemm_type, m, n, k, *, perf_filename, device="cuda:0"):
                 "m": m,
                 "n": n,
                 "k": k,
+                "used_cuda_graph": results["used_cuda_graph"],
                 "latency": results["latency_ms"] / outside_loop_count,
             }
         ],

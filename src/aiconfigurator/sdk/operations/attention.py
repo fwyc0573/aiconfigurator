@@ -514,7 +514,7 @@ class ContextAttention(Operation):
                 head_size,
                 window_size,
             )
-            result = interpolation.interp_3d(
+            result = interpolation.interp_2d_fixed_first_axis(
                 n,
                 full_s,
                 b,
@@ -579,8 +579,8 @@ class ContextAttention(Operation):
             extra_latency += qk_norm_latency * 2  # elementwise before norm
         apply_rope_latency = 2 * database.query_mem_op(q_num * 2 + k_num * 2)  # apply rope
 
-        kv_write_latency = database.query_mem_op(k_num * self._fmha_quant_mode.value.memory) + database.query_mem_op(
-            v_num * self._fmha_quant_mode.value.memory
+        kv_write_latency = database.query_mem_op(k_num * self._kvcache_quant_mode.value.memory) + database.query_mem_op(
+            v_num * self._kvcache_quant_mode.value.memory
         )
         extra_latency += apply_rope_latency + kv_write_latency
         result += extra_latency * 1.1  # correction factor for extra latency
@@ -905,7 +905,14 @@ class GenerationAttention(Operation):
             latency_sum = 0.0
             energy_sum = 0.0
             for s_i in s_samples:
-                r = interpolation.interp_3d(n, b, s_i, attention_dict, "bilinear", database._extracted_metrics_cache)
+                r = interpolation.interp_2d_fixed_first_axis(
+                    n,
+                    b,
+                    s_i,
+                    attention_dict,
+                    "bilinear",
+                    database._extracted_metrics_cache,
+                )
                 latency_sum += float(r["latency"])
                 energy_sum += float(r.get("energy", 0.0))
 

@@ -29,7 +29,10 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import hashlib
+import json
 import logging
+import os
 import warnings
 from collections.abc import Iterator
 from dataclasses import dataclass, field
@@ -45,6 +48,7 @@ from aiconfigurator.sdk.models import (
 from aiconfigurator.sdk.perf_database import (
     CommunicationQueryEvidence,
     get_latest_database_version,
+    get_systems_paths,
     is_blackwell_system,
     is_hopper_system,
     load_system_spec,
@@ -54,6 +58,58 @@ from aiconfigurator.sdk.utils import enumerate_parallel_config, get_model_config
 logger = logging.getLogger(__name__)
 
 ParallelChoice = tuple[int, int, int, int, int, int]  # (tp, pp, dp, moe_tp, moe_ep, cp)
+_STEP4_REQUIRED_COVERAGE_FAMILIES = frozenset({"attention", "gemm", "moe", "communication"})
+_STEP4_MOE_SHAPES = {
+    "stepfun-ai/Step4-Pro-V3": {"hidden_size": 6144, "inter_size": 2048, "topk": 16, "num_experts": 1024},
+    "stepfun-ai/Step4-Pro-V4": {"hidden_size": 9216, "inter_size": 3584, "topk": 8, "num_experts": 384},
+}
+
+
+def _step4_measured_key_provenance_is_valid(
+    manifest_path: str,
+    manifest: dict[str, Any],
+    expected_identities: set[str],
+) -> bool:
+    """Verify the measured-key inventory referenced by a validated manifest."""
+
+    provenance = manifest.get("provenance")
+    if not isinstance(provenance, dict):
+        return False
+    inventory = provenance.get("measured_key_inventory")
+    if not isinstance(inventory, dict):
+        return False
+    relative_path = inventory.get("path")
+    declared_sha256 = inventory.get("sha256")
+    if (
+        not isinstance(relative_path, str)
+        or not relative_path
+        or os.path.isabs(relative_path)
+        or not isinstance(declared_sha256, str)
+        or len(declared_sha256) != 64
+    ):
+        return False
+    manifest_dir = os.path.dirname(os.path.abspath(manifest_path))
+    inventory_path = os.path.abspath(os.path.join(manifest_dir, relative_path))
+    if os.path.commonpath((manifest_dir, inventory_path)) != manifest_dir:
+        return False
+    try:
+        with open(inventory_path, "rb") as handle:
+            raw = handle.read()
+        if hashlib.sha256(raw).hexdigest() != declared_sha256.lower():
+            return False
+        payload = json.loads(raw.decode("utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    if isinstance(payload, list):
+        identities_value = payload
+    elif isinstance(payload, dict):
+        identities_value = payload.get("identities")
+    else:
+        identities_value = None
+    if not isinstance(identities_value, list) or any(not isinstance(identity, str) for identity in identities_value):
+        return False
+    identities = set(identities_value)
+    return len(identities) == len(identities_value) and identities == expected_identities
 
 
 @dataclass(frozen=True)
@@ -1151,11 +1207,156 @@ class Task:
     def _validate_step4_database_mode(self) -> None:
         if self._model_family != "STEP4":
             return
-        allowed_modes = (common.DatabaseMode.SOL.name, common.DatabaseMode.SOL_FULL.name)
-        if self.database_mode not in allowed_modes:
+        if self.database_mode == common.DatabaseMode.SOL.name:
+            return
+        if self.database_mode == common.DatabaseMode.SILICON.name:
+            if not self._step4_silicon_coverage_available():
+                raise ValueError(
+                    "Step4 database_mode='SILICON' requires a validated measured coverage manifest for "
+                    "Step4-Pro-V3/V4; until that package gate passes, use database_mode='SOL'."
+                )
+            return
+        if self.database_mode == common.DatabaseMode.SOL_FULL.name:
             raise ValueError(
-                f"Step4 tasks require database_mode to be 'SOL' or 'SOL_FULL'; got {self.database_mode!r}."
+                "Step4 Task execution does not support database_mode='SOL_FULL'; "
+                "SOL_FULL is available only for direct PerfDatabase diagnostic queries."
             )
+        raise ValueError(f"Step4 Task execution requires database_mode='SOL'; got {self.database_mode!r}.")
+
+    def _step4_silicon_coverage_available(self) -> bool:
+        """Return whether packaged H800 data proves complete Step4-Pro coverage."""
+        system = getattr(self, "system_name", None)
+        backend = getattr(self, "backend_name", None)
+        version = getattr(self, "backend_version", None)
+        if not (system and backend and version):
+            return False
+        expected_models = {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}
+        for systems_root in get_systems_paths():
+            system_spec = load_system_spec(system, systems_root)
+            data_dir = system_spec.get("data_dir")
+            if not data_dir:
+                continue
+            manifest_path = os.path.join(
+                systems_root,
+                data_dir,
+                backend,
+                version,
+                "step4_pro_v3_v4_coverage.json",
+            )
+            try:
+                with open(manifest_path, encoding="utf-8") as handle:
+                    manifest = json.load(handle)
+            except (FileNotFoundError, json.JSONDecodeError, OSError):
+                continue
+            if manifest.get("version") != version or manifest.get("system") != system:
+                continue
+            if set(manifest.get("models", ())) != expected_models:
+                continue
+            if manifest.get("status") != "validated":
+                continue
+            if manifest.get("distribution") != "power_law_1.2":
+                continue
+            coverage_keys = manifest.get("coverage_keys")
+            if not isinstance(coverage_keys, dict) or set(coverage_keys) != expected_models:
+                continue
+            coverage_summary = manifest.get("coverage_summary")
+            if not isinstance(coverage_summary, dict) or set(coverage_summary) != expected_models:
+                continue
+            required_families = manifest.get("required_op_families")
+            if (
+                not isinstance(required_families, list)
+                or len(required_families) != len(set(required_families))
+                or set(required_families) != _STEP4_REQUIRED_COVERAGE_FAMILIES
+                or manifest.get("backend") != backend
+                or manifest.get("device") != system
+            ):
+                continue
+            valid_manifest = True
+            all_identities: set[str] = set()
+            for model, records in coverage_keys.items():
+                if not isinstance(records, list) or not records:
+                    valid_manifest = False
+                    break
+                identities = set()
+                families = set()
+                family_counts = dict.fromkeys(_STEP4_REQUIRED_COVERAGE_FAMILIES, 0)
+                for record in records:
+                    if not isinstance(record, dict):
+                        valid_manifest = False
+                        break
+                    if (
+                        record.get("model") != model
+                        or record.get("backend") != backend
+                        or record.get("device") != system
+                        or record.get("system") != system
+                        or record.get("version") != version
+                        or record.get("op_family") not in _STEP4_REQUIRED_COVERAGE_FAMILIES
+                    ):
+                        valid_manifest = False
+                        break
+                    structural = record.get("structural")
+                    identity = structural.get("identity") if isinstance(structural, dict) else None
+                    axes = structural.get("axes") if isinstance(structural, dict) else None
+                    identity_prefix = f"{model}:{record['op_family']}:{backend}:{version}:{system}:"
+                    if (
+                        not isinstance(identity, str)
+                        or not identity.startswith(identity_prefix)
+                        or not isinstance(axes, dict)
+                        or axes.get("backend") != backend
+                        or axes.get("version") != version
+                        or axes.get("device") != system
+                        or identity in identities
+                    ):
+                        valid_manifest = False
+                        break
+                    identities.add(identity)
+                    all_identities.add(identity)
+                    families.add(record["op_family"])
+                    family_counts[record["op_family"]] += 1
+                    if record["op_family"] == "moe":
+                        expected_shape = _STEP4_MOE_SHAPES[model]
+                        if any(record.get(key) != value for key, value in expected_shape.items()):
+                            valid_manifest = False
+                            break
+                        if (
+                            record.get("moe_tp_size") != 1
+                            or not isinstance(record.get("moe_ep_size"), int)
+                            or record["moe_ep_size"] <= 0
+                            or expected_shape["num_experts"] % record["moe_ep_size"] != 0
+                            or record.get("quantization") != "fp8"
+                            or record.get("distribution") != "power_law_1.2"
+                        ):
+                            valid_manifest = False
+                            break
+                if not valid_manifest or families != _STEP4_REQUIRED_COVERAGE_FAMILIES:
+                    valid_manifest = False
+                    break
+                model_summary = coverage_summary.get(model)
+                if not isinstance(model_summary, dict) or set(model_summary) != _STEP4_REQUIRED_COVERAGE_FAMILIES:
+                    valid_manifest = False
+                    break
+                for family, expected_count in family_counts.items():
+                    summary = model_summary.get(family)
+                    if not isinstance(summary, dict):
+                        valid_manifest = False
+                        break
+                    if (
+                        summary.get("required_count") != expected_count
+                        or summary.get("measured_count") != expected_count
+                        or summary.get("missing_count") != 0
+                        or summary.get("duplicate_count") != 0
+                        or summary.get("unassigned_count") != 0
+                    ):
+                        valid_manifest = False
+                        break
+                if not valid_manifest:
+                    break
+            if not valid_manifest:
+                continue
+            if not _step4_measured_key_provenance_is_valid(manifest_path, manifest, all_identities):
+                continue
+            return True
+        return False
 
     def validate(self) -> None:
         """Check that the resolved task is internally consistent and supported.
@@ -1171,7 +1372,9 @@ class Task:
           and the corresponding generation_* op).  Skipped silently if
           the DB cannot be loaded, or if the model is DeepSeek-V4 in a
           synthetic database mode (EMPIRICAL / HYBRID). Formula-only modes
-          (SOL / SOL_FULL) skip database capability validation for all models.
+          skip database capability validation; Step4 Task execution admits
+          only scalar SOL, while SOL_FULL remains a direct PerfDatabase
+          diagnostic mode.
 
         Database load is cheap (``get_database`` is module-level cached),
         and the load happens later in sweep anyway — failing here just
@@ -1644,6 +1847,7 @@ class Task:
                 :meth:`run_single_disagg` instead.
             RuntimeError: on OOM at this config point.
         """
+        self._validate_step4_database_mode()
         if type(include_per_ops) is not bool:
             raise TypeError(f"include_per_ops must be a bool, got {type(include_per_ops).__name__}.")
         if self.serving_mode != "agg":
@@ -1746,6 +1950,7 @@ class Task:
             ValueError: if called on an agg Task.
             RuntimeError: on OOM in either phase.
         """
+        self._validate_step4_database_mode()
         if type(include_per_ops) is not bool:
             raise TypeError(f"include_per_ops must be a bool, got {type(include_per_ops).__name__}.")
         if self.serving_mode != "disagg":

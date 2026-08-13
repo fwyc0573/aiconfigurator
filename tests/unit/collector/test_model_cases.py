@@ -9,6 +9,8 @@ import sys
 from itertools import pairwise
 from pathlib import Path
 
+import pytest
+
 from collector.case_generator import (
     get_attention_head_configs,
     get_moe_quantization_specs,
@@ -476,11 +478,12 @@ def test_cross_model_common_cases_expand_from_base_op_yaml_sweeps(monkeypatch):
     monkeypatch.delenv("COLLECTOR_MODEL_PATH", raising=False)
 
     moe_cases = get_common_moe_test_cases()
-    # +117 vs pre-GLM-5.2: nvidia/GLM-5.2-NVFP4 registered in moe.model_paths
+    # +14 for the targeted Step4-Pro V3/V4 model profiles; +117 vs pre-GLM-5.2:
+    # nvidia/GLM-5.2-NVFP4 registered in moe.model_paths
     # (same MoE dims as GLM-5-NVFP4). The sglang collector's get_moe_test_cases
     # dedups GLM-5-NVFP4 vs GLM-5.2-NVFP4; this backend-agnostic common layer
     # keeps both.
-    assert len(moe_cases) == 4326
+    assert len(moe_cases) == 4340
     assert any(
         case.model_name == "nvidia/NVIDIA-Nemotron-3-Super-120B-A12B-NVFP4"
         and case.hidden_size == 1024
@@ -1323,6 +1326,65 @@ def test_filter_test_cases_supports_structured_exception_rules():
     )
 
     assert filtered == [cases[0], cases[2]]
+
+
+def test_filter_test_cases_supports_exact_runtime_versions():
+    case = ["fp8", 1]
+    plan = OpCasePlan(
+        exclude=CaseSelector(
+            rules=[
+                {
+                    "versions": ["0.19.0"],
+                    "fields": ["gemm_type", "token_count"],
+                    "match": {"gemm_type": "fp8"},
+                }
+            ]
+        )
+    )
+
+    assert (
+        filter_test_cases(
+            [case],
+            plan=plan,
+            full_module_name="vllm.gemm",
+            run_func_name="run_gemm",
+            runtime_version="0.19.0",
+        )
+        == []
+    )
+    for runtime_version in ("0.19.0.post15", "0.19.0foo", "0.19.00", "0.19.1", None):
+        assert filter_test_cases(
+            [case],
+            plan=plan,
+            full_module_name="vllm.gemm",
+            run_func_name="run_gemm",
+            runtime_version=runtime_version,
+        ) == [case]
+
+
+def test_filter_test_cases_rejects_mixed_exact_and_prefix_version_contracts():
+    case = ["fp8", 1]
+    plan = OpCasePlan(
+        exclude=CaseSelector(
+            rules=[
+                {
+                    "versions": ["0.19.0"],
+                    "version_prefixes": ["0.19"],
+                    "fields": ["gemm_type", "token_count"],
+                    "match": {"gemm_type": "fp8"},
+                }
+            ]
+        )
+    )
+
+    with pytest.raises(ValueError, match=r"versions.*version_prefixes"):
+        filter_test_cases(
+            [case],
+            plan=plan,
+            full_module_name="vllm.gemm",
+            run_func_name="run_gemm",
+            runtime_version="0.19.0",
+        )
 
 
 def test_filter_test_cases_supports_not_in_structured_exception_rule():

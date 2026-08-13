@@ -265,6 +265,41 @@ class TestInterpolationMethods:
         with pytest.raises(interpolation.InterpolationDataNotAvailableError, match="only value"):
             interpolation.interp_2d_1d(1.5, 257, 1.5, data, method="bilinear")
 
+    def test_interp_2d_fixed_first_axis_interpolates_only_workload_axes(self, comprehensive_perf_db):
+        """A declared structural axis stays exact while its two workload axes interpolate."""
+        data = {
+            128: {
+                1: {
+                    1024: {"latency": 10.0, "energy": 20.0},
+                    2048: {"latency": 20.0, "energy": 40.0},
+                },
+                2: {
+                    1024: {"latency": 20.0, "energy": 40.0},
+                    2048: {"latency": 40.0, "energy": 80.0},
+                },
+            }
+        }
+
+        result = interpolation.interp_2d_fixed_first_axis(
+            128,
+            1,
+            1536,
+            data,
+            method="bilinear",
+            extracted_metrics_cache=comprehensive_perf_db._extracted_metrics_cache,
+        )
+
+        assert result == {"latency": 15.0, "power": 0.0, "energy": 30.0}
+        with pytest.raises(interpolation.InterpolationDataNotAvailableError, match="structural axis"):
+            interpolation.interp_2d_fixed_first_axis(
+                64,
+                1,
+                1536,
+                data,
+                method="bilinear",
+                extracted_metrics_cache=comprehensive_perf_db._extracted_metrics_cache,
+            )
+
     def test_data_unavailable_errors_subclass_value_error(self):
         """Existing ``except ValueError`` callers must keep working."""
         assert issubclass(interpolation.InterpolationDataNotAvailableError, ValueError)

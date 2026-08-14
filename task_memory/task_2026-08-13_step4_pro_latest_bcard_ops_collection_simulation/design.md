@@ -6,6 +6,8 @@
 | 2026-08-13 | Added the audited minimal-extension design candidate and its unresolved decision gate. |
 | 2026-08-13 | Added the source-derived plus runtime-trace-validated profiling design. |
 | 2026-08-13 | Marked the minimal-extension design as user-approved. |
+| 2026-08-14 | Deferred MTP1 structure/tests/simulation and split execution into AIC and parallel B300 smoke tracks. |
+| 2026-08-14 | Converted the pinned-vLLM smoke/runtime trace track into an external-session handoff and retained AIC-only execution locally. |
 
 # Design
 
@@ -16,7 +18,8 @@ The task will use a source-first vertical path:
 3. Map each executed kernel-level operation to the existing AIC consumer contract.
 4. Populate only the exact required Collector cases and preserve three identities: recipe, invocation, and persisted key.
 5. Collect fresh B-card rows, then query them through the unchanged consumer.
-6. Run correctness tests before the requirements-defined prefill/decode experiments.
+6. Run MTP-off correctness tests before the requirements-defined prefill/decode
+   experiments. MTP1 structure tests and simulation are deferred.
 7. Archive provenance, numeric evidence, differences, and unresolved limitations.
 
 The source/runtime identity gate is resolved: all implementation and collection
@@ -38,8 +41,8 @@ recommended scoped design is:
    FP32 and charge DeepEP HT dispatch/combine separately.
 5. Carry K/V alias, block/page size 128, requested/resolved dtype, logical
    bytes, and allocated bytes in the cache-layout contract.
-6. Construct the MTP1 raw graph explicitly; apply the fixed 0.85 acceptance
-   conversion outside that graph.
+6. Keep MTP1 outside the current production graph and reports until a native
+   Step4Pro implementation source is approved; never substitute Step3p5MTP.
 7. Reuse existing leaf operations for all work they already express. Add only
    the operation identities that are required to preserve grouped GEMM and
    vLLM DeepEP consumer keys.
@@ -69,3 +72,16 @@ provider affects performance:
 The runtime trace is an acceptance gate, not a replacement for AIC logical
 operation boundaries. A mismatch fails fast and requires the logical graph or
 case manifest to be corrected before collection continues.
+
+## External runtime-trace interface
+
+The current session no longer executes the whole-model pinned-vLLM B300 smoke
+or runtime/provider trace. That task is specified in:
+
+```text
+task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/pinned_vllm_b300_smoke_runtime_trace_execution.md
+```
+
+The AIC track remains responsible for exact operation-level provider use in
+Collector benchmarks. When supplied, the external report will be reconciled
+against the AIC operation/provider matrix before final sign-off.

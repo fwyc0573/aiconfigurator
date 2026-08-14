@@ -13,6 +13,8 @@
 | 2026-08-13 | Recorded and resolved ISSUE-008: missing Git LFS caused the branch-switch post-checkout hook to fail. |
 | 2026-08-13 | Opened ISSUE-009 for 128 pre-existing baseline test failures discovered after the checkpoint commit. |
 | 2026-08-13 | Closed the temporary-file security follow-up with the owner's explicit retain/no-action decision. |
+| 2026-08-14 | Resolved ISSUE-011 as deferred: MTP1 structure, measurement, and simulation are postponed; MTP-off Latest work is active. |
+| 2026-08-14 | Recorded ISSUE-012: whole-model pinned-vLLM B300 smoke/runtime trace is externally owned; current session is AIC-only. |
 
 # Issues and Resolutions
 
@@ -373,7 +375,7 @@ processed. No credential action will be taken.
 
 ## ISSUE-011 — Pinned vLLM has no Step4Pro MTP1 implementation
 
-**Status:** Open; owner clarification required before MTP1 work.
+**Status:** **Resolved as deferred on 2026-08-14.**
 
 **Observed facts:**
 
@@ -396,11 +398,44 @@ owner's explicit requirement that Latest operations come from the actual
 Step4Pro vLLM implementation.
 
 **Impact:** MTP-off Latest operation definition, runtime trace, collection, and
-simulation can proceed. MTP1 graph definition, measurement, and simulation
-cannot be accepted until Q8 is resolved.
+simulation can proceed. MTP1 graph definition, measurement, and simulation are
+explicitly deferred and are not part of the current acceptance claim.
 
-**Recommended resolution:** Select Q8 option A: keep MTP1 explicitly
-unimplemented and unmeasured for the pinned runtime, and request a concrete
-Step4Pro MTP implementation source before extending the scope.
+**Resolution:** The task owner approved continuing with MTP-off
+`stepfun-ai/Step4-Pro-Latest` correctness, Collector work, B300 measurement,
+and prefill/decode simulation. MTP1 structure tests, MTP1 measurement, and
+MTP1 simulation remain postponed until a native Step4Pro MTP implementation
+source and runtime contract are supplied. `Step3p5MTP` is not used as a
+substitute.
 
 **Evidence:** `/data/ycfeng/tmp/step4_mtp1_boundary_audit_20260814.txt`
+
+## ISSUE-012 — Pinned-vLLM smoke/runtime trace moved to an external session
+
+**Status:** Scope resolved on 2026-08-14; external result pending.
+
+**Observed facts:**
+
+- Previous local launches proved B300 allocation and hardware visibility but
+  did not complete the required service smoke.
+- Known failures were command/entrypoint transfer and a read-only `/jobutil`,
+  not a proven Step4Pro runtime failure.
+- At handoff there were zero active matching RJobs, Replicas, or local smoke
+  processes.
+
+**Root cause of ownership change:** The task owner chose to execute the
+whole-model pinned-vLLM smoke/runtime-provider trace in another session and
+return its results later.
+
+**Impact:**
+
+- This session must not launch or monitor the whole-model smoke.
+- AIC-side implementation, exact operation-provider collection, testing, and
+  simulation remain active.
+- Final runtime/provider sign-off remains pending until the external report is
+  supplied.
+
+**Resolution:** Created
+`pinned_vllm_b300_smoke_runtime_trace_execution.md` with fixed identities,
+handbooks, reusable artifacts, known failure roots, bounded launch rules,
+acceptance criteria, cleanup requirements, and the report schema.

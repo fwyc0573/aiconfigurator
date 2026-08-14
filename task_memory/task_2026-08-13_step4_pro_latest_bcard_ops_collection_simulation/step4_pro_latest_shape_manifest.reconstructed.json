@@ -1,0 +1,254 @@
+{
+  "manifest_kind": "reconstructed_shape_contract",
+  "schema_version": 1,
+  "reconstruction": {
+    "status": "reconstructed",
+    "date": "2026-08-14",
+    "original_manifest_available": false,
+    "sources": [
+      "task_memory/step4pro_v4_external_simulator_requirements.md",
+      "task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/op_provenance.md",
+      "vllm-step4-pro@607d1641ee3fec43653fca510d717725828890c2"
+    ]
+  },
+  "model": {
+    "model_id": "stepfun-ai/Step4-Pro-Latest",
+    "architecture": "Step4ProForCausalLM",
+    "pinned_vllm_commit": "607d1641ee3fec43653fca510d717725828890c2",
+    "hidden_size": 7168,
+    "num_hidden_layers": 78,
+    "vocab_size": 128896,
+    "num_nextn_predict_layers": 0
+  },
+  "layers": {
+    "full_attention_ids": [
+      3,
+      7,
+      11,
+      15,
+      19,
+      23,
+      27,
+      31,
+      35,
+      39,
+      43,
+      47,
+      51,
+      55,
+      59,
+      63,
+      67,
+      71,
+      75,
+      77
+    ],
+    "swa_attention_count": 58,
+    "dense_ffn_ids": [
+      0,
+      1
+    ],
+    "latent_moe": {
+      "first_layer_id": 2,
+      "last_layer_id": 77,
+      "count": 76
+    }
+  },
+  "attention": {
+    "full_mfa": {
+      "count": 20,
+      "num_query_heads": 64,
+      "num_kv_heads": 1,
+      "head_dim": 512,
+      "q_lora_rank": 2048,
+      "nope_head_dim": 448,
+      "rope_head_dim": 64,
+      "output_groups": 8,
+      "o_lora_rank": 1024,
+      "window_size": 0,
+      "head_wise_gate": true,
+      "kv_storage_alias": true,
+      "page_size": 128,
+      "required_op_order": [
+        "attn_norm",
+        "wq_a_gemm",
+        "q_lora_norm",
+        "wq_b_gemm",
+        "q_norm",
+        "wkv_gemm",
+        "k_norm_rope",
+        "attention",
+        "inverse_rope",
+        "head_gate_gemm",
+        "head_gate_sigmoid_mul",
+        "wo_a_grouped_gemm",
+        "wo_b_gemm"
+      ],
+      "attention_provider": "optimus_fa4",
+      "gemm_shapes": {
+        "wq_a_gemm": {
+          "n": 2048,
+          "k": 7168
+        },
+        "wq_b_gemm": {
+          "n": 32768,
+          "k": 2048
+        },
+        "wkv_gemm": {
+          "n": 512,
+          "k": 7168
+        },
+        "head_gate_gemm": {
+          "n": 64,
+          "k": 7168
+        },
+        "wo_b_gemm": {
+          "n": 7168,
+          "k": 8192
+        }
+      },
+      "grouped_wo_a": {
+        "provider": "vllm_step4pro_torch_einsum",
+        "groups": 8,
+        "n_per_group": 1024,
+        "k_per_group": 4096
+      }
+    },
+    "swa_gqa": {
+      "count": 58,
+      "num_query_heads": 128,
+      "num_kv_heads": 8,
+      "head_dim": 128,
+      "window_size": 512,
+      "head_wise_gate": true,
+      "normalizes": [
+        "q",
+        "k",
+        "v"
+      ],
+      "provider": "vllm_native_sliding_gqa",
+      "required_op_order": [
+        "attn_norm",
+        "qkv_proj_gemm",
+        "qkv_norm_rope",
+        "attention",
+        "head_gate_gemm",
+        "head_gate_sigmoid_mul",
+        "o_proj_gemm"
+      ],
+      "gemm_shapes": {
+        "qkv_proj_gemm": {
+          "n": 18432,
+          "k": 7168
+        },
+        "head_gate_gemm": {
+          "n": 128,
+          "k": 7168
+        },
+        "o_proj_gemm": {
+          "n": 7168,
+          "k": 16384
+        }
+      }
+    }
+  },
+  "ffn": {
+    "dense": {
+      "intermediate_size": 26112,
+      "activation": "situ_glu",
+      "required_op_order": [
+        "ffn_norm",
+        "gate_up_gemm",
+        "situ_glu",
+        "down_gemm",
+        "ffn_residual_add"
+      ],
+      "gate_up_gemm": {
+        "n": 52224,
+        "k": 7168
+      },
+      "down_gemm": {
+        "n": 7168,
+        "k": 26112
+      }
+    },
+    "latent_moe": {
+      "num_experts": 896,
+      "topk": 16,
+      "latent_hidden_size": 3584,
+      "moe_intermediate_size": 3584,
+      "shared_expert_intermediate_size": 3584,
+      "required_op_order": [
+        "ffn_norm",
+        "router_gemm",
+        "pre_proj",
+        "dispatch",
+        "experts",
+        "combine",
+        "shared_gate_up_gemm",
+        "shared_situ_glu",
+        "shared_down_gemm",
+        "post_proj_norm",
+        "post_proj",
+        "shared_scale_mul",
+        "routed_shared_add",
+        "ffn_residual_add"
+      ],
+      "router": {
+        "dtype": "float32",
+        "weight_dtype": "bfloat16",
+        "provider": "vllm.optimus_matmul_fp32",
+        "n": 896,
+        "k": 7168
+      },
+      "routed_pre_projection": {
+        "dtype": "bfloat16",
+        "n": 3584,
+        "k": 7168
+      },
+      "routed_post_projection": {
+        "dtype": "bfloat16",
+        "n": 7168,
+        "k": 3584
+      }
+    }
+  },
+  "communication": {
+    "expert_parallel": {
+      "provider": "vllm_deepep_high_throughput",
+      "operations": [
+        "dispatch",
+        "combine"
+      ],
+      "supported_ep_sizes": [
+        16,
+        32
+      ]
+    }
+  },
+  "kv_cache": {
+    "requested_dtype": "auto",
+    "resolved_dtype": "bfloat16",
+    "page_size": 128,
+    "full_mfa_elements_per_token_per_layer": 512,
+    "swa_gqa_elements_per_token_per_layer": 2048,
+    "full_mfa_kv_storage_alias": true
+  },
+  "precision": {
+    "attention": "bfloat16",
+    "dense": "bfloat16",
+    "latent_projection": "bfloat16",
+    "shared_expert": "bfloat16",
+    "lm_head": "bfloat16",
+    "norm": "float32",
+    "router": "float32",
+    "routed_experts": "fp8_e4m3fn_block_128x128",
+    "kv_cache_requested": "auto",
+    "kv_cache_expected_resolved": "bfloat16"
+  },
+  "mtp": {
+    "enabled": false,
+    "layers": 0,
+    "reason": "Deferred because the pinned Step4Pro source has no native MTP1 construction path."
+  }
+}

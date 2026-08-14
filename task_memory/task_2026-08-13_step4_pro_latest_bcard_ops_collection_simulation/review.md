@@ -8,6 +8,7 @@
 | 2026-08-13 | Reviewed the branch checkpoint and failed focused baseline evidence. |
 | 2026-08-13 | Reviewed and accepted the root-cause baseline repair with 899/899 passing tests. |
 | 2026-08-14 | Reviewed the pinned-vLLM MTP1 boundary and fresh baseline checkpoint evidence. |
+| 2026-08-14 | Recorded the owner-approved MTP-off execution scope and parallel B300 smoke gate. |
 
 # Checkpoint Review Log
 
@@ -149,3 +150,17 @@
 - **Verdict:** MTP-OFF LATEST WORK APPROVED TO PROCEED; MTP1 remains behind an
   explicit owner decision. Baseline evidence is fresh: `899/899` passed in
   `61.56s`.
+
+
+### Review 7 — MTP-off scope activation
+
+- **Target Component/Phase:** Phase 4–6, MTP-off Latest implementation and B300 smoke.
+- **Reviewer Agent Identity:** Codex task execution agent, session dated 2026-08-14.
+- **Inspected Artifacts:**
+  - `task_memory/step4pro_v4_external_simulator_requirements.md`;
+  - `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/requirements.md`;
+  - `plan.md`, `harness.md`, `design.md`, `issues.md`;
+  - pinned vLLM MTP boundary evidence `/data/ycfeng/tmp/step4_mtp1_boundary_audit_20260814.txt`.
+- **Identified Issues/Anomalies:** The pinned Step4Pro source has no native MTP1 path. The requirements smoke and formal B300 collection remain uncompleted.
+- **Remediation/Verification Code Actions Taken:** Marked ISSUE-011 resolved as deferred; limited current acceptance to MTP-off; activated two parallel lanes: AIC Latest ops/Collector/measurement/simulation and pinned-vLLM B300 smoke. Prohibited `Step3p5MTP` substitution.
+- **Verdict:** MTP-off execution APPROVED; MTP1 structure, measurement, and simulation DEFERRED.

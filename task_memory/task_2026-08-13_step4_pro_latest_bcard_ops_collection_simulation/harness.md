@@ -8,6 +8,8 @@
 | 2026-08-13 | Added the owner-directed no-action rule for the temporary security-review file. |
 | 2026-08-13 | Made exact pinned-vLLM operation execution mandatory for every accepted Latest measurement. |
 | 2026-08-14 | Added a hard gate for the missing pinned-vLLM Step4Pro MTP1 path. |
+| 2026-08-14 | Deferred MTP1 structure tests/simulation and opened the parallel B300 smoke gate. |
+| 2026-08-14 | Assigned whole-model pinned-vLLM smoke/runtime trace to an external session while retaining AIC-side provider identity checks. |
 
 # Task Harness
 
@@ -32,9 +34,18 @@
 12. Every accepted B300 measurement must execute the operation implementation
     provided by the pinned vLLM version and reconcile source path, runtime
     provider, Collector identity, persisted key, and AIC consumer.
-13. The MTP1 requirement cannot be accepted from `Step3p5MTP` or an invented
-    AIC-only graph. Until Q8 is resolved, MTP1 remains explicitly
-    unimplemented and unmeasured while MTP-off Latest work may proceed.
+13. MTP1 structure tests, measurement, and simulation are deferred by explicit
+   owner decision. They remain unimplemented and unmeasured; do not use
+   `Step3p5MTP` or an invented AIC-only graph as a substitute. This does not
+   block MTP-off Latest AIC implementation, correctness, B300 collection, or
+   prefill/decode simulation.
+14. The pinned-vLLM whole-model B300 smoke/runtime trace is executed by an
+   external session using
+   `pinned_vllm_b300_smoke_runtime_trace_execution.md`. This session must not
+   launch or monitor that work.
+15. AIC-side Collector measurements must still execute the exact pinned-vLLM
+   operation/provider implementation. The external whole-model trace is a
+   later sign-off input, not permission to substitute generic kernels.
 
 ## Prohibited Actions
 

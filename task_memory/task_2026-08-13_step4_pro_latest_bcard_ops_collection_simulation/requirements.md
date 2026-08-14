@@ -19,6 +19,8 @@
 | 2026-08-13 | Opened the obsolete-test removal and V1 formula-test retention decision. |
 | 2026-08-13 | Approved obsolete-test deletion and root-cause repair; reaffirmed strict pinned-vLLM fidelity for all Latest work. |
 | 2026-08-14 | Confirmed pinned-vLLM MTP1 boundary: Step4Pro main graph has no native MTP1 path; opened an explicit scope gate. |
+| 2026-08-14 | Deferred MTP1 structure tests and simulation; authorized MTP-off Latest execution and parallel B300 smoke. |
+| 2026-08-14 | Moved the pinned-vLLM B300 smoke/runtime-provider trace to an external session and limited the current session to AIC-side implementation, measurement, tests, execution, and simulation. |
 
 # Requirements: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -307,6 +309,44 @@ outside the pinned commit. This changes the source-of-truth rule and requires
 an explicit implementation specification, weight-loading contract, runtime
 image identity, and new acceptance tests before measurement.
 
-**Status:** Awaiting explicit owner decision through the required
-`grill-me` clarification gate. No MTP1 implementation, measurement, or
-simulation assumption has been made.
+**Status:** **Resolved — user deferred MTP1 work on 2026-08-14.**
+
+**Decision:**
+
+- [Original Request] Defer MTP1 structure-related tests and MTP1 simulation.
+- [Original Request] Allow `stepfun-ai/Step4-Pro-Latest` to run AIC tests and
+  validation temporarily without MTP1.
+- [Original Request] Continue with the MTP-off Latest AIC operation-set
+  definition, Collector implementation, complete measurement tests, and
+  end-to-end prefill/decode simulation.
+- [Original Request] In parallel, run the pinned-vLLM Step4-Pro smoke on B300
+  according to the requirements document, using its specified container. The
+  vLLM checkout may be mounted when the platform permits it.
+
+MTP1 must remain explicitly deferred and must not be replaced by `Step3p5MTP`
+or an invented AIC-only implementation.
+
+### Q9 — External ownership of pinned-vLLM smoke/runtime trace
+
+1. [Original Request] Write a standalone execution document for the
+   `B300 pinned-vLLM smoke and runtime/provider trace` subtask.
+2. [Original Request] Include the concrete requirements, environment,
+   authoritative file locations, reusable tests/evidence, execution gates, and
+   result expectations so another session can execute it accurately without
+   repeating completed probes.
+3. [Original Request] The task owner will assign that document to another
+   session and later return its results.
+4. [Original Request] The current session must stop executing the pinned-vLLM
+   whole-model smoke/runtime trace and focus only on AIC-side implementation,
+   operation measurement, testing, execution, and simulation.
+
+**Status:** **Resolved by explicit owner direction on 2026-08-14.**
+
+**Execution consequence:**
+
+- The external handoff document is
+  `pinned_vllm_b300_smoke_runtime_trace_execution.md`.
+- Current-session AIC development and AIC operation collection may continue.
+- Final provider/source sign-off will ingest the external session's report
+  when the task owner supplies it; missing external evidence must remain
+  visible rather than being inferred.

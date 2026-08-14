@@ -14,6 +14,8 @@
 | 2026-08-13 | Recorded user confirmation of branch/checkpoint option A and staged the audited baseline file set. |
 | 2026-08-13 | Created baseline commit `4f2b0c31`, then recorded the focused baseline result: 859 passed and 128 failed. |
 | 2026-08-13 | Recorded the owner's decision to retain the temporary security-review file without any security action. |
+| 2026-08-14 | Stopped the local pinned-vLLM smoke lane, created an external execution handoff, and restricted this session to AIC-side work. |
+| 2026-08-14 | Strengthened the Latest MTP-off RED contract and verified the expected missing-implementation failure. |
 
 # Progress Log
 
@@ -693,3 +695,140 @@ systemd memory scope, then ran `git diff --check`.
   `/data/ycfeng/tmp/step4_latest_baseline_repaired_final_rerun.log`
 - SHA256:
   `30b93e06095b32c0bc81d5b3740c2b4f4d1875414075d13f30f064e6dfc27a63`.
+
+## 2026-08-14 — MTP1 and B300 smoke status reconfirmed
+
+**Status:** MTP1 is absent from the pinned Step4Pro implementation; the
+requirements smoke has not been completed or evidenced.
+
+### Motivation
+Confirm the two execution prerequisites before starting Latest AIC
+implementation and avoid treating resource probes as a successful vLLM smoke.
+
+### Method
+- Rechecked pinned checkout commit
+  `607d1641ee3fec43653fca510d717725828890c2`.
+- Compared the requirements' MTP1 contract and smoke commands with the pinned
+  model registry, Step4Pro model, MTP implementation, speculative conversion,
+  task progress, and available B300 evidence artifacts.
+
+### Result
+- The pinned checkout has no native `Step4Pro` MTP1 path. Its only Step-family
+  MTP implementation is `Step3p5MTP`, whose predictor block is
+  `Step3p5DecoderLayer`; this cannot be accepted as Latest Step4Pro ground
+  truth.
+- B300 quota prediction, hardware probing, and cross-zone tar transport were
+  verified, but the requirements' Step4Pro service smoke was not run to a
+  successful, auditable result. There is no evidence of `/health`, FA4
+  backend, prefill/decode requests, four-way concurrency, or the 78-layer
+  target-shape smoke.
+- Evidence:
+  `/data/ycfeng/tmp/step4_mtp1_boundary_audit_20260814.txt`,
+  `task_memory/step4pro_v4_external_simulator_requirements.md:135-191`,
+  and the B300 probe artifacts under `/data/ycfeng/tmp/b300probe/`.
+
+## 2026-08-14 — Execution scope updated by owner
+
+**Status:** MTP-off execution is active; MTP1 structure work is deferred.
+
+### Motivation
+Remove the confirmed MTP1 source gap from the immediate critical path without
+silently changing the pinned-vLLM fidelity rule.
+
+### Expectation
+- AIC Latest can be implemented and tested without an MTP1 graph.
+- B300 pinned-vLLM smoke runs in parallel.
+- Formal profiling and simulation remain gated by runtime evidence and
+  MTP-off correctness.
+
+### Method
+- Recorded the owner's scope decision in `requirements.md`, `plan.md`,
+  `harness.md`, and `design.md`.
+- Split the active work into an AIC/Collector track and a B300 smoke track.
+
+### Result
+- MTP1 structure tests, measurement, and simulation are explicitly deferred.
+- MTP-off Latest AIC ops, Collector, B300 measurement, correctness, and
+  prefill/decode E2E simulation are now active scope.
+- The B300 smoke must use the requirements' pinned image and vLLM checkout;
+  mount is allowed only when platform rules permit it.
+
+## 2026-08-14 — Pinned-vLLM smoke/runtime trace handed off
+
+**Status:** externalized; no active local B300 smoke resource remains.
+
+### Motivation
+
+Let a separate session own the whole-model pinned-vLLM smoke and provider trace
+while this session stays focused on AIC implementation, operation collection,
+testing, and simulation.
+
+### Expectation
+
+- The external agent receives enough fixed identities, environment rules,
+  reusable evidence, failure history, acceptance criteria, and cleanup rules
+  to execute without repeating earlier failed probes.
+- This session launches no pinned-vLLM whole-model smoke.
+- AIC work continues without silently treating missing external trace evidence
+  as a PASS.
+
+### Method
+
+- Interrupted and closed the active B300 smoke agent.
+- Verified zero matching RJobs, Replicas, and local smoke processes.
+- Preserved all existing evidence under
+  `/data/ycfeng/tmp/b300_step4_smoke_20260814/`.
+- Created
+  `pinned_vllm_b300_smoke_runtime_trace_execution.md`.
+- Updated requirements, plan, harness, and design ownership boundaries.
+
+### Result
+
+- Existing B300 prediction remains PASS with 10 candidate nodes.
+- The most recent hardware evidence remains
+  `NVIDIA B300 SXM6 AC`, `275040 MiB`.
+- Whole-model smoke status remains **not run to PASS**.
+- No `/health`, prefill/decode, four-concurrency, FA4 runtime, or DeepEP
+  runtime result is claimed in this session.
+- Current execution scope is now AIC-only.
+
+## 2026-08-14 — Complete Latest MTP-off RED contract established
+
+**Status:** RED verified; production implementation is the next step.
+
+### Motivation
+
+The first RED file checked only one Full layer, one SWA layer, and a partial
+MoE sequence. It could become green while still aggregating attention and FFN
+families in an order that differs from the pinned vLLM decoder loop.
+
+### Expectation
+
+The test contract must fail until AIC provides:
+
+- all 78 decoder layers in execution order;
+- Full MFA with required inverse RoPE and grouped `wo_a`;
+- SWA GQA with Q/K/V normalization;
+- Dense SiTU-GLU and serial Latent MoE/shared-expert execution;
+- exact FP32-router, Optimus FA4, grouped-einsum, Optimus MoE, and DeepEP HT
+  identities;
+- logical and page-allocated KV bytes;
+- no MTP1 graph and no TP greater than one.
+
+### Method
+
+- Extended the reconstructed manifest with the missing provider, operation
+  order, communication, and KV-layout fields.
+- Strengthened `tests/unit/sdk/models/test_step4_pro_latest.py`.
+- Ran the manifest test, the first missing-production identity test, Ruff, JSON
+  validation, and whitespace validation.
+
+### Result
+
+- Manifest contract: `1 passed in 0.08s`.
+- Latest identity RED: `1 failed in 0.26s`, at the expected missing
+  `Step4ProForCausalLM` registration.
+- Ruff: PASS.
+- JSON parse: PASS.
+- `git diff --check`: PASS.
+- No production AIC code was changed during this RED step.

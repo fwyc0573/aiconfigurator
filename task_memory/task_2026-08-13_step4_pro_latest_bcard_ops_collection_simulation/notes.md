@@ -6,6 +6,7 @@
 | 2026-08-13 | Added measured access facts: B300 quotagroup denial, the only grantable GPU path, Docker-via-sudo requirement, and shell cwd persistence. |
 | 2026-08-13 | Revalidated B300 access and latest vLLM source/image identity after new platform evidence. |
 | 2026-08-13 | Recorded user choice A: pinned local checkout and requirements shape are authoritative. |
+| 2026-08-13 | Recorded the owner's no-action instruction for the temporary security-review file. |
 
 # Operational Notes
 
@@ -33,6 +34,9 @@
 - `hub.stepfun-inc.com` rejects unauthenticated catalog reads, so image tags cannot be enumerated from this host.
 - Bash tool calls share a persistent working directory across invocations. Use absolute paths, or a stale `cd` from a previous call will make a relative path fail.
 - Node listings from `brainctl get nodes` in plain-text form return a sample, not the full set. Use `-o json` with a label selector when an exact inventory is needed.
+- Per explicit owner instruction, do not read, remove, alter, move, quote, or
+  otherwise process
+  `/data/ycfeng/tmp/aic_failure_domain1/codex_lane3_scope_baseline.md`.
 
 ## Revalidated runtime facts (2026-08-13)
 

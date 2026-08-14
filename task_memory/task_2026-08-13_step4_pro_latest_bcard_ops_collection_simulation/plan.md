@@ -10,6 +10,9 @@
 | 2026-08-13 | Added a runtime-trace provenance gate for Full-MFA profiling cases. |
 | 2026-08-13 | Closed the operation-boundary gate with option A and made branch/checkpoint safety the active gate. |
 | 2026-08-13 | Closed the branch/checkpoint decision with option A; baseline checkpoint creation is in progress. |
+| 2026-08-13 | Recorded the failed focused baseline run and paused implementation for root-cause analysis. |
+| 2026-08-13 | Closed the baseline repair gate with 899/899 passing tests; Latest implementation planning resumed. |
+| 2026-08-14 | Completed the pinned-vLLM MTP1 boundary audit and opened the owner decision gate. |
 
 # Plan: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -24,7 +27,7 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 1. Requirements and historical review | Completed | Requirements, historical tasks, repository state, and environment rules are recorded. |
 | 2. Latest vLLM source/image identity confirmation | Completed | Pinned checkout, commit, source files, and B300 path are recorded; later image is reference-only. |
 | 3. Grill-me clarification gate | Completed | Source/runtime, model identity, manifest reconstruction, operation boundaries, profiling provenance, and branch/checkpoint handling are explicitly resolved. |
-| 4. Latest op inventory and AIC design | In progress | Prefill/decode inventory and the minimal-extension direction are fixed; exact implementation tasks await the branch/checkpoint gate. |
+| 4. Latest op inventory and AIC design | In progress | Prefill/decode inventory and the minimal-extension direction are fixed; baseline is green; MTP1 scope and the detailed pinned-vLLM implementation matrix remain to be finalized. |
 | 5. AIC model/op and Collector implementation | Pending | Definition and case population pass focused tests and identity/deduplication checks. |
 | 6. B-card collection | Pending | Fresh collection runs complete or have explicit terminal outcomes and reproduce from recorded commands. |
 | 7. Correctness and simulation | Pending | Correctness tests pass before prefill/decode experiments; required results are recorded. |
@@ -67,3 +70,17 @@ reconstruction status.
 - Run focused static/consumer tests before any formal simulation.
 - Record exact commands, environment, hardware facts, numeric metrics, output paths, and hashes.
 - Stop on unresolved contradictions, missing runtime identity, failed required tests, or collection-key mismatches.
+- The baseline repair gate is closed:
+
+  ```text
+  adjusted focused baseline: 899 passed, 0 failed, 51.84s
+  log: /data/ycfeng/tmp/step4_latest_baseline_repaired_final_pytest.log
+  sha256: c7a869263afd16b8694259ecafbe7df29e5a3a02320298a01e9e6009d5b68154
+  ```
+
+- The next gate is a detailed Latest implementation matrix that maps every AIC
+  operation and test to the pinned vLLM source/provider path before RED tests
+  are written.
+- The pinned source audit found no native Step4Pro MTP1 path. Q8 in
+  `requirements.md` is the required owner decision before any MTP1
+  implementation, measurement, or simulation.

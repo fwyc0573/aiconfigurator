@@ -11,6 +11,8 @@
 | 2026-08-13 | Resolved missing-manifest handling through explicit reconstruction with a new SHA256. |
 | 2026-08-13 | Confirmed the minimal fidelity-preserving operation strategy; ISSUE-007 is now the sole pre-implementation gate. |
 | 2026-08-13 | Recorded and resolved ISSUE-008: missing Git LFS caused the branch-switch post-checkout hook to fail. |
+| 2026-08-13 | Opened ISSUE-009 for 128 pre-existing baseline test failures discovered after the checkpoint commit. |
+| 2026-08-13 | Closed the temporary-file security follow-up with the owner's explicit retain/no-action decision. |
 
 # Issues and Resolutions
 
@@ -201,7 +203,7 @@ tar xf out.tar -C <LOCAL_DEST>
 
 ## ISSUE-007 — Production implementation cannot safely begin from the current dirty linked worktree
 
-**Status:** Open; implementation gate after Q3.
+**Status:** Resolved on 2026-08-13.
 
 **Observed facts:**
 - The current checkout is already a linked worktree on branch `step4-pro`.
@@ -239,6 +241,12 @@ destructive cleanup and a second incomplete worktree.
 ISSUE-007 closes only after the checkpoint commit and baseline verification
 complete.
 
+**Resolution:** Created branch `task/step4-pro-latest-b300` and baseline commit
+`4f2b0c31` from an exact 86-file allowlist. All excluded caches, generated
+outputs, H800 data, historical result directories, and the pinned vLLM clone
+remained untracked. Tracked status was clean after the commit. Baseline test
+failures are a separate consistency issue tracked as ISSUE-009.
+
 ## ISSUE-008 — Git LFS missing during approved branch creation
 
 **Status:** Resolved on 2026-08-13.
@@ -261,3 +269,138 @@ repository hook.
   0.
 
 No hook removal, skip flag, or fallback was used.
+
+## ISSUE-009 — Checkpointed Step4 baseline had 128 failing tests
+
+**Status:** Resolved on 2026-08-13.
+
+**Observed facts:**
+- Baseline commit: `4f2b0c31`.
+- Focused test run collected 987 tests: 859 passed and 128 failed.
+- Failures occur only in four files:
+  - `test_factorized_attention_runtime_spec.py`: 79;
+  - `test_step4_pro_v1.py`: 41;
+  - `test_step4_pro_v1_roofline.py`: 4;
+  - `test_deepseek_v4_runtime_spec.py`: 4.
+- Representative missing contracts include
+  `FactorizedAttentionRuntimeSpec`, `FullAttentionConfig`, updated
+  `Step4MFAAttentionConfig` APIs, and expected KV-memory behavior.
+- No Step4-Pro-Latest production code existed when the failures were observed.
+
+**Initial root-cause hypothesis:** The previous dirty worktree combined
+production changes from completed Step4 work with untracked tests from one or
+more incomplete or separate work streams. This hypothesis is not yet accepted;
+parallel read-only investigations are in progress.
+
+**Impact:** A failing baseline makes later regressions ambiguous. Under the
+task harness, implementation and GPU collection cannot proceed.
+
+**Required resolution:** Establish provenance and ownership for each failure
+cluster, then either repair the true baseline root cause or obtain explicit
+approval to remove separately incomplete tests from this branch. No test
+skipping or expectation weakening is allowed.
+
+### Root-cause update
+
+- 83 failures come from two DSV4 runtime-spec RED test files that the original
+  task later marked obsolete.
+- The remaining 45 failures are relevant baseline blockers:
+  - 41 Step4-Pro-V1 model/config/parser/KV failures caused by incompatible V1
+    attention contracts being mixed in one checkpoint;
+  - 4 `SOL`/`SOL_FULL` formula-path loader failures.
+- No existing branch, worktree, stash, or tracked commit contains the missing
+  complete V1 implementation.
+- The next required decision is whether to restore the previously approved
+  Full/HCA V1 contract or redefine V1 around the newer shared-MFA contract.
+
+### Scope clarification
+
+- The pinned Step4-Pro vLLM implementation for Latest is not the historical
+  V1 Full-Attention-plus-HCA graph. It uses shared-KV Full MFA/MQA together
+  with sliding-window GQA/SWA.
+- The V1 repair decision must not change the Step4-Pro-Latest implementation.
+- Recommended resolution: restore the historical V1 contract only for the
+  existing V1 model, then implement Latest separately from the pinned vLLM
+  graph.
+- The task owner confirmed this clarified combined decision on 2026-08-13.
+- Remaining ISSUE-009 work is limited to restoring the historical V1 contract,
+  resolving the four formula-only loader tests, and obtaining explicit
+  ownership/removal decisions for the obsolete runtime-spec tests.
+
+### Final test-ownership audit
+
+- Remove, only with explicit permission:
+  - `tests/unit/sdk/database/test_factorized_attention_runtime_spec.py`
+  - `tests/unit/sdk/models/test_deepseek_v4_runtime_spec.py`
+- Retain:
+  - all four formula-only `SOL`/`SOL_FULL` cases in
+    `tests/unit/sdk/database/test_step4_pro_v1_roofline.py`
+- Production defect to repair:
+  - `src/aiconfigurator/sdk/operations/dsv4.py` calls `load_data()` before
+    checking formula-only modes.
+
+**Resolution approval:** On 2026-08-13 the task owner explicitly approved
+deleting the two obsolete files, retaining the four formula-only tests, and
+repairing the production source-ordering defect. ISSUE-009 remains open only
+until the resulting baseline test run is green.
+
+### Resolution result
+
+- Deleted the two approved obsolete DSV4 runtime-spec files.
+- Restored the historical V1 Full/HCA schema, parser, graph, validation, and
+  KV accounting.
+- Removed the invalid test that required factorized-MFA runtime specs for V1;
+  it contradicted the confirmed historical V1 contract and did not represent
+  pinned Latest vLLM.
+- Retained the four formula-only HCA tests and fixed the source ordering.
+- Final adjusted baseline: `899 passed`, `0 failed`, `51.84s`.
+- Ruff, format, JSON, and whitespace checks all pass.
+
+Latest remains a separate implementation target and must not reuse the V1
+Full/HCA graph.
+
+## ISSUE-010 — Temporary audit file reported as potentially sensitive
+
+**Status:** Closed by owner decision on 2026-08-13.
+
+**Path:**
+`/data/ycfeng/tmp/aic_failure_domain1/codex_lane3_scope_baseline.md`
+
+**Resolution:** The task owner selected retain/no-action and explicitly stated
+that the current environment is sufficiently secure. The file has not been
+read, deleted, modified, moved, permission-changed, quoted, or otherwise
+processed. No credential action will be taken.
+
+## ISSUE-011 — Pinned vLLM has no Step4Pro MTP1 implementation
+
+**Status:** Open; owner clarification required before MTP1 work.
+
+**Observed facts:**
+
+- `Step4ProForCausalLM` is registered as the Step4Pro trunk model and does not
+  construct an MTP predictor:
+  `vllm/model_executor/models/step4pro.py:626-649`.
+- The only relevant MTP registry entry is `Step3p5MTP`, and it constructs
+  `Step3p5DecoderLayer`:
+  `vllm/model_executor/models/registry.py:616`;
+  `vllm/model_executor/models/step3p5_mtp.py:171-190,286`.
+- Step4 speculative configuration is rewritten to the Step3.5 MTP
+  architecture:
+  `vllm/config/speculative.py:357-362`.
+- The requirements document says Step4Pro MTP1 construction still needs to be
+  completed: `task_memory/step4pro_v4_external_simulator_requirements.md:113-115`.
+
+**Root cause:** The requirements' MTP1 experiment scope is broader than the
+pinned vLLM Step4Pro implementation. Reusing `Step3p5MTP` would violate the
+owner's explicit requirement that Latest operations come from the actual
+Step4Pro vLLM implementation.
+
+**Impact:** MTP-off Latest operation definition, runtime trace, collection, and
+simulation can proceed. MTP1 graph definition, measurement, and simulation
+cannot be accepted until Q8 is resolved.
+
+**Recommended resolution:** Select Q8 option A: keep MTP1 explicitly
+unimplemented and unmeasured for the pinned runtime, and request a concrete
+Step4Pro MTP implementation source before extending the scope.
+
+**Evidence:** `/data/ycfeng/tmp/step4_mtp1_boundary_audit_20260814.txt`

@@ -329,36 +329,19 @@ def test_step4_mfa_attention_config_is_frozen_explicit_and_default_free():
         attention_config.hidden_size = 1
 
 
-def test_step4_mfa_v1_cached_schema_records_all_three_widths_and_provenance():
-    """The package-local V1 JSON must declare the complete reviewed MFA contract."""
+def test_step4_pro_v1_cached_schema_uses_historical_full_hca_contract():
+    """The package-local V1 JSON must preserve the approved Full/HCA contract."""
     raw = _step4_pro_raw_config()
-    expected_sections = _step4_mfa_attention_sections()
+    expected_sections = _candidate_pro_attention_sections()
 
     assert raw["full_attention"] == expected_sections["full_attention"]
     assert raw["nonfull_attention"] == expected_sections["nonfull_attention"]
 
     extra = utils._parse_hf_config_json(raw)["extra_params"]
-    assert isinstance(extra.full_attention, common.Step4MFAAttentionConfig)
-    assert isinstance(extra.nonfull_attention, common.Step4MFAAttentionConfig)
-    assert extra.full_attention.retention_mode == "full"
-    assert extra.full_attention.window_allocation_policy == "none"
-    assert extra.nonfull_attention.retention_mode == "swa"
-    assert extra.nonfull_attention.window_allocation_policy == "sequence_capped"
-    assert (
-        extra.nonfull_attention.projection_head_dim,
-        extra.nonfull_attention.cache_projection_width,
-        extra.nonfull_attention.cache_entry_width,
-    ) == (640, 512, 128)
-    assert (
-        len(
-            {
-                extra.nonfull_attention.projection_head_dim,
-                extra.nonfull_attention.cache_projection_width,
-                extra.nonfull_attention.cache_entry_width,
-            }
-        )
-        == 3
-    )
+    assert isinstance(extra.full_attention, common.FullAttentionConfig)
+    assert isinstance(extra.nonfull_attention, common.NonFullAttentionConfig)
+    assert extra.nonfull_attention.mechanism == "hca"
+    assert extra.nonfull_attention.compression_ratio == 128
 
 
 def test_step4_mfa_parser_builds_the_shared_class_for_both_retention_modes():
@@ -458,8 +441,8 @@ def test_step4_mfa_parameter_formula_closes_all_six_targets_exactly(
         pytest.param(1_048_576, 10_741_350_400, id="one-million"),
     ],
 )
-def test_step4_mfa_v1_runtime_kv_closes_sequence_capped_audit(seq_len, expected_total_bytes):
-    """V1 must combine uncompressed Full history with a 512-token, 128-wide SWA cache."""
+def test_step4_mfa_sequence_capped_fixture_closes_kv_audit(seq_len, expected_total_bytes):
+    """The generic shared-MFA fixture must preserve its reviewed cache formula."""
     full = _build_step4_mfa_attention_config()
     swa = _build_step4_mfa_attention_config(
         num_query_heads=96,
@@ -674,10 +657,11 @@ def test_step4_mfa_runtime_kv_rejects_invalid_inputs(seq_len, tp_size, bytes_per
         )
 
 
-def test_step4_mfa_migration_removes_obsolete_step4_pro_attention_classes():
-    """No standard-MHA or HCA class may remain as an alternate Step4-Pro path."""
-    assert not hasattr(common, "FullAttentionConfig")
-    assert not hasattr(common, "NonFullAttentionConfig")
+def test_step4_mfa_and_historical_v1_attention_contracts_coexist():
+    """Generic MFA support must not erase the approved historical V1 contract."""
+    assert hasattr(common, "Step4MFAAttentionConfig")
+    assert hasattr(common, "FullAttentionConfig")
+    assert hasattr(common, "NonFullAttentionConfig")
 
 
 def test_step4_pro_v1_is_a_cached_default():
@@ -1129,67 +1113,6 @@ def test_step4_pro_v1_builds_all_per_layer_attention_operations():
         "context_moe_shared_merge",
     ):
         assert context[name]._scale_factor == 76
-
-
-def test_step4_pro_v1_builds_explicit_factorized_attention_runtime_specs():
-    """Full and SWA builders must derive their complete runtime specs from the shared MFA config."""
-    model = _build_cached_step4_pro_model(tp_size=4, moe_ep_size=4)
-    operations_by_phase = {
-        "context": _operations_by_name(model.context_ops),
-        "generation": _operations_by_name(model.generation_ops),
-    }
-    expected_by_attention_type = {
-        "full": {
-            "retention_mode": "full",
-            "compressed_history_selection": "none",
-            "projection_head_dim": 640,
-            "cache_projection_width": 512,
-            "cache_entry_width": 512,
-            "cache_projection_matrix_count": 4,
-            "cache_auxiliary_fp32_elements": 3_072,
-            "cache_auxiliary_ops_per_token": 0,
-            "window_size": 0,
-            "compression_ratio": 0,
-            "index_n_heads": 0,
-            "index_head_dim": 0,
-            "index_topk": 0,
-        },
-        "nonfull": {
-            "retention_mode": "swa",
-            "compressed_history_selection": "none",
-            "projection_head_dim": 640,
-            "cache_projection_width": 512,
-            "cache_entry_width": 128,
-            "cache_projection_matrix_count": 2,
-            "cache_auxiliary_fp32_elements": 2_048,
-            "cache_auxiliary_ops_per_token": 0,
-            "window_size": 512,
-            "compression_ratio": 0,
-            "index_n_heads": 0,
-            "index_head_dim": 0,
-            "index_topk": 0,
-        },
-    }
-
-    for phase, operation_type in (
-        ("context", ops.ContextDeepSeekV4AttentionModule),
-        ("generation", ops.GenerationDeepSeekV4AttentionModule),
-    ):
-        indexed = operations_by_phase[phase]
-        for layer_id, attention_type in ((4, "full"), (0, "nonfull")):
-            prefix = f"{phase}_layer_{layer_id:03d}_{attention_type}"
-            attention_operations = [
-                operation
-                for name, operation in indexed.items()
-                if name.startswith(prefix) and isinstance(operation, operation_type)
-            ]
-
-            assert len(attention_operations) == 1
-            runtime_spec = attention_operations[0]._runtime_spec
-            assert {
-                field_name: getattr(runtime_spec, field_name)
-                for field_name in expected_by_attention_type[attention_type]
-            } == expected_by_attention_type[attention_type]
 
 
 def test_step4_pro_v1_full_attention_geometry_is_independent():

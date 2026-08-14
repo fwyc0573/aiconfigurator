@@ -574,6 +574,93 @@ def _require_step4_pro_fields(section_name: str, section: dict, required_fields:
             raise ValueError(f"Step4-Pro {section_name} missing required field '{field}'")
 
 
+_STEP4_FULL_ATTENTION_FIELDS = (
+    "num_query_heads",
+    "num_kv_heads",
+    "q_head_dim",
+    "k_head_dim",
+    "v_head_dim",
+    "q_projection",
+    "k_projection",
+    "v_projection",
+    "output_projection",
+    "rope_dimension",
+    "latent_rank",
+    "target_parameter_count",
+    "unknown_extra_projection_params",
+    "unknown_router_params",
+    "unknown_compression_params",
+)
+
+_STEP4_NONFULL_ATTENTION_FIELDS = (
+    "mechanism",
+    "num_query_heads",
+    "q_lora_rank",
+    "o_lora_rank",
+    "o_groups",
+    "head_dim",
+    "rope_dimension",
+    "window_size",
+    "compression_ratio",
+    "index_n_heads",
+    "index_head_dim",
+    "index_topk",
+    "target_parameter_count",
+    "unknown_extra_projection_params",
+    "unknown_router_params",
+    "unknown_compression_params",
+)
+
+
+def _format_step4_attention_error(section_name: str, error: ValueError) -> ValueError:
+    """Attach the section name while preserving the historical error contract."""
+    message = str(error)
+    separator = " " if message.startswith(("requires ", "mechanism ", "indexer ")) else "."
+    return ValueError(f"{section_name}{separator}{message}")
+
+
+def _parse_step4_full_attention_config(
+    section_name: str,
+    section: dict,
+    *,
+    hidden_size: int,
+) -> common.FullAttentionConfig:
+    """Parse the historical Step4-Pro-V1 standard full-attention contract."""
+    if not isinstance(section, dict):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
+        )
+    _require_step4_pro_fields(section_name, section, _STEP4_FULL_ATTENTION_FIELDS)
+    unsupported_fields = sorted(set(section) - set(_STEP4_FULL_ATTENTION_FIELDS))
+    if unsupported_fields:
+        raise ValueError(f"Step4-Pro {section_name} has unsupported field {unsupported_fields[0]!r}")
+    try:
+        return common.FullAttentionConfig(hidden_size=hidden_size, **section)
+    except ValueError as error:
+        raise _format_step4_attention_error(section_name, error) from error
+
+
+def _parse_step4_nonfull_attention_config(
+    section_name: str,
+    section: dict,
+    *,
+    hidden_size: int,
+) -> common.NonFullAttentionConfig:
+    """Parse the historical Step4-Pro-V1 SWA/HCA contract."""
+    if not isinstance(section, dict):
+        raise ValueError(  # noqa: TRY004
+            f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
+        )
+    _require_step4_pro_fields(section_name, section, _STEP4_NONFULL_ATTENTION_FIELDS)
+    unsupported_fields = sorted(set(section) - set(_STEP4_NONFULL_ATTENTION_FIELDS))
+    if unsupported_fields:
+        raise ValueError(f"Step4-Pro {section_name} has unsupported field {unsupported_fields[0]!r}")
+    try:
+        return common.NonFullAttentionConfig(hidden_size=hidden_size, **section)
+    except ValueError as error:
+        raise _format_step4_attention_error(section_name, error) from error
+
+
 _STEP4_MFA_ATTENTION_FIELDS = (
     "attention_type",
     "num_query_heads",
@@ -697,16 +784,30 @@ def _parse_step4_pro_config(config: dict, *, num_hidden_layers: int, hidden_size
             )
         )
 
-    full = _parse_step4_mfa_attention_config(
-        "full_attention",
-        config["full_attention"],
-        hidden_size=hidden_size,
-    )
-    nonfull = _parse_step4_mfa_attention_config(
-        "nonfull_attention",
-        config["nonfull_attention"],
-        hidden_size=hidden_size,
-    )
+    full_section = config["full_attention"]
+    nonfull_section = config["nonfull_attention"]
+    if "attention_type" in full_section or "attention_type" in nonfull_section:
+        full = _parse_step4_mfa_attention_config(
+            "full_attention",
+            full_section,
+            hidden_size=hidden_size,
+        )
+        nonfull = _parse_step4_mfa_attention_config(
+            "nonfull_attention",
+            nonfull_section,
+            hidden_size=hidden_size,
+        )
+    else:
+        full = _parse_step4_full_attention_config(
+            "full_attention",
+            full_section,
+            hidden_size=hidden_size,
+        )
+        nonfull = _parse_step4_nonfull_attention_config(
+            "nonfull_attention",
+            nonfull_section,
+            hidden_size=hidden_size,
+        )
 
     return common.Step4ProConfig(
         layers=tuple(layers),
@@ -1111,16 +1212,31 @@ def _parse_hf_config_json(config: dict) -> dict:
             # from calling ``.get`` on user-provided non-mappings.
             _validate_step4_pro_layers(config.get("layers"), num_hidden_layers=layers)
 
-            attention_types = set()
+            attention_types = []
             for section_name in ("full_attention", "nonfull_attention"):
                 section = config.get(section_name)
                 if not isinstance(section, dict):
                     raise ValueError(  # noqa: TRY004
                         f"Step4-Pro {section_name} must be a mapping, got {type(section).__name__}"
                     )
-                _require_step4_pro_fields(section_name, section, ("attention_type",))
-                attention_types.add(section["attention_type"])
-            if attention_types == {"mqa"}:
+                attention_types.append(section.get("attention_type"))
+            if attention_types == [None, None]:
+                extra_params = _parse_step4_pro_config(
+                    config,
+                    num_hidden_layers=layers,
+                    hidden_size=hidden_size,
+                )
+                logger.info(
+                    "Step4-Pro historical Full/HCA config: full=%d, nonfull=%d, dense=%d, moe=%d",
+                    sum(layer.attention_type == "full" for layer in extra_params.layers),
+                    sum(layer.attention_type == "nonfull" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "dense" for layer in extra_params.layers),
+                    sum(layer.ffn_type == "moe" for layer in extra_params.layers),
+                )
+            elif None in attention_types:
+                missing_section = "full_attention" if attention_types[0] is None else "nonfull_attention"
+                raise ValueError(f"Step4-Pro {missing_section} missing required field 'attention_type'")
+            elif set(attention_types) == {"mqa"}:
                 extra_params = _parse_step4_pro_mqa_config(
                     config,
                     num_hidden_layers=layers,
@@ -1133,7 +1249,7 @@ def _parse_hf_config_json(config: dict) -> dict:
                     sum(layer.ffn_type == "dense" for layer in extra_params.layers),
                     sum(layer.ffn_type == "moe" for layer in extra_params.layers),
                 )
-            elif attention_types == {"mfa"}:
+            elif set(attention_types) == {"mfa"}:
                 extra_params = _parse_step4_pro_config(
                     config,
                     num_hidden_layers=layers,

@@ -12,6 +12,13 @@
 | 2026-08-13 | Resolved the operation-boundary strategy with user confirmation of option A. |
 | 2026-08-13 | Opened the safe branch/checkpoint decision for the existing dirty linked worktree. |
 | 2026-08-13 | Resolved the branch/checkpoint strategy with user confirmation of option A. |
+| 2026-08-13 | Recorded the user's decision to retain and take no action on the temporary security-review file. |
+| 2026-08-13 | Opened the Step4-Pro-V1 authoritative attention-contract decision. |
+| 2026-08-13 | Clarified that Step4-Pro-Latest must follow the pinned vLLM operation graph; the V1 decision is legacy-baseline-only. |
+| 2026-08-13 | Resolved Q6: preserve the historical V1 contract and implement Latest strictly from pinned vLLM. |
+| 2026-08-13 | Opened the obsolete-test removal and V1 formula-test retention decision. |
+| 2026-08-13 | Approved obsolete-test deletion and root-cause repair; reaffirmed strict pinned-vLLM fidelity for all Latest work. |
+| 2026-08-14 | Confirmed pinned-vLLM MTP1 boundary: Step4Pro main graph has no native MTP1 path; opened an explicit scope gate. |
 
 # Requirements: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -152,3 +159,154 @@ current worktree.
 relevant Step4 source/config/tests/task documentation. Exclude generated
 outputs, caches, large result artifacts, H800 data, and the separate pinned
 vLLM checkout. Do not stash, reset, remove, or move existing files.
+
+### Q5 Follow-up — Temporary security-review file
+
+1. [Original Request] Retain
+   `/data/ycfeng/tmp/aic_failure_domain1/codex_lane3_scope_baseline.md`.
+2. [Original Request] Do not perform any additional sensitive-file,
+   credential, or security remediation because the current environment is
+   considered sufficiently secure by the task owner.
+
+**Status:** **Resolved — user selected option B on 2026-08-13.**
+
+**Decision:** Do not read, delete, rewrite, move, permission-change, quote, or
+otherwise process the file. Do not initiate credential rotation or any other
+security action.
+
+### Q6 — Authoritative Step4-Pro-V1 attention contract
+
+**Question:** Which attention contract should be restored as the baseline for
+the existing `stepfun-ai/Step4-Pro-V1` model?
+
+**Recommended choice:** Restore the previously approved V1 contract with
+separate `FullAttentionConfig` and `NonFullAttentionConfig`: standard Full
+Attention plus HCA, TP-sharded KV, and formula-only HCA behavior for
+`SOL`/`SOL_FULL`. Keep the new shared-KV Full MFA + SWA design exclusive to
+`stepfun-ai/Step4-Pro-Latest`.
+
+**Alternative:** Treat the current unified `Step4MFAAttentionConfig`,
+replicated-KV, and SWA-retention implementation as a deliberate V1
+replacement, then rewrite the historical V1 tests and documentation around
+that new meaning.
+
+**Status:** **Resolved — user confirmed the recommended combined decision on
+2026-08-13.**
+
+**Decision:** Restore and preserve the historically approved
+`stepfun-ai/Step4-Pro-V1` Full-Attention-plus-HCA contract. Do not use that
+legacy graph for `stepfun-ai/Step4-Pro-Latest`.
+
+### Q6 Clarification — Legacy V1 versus Step4-Pro-Latest scope
+
+1. [Original Request] The task owner does not intend the legacy
+   `stepfun-ai/Step4-Pro-V1` choice to determine the implementation of
+   `stepfun-ai/Step4-Pro-Latest`.
+2. [Original Request] AIC support for `stepfun-ai/Step4-Pro-Latest` must use
+   the actual operation implementation in the pinned Step4-Pro vLLM source.
+3. [Original Request] Explain which Q6 option corresponds to the pinned vLLM
+   implementation before asking for a decision.
+
+**Source clarification:** The pinned Step4-Pro vLLM attention implementation
+uses a heterogeneous graph: shared-KV Full MFA/MQA on the configured full
+layers and native sliding-window GQA/SWA on the remaining layers. This is
+closest to the shared-MFA wording in Q6 alternative B, not the historical V1
+Full-Attention-plus-HCA contract.
+
+**Scope correction:** Q6 controls only how the pre-existing
+`stepfun-ai/Step4-Pro-V1` baseline is repaired. It does not authorize either
+contract for `stepfun-ai/Step4-Pro-Latest`.
+
+**Recommended combined decision:** Preserve the historically approved V1
+contract (Q6 option A) to avoid changing the meaning of the existing V1 model,
+while implementing Step4-Pro-Latest independently from the pinned vLLM graph:
+shared-KV Full MFA plus sliding-window GQA/SWA.
+
+**Status:** **Resolved — user confirmed on 2026-08-13.**
+
+**Decision:** Keep V1 on its historical contract and implement
+`stepfun-ai/Step4-Pro-Latest` independently and strictly from the pinned vLLM
+operation graph, including shared-KV Full MFA and sliding-window GQA/SWA.
+
+### Q7 — Obsolete DSV4 tests and V1 formula tests
+
+**Question:** May baseline repair remove the two mistakenly checkpointed,
+historically withdrawn DSV4 runtime-spec test files while retaining and fixing
+the four V1 formula-only HCA tests?
+
+**Recommended choice:**
+
+1. Delete these two complete obsolete files:
+   - `tests/unit/sdk/database/test_factorized_attention_runtime_spec.py`
+   - `tests/unit/sdk/models/test_deepseek_v4_runtime_spec.py`
+2. Retain all four `SOL`/`SOL_FULL` tests in
+   `tests/unit/sdk/database/test_step4_pro_v1_roofline.py`.
+3. Fix the source-ordering defect in `src/aiconfigurator/sdk/operations/dsv4.py`
+   so formula-only HCA queries return before `load_data()` is called.
+
+**Evidence:** The two DSV4 files were added only by checkpoint `4f2b0c31`, do
+not exist in its parent, and test a runtime-spec migration explicitly withdrawn
+by the historical task owner. The four V1 roofline tests instead enforce the
+confirmed historical V1 formula-only HCA contract and expose a production
+source-ordering defect.
+
+**Status:** **Resolved — user approved deletion and repair on 2026-08-13.**
+
+**Decision:** Delete the two complete obsolete files, retain the four V1
+formula-only HCA tests, and repair the `dsv4.py` source-ordering defect.
+
+### Q7 Follow-up — End-to-end Latest vLLM fidelity
+
+1. [Original Request] Treat the latest Step4-Pro model implemented in the
+   pinned vLLM checkout as the standard for all `Step4-Pro-Latest` work.
+2. [Original Request] Define the Latest operation graph from the actual vLLM
+   implementation rather than from legacy V1/V3/V4 assumptions.
+3. [Original Request] Make all Latest tests, measurements, and validation
+   target that same vLLM-derived graph.
+4. [Original Request] Every measured operation must execute the operation
+   implementation supplied by the pinned vLLM version; a generic or
+   reimplemented substitute is not acceptable.
+
+**Status:** **Confirmed by the user on 2026-08-13.**
+
+**Execution consequence:** Source call-path identity, runtime provider identity,
+Collector case identity, persisted dataset key, and AIC consumer identity must
+be reconciled for every accepted Latest operation row. Any mismatch fails the
+gate and the row cannot enter the B300 dataset.
+
+### Q8 — Step4-Pro MTP1 implementation boundary
+
+**Question:** The requirements document requires one Step4-Pro MTP1 layer, but
+the pinned vLLM commit does not contain a `Step4ProMTP` implementation or a
+Step4Pro MTP registry path. How should the MTP1 requirement be handled while
+preserving the rule that every Latest operation must use a pinned-vLLM
+implementation?
+
+**Source facts already verified:**
+
+- `Step4ProForCausalLM` constructs the Step4Pro trunk and language-model head,
+  but no MTP predictor: `vllm/model_executor/models/step4pro.py:626-649`.
+- The registered MTP implementation is `Step3p5MTP`, which constructs
+  `Step3p5DecoderLayer`, not `Step4ProDecoderLayer`:
+  `vllm/model_executor/models/registry.py:616`,
+  `vllm/model_executor/models/step3p5_mtp.py:171-190,286`.
+- The Step4 speculative configuration is converted to `Step3p5MTP`:
+  `vllm/config/speculative.py:357-362`.
+- The requirements explicitly say that the Step4Pro MTP1 construction path
+  still needs to be completed:
+  `task_memory/step4pro_v4_external_simulator_requirements.md:113-115`.
+
+**Recommended choice A:** Continue implementing and validating all MTP-off
+Latest operations strictly from pinned vLLM; mark MTP1 as **not proven and not
+accepted** for the pinned runtime; pause only the MTP1 graph, measurement, and
+simulation until the owner supplies or approves a concrete Step4Pro MTP
+implementation source.
+
+**Alternative B:** Authorize a new Step4Pro MTP1 implementation in AIC/vLLM
+outside the pinned commit. This changes the source-of-truth rule and requires
+an explicit implementation specification, weight-loading contract, runtime
+image identity, and new acceptance tests before measurement.
+
+**Status:** Awaiting explicit owner decision through the required
+`grill-me` clarification gate. No MTP1 implementation, measurement, or
+simulation assumption has been made.

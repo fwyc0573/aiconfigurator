@@ -285,6 +285,203 @@ class Step4LayerSpec:
     ffn_type: str
 
 
+def _validate_step4_cache_inputs(
+    seq_len: int,
+    *,
+    bytes_per_element: float,
+    tp_size: int | None = None,
+) -> None:
+    """Validate shared Step4 attention cache-query inputs."""
+    if type(seq_len) is not int or seq_len < 0:
+        raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+    if tp_size is not None and (type(tp_size) is not int or tp_size <= 0):
+        raise ValueError(f"tp_size must be a positive integer, got {tp_size!r}")
+    if (
+        isinstance(bytes_per_element, bool)
+        or not isinstance(bytes_per_element, int | float)
+        or bytes_per_element <= 0
+        or not math.isfinite(bytes_per_element)
+    ):
+        raise ValueError(f"bytes_per_element must be positive and finite, got {bytes_per_element!r}")
+
+
+@dataclass(frozen=True)
+class FullAttentionConfig:
+    """Historical Step4-Pro-V1 standard full-attention contract."""
+
+    hidden_size: int
+    num_query_heads: int
+    num_kv_heads: int
+    q_head_dim: int
+    k_head_dim: int
+    v_head_dim: int
+    q_projection: str
+    k_projection: str
+    v_projection: str
+    output_projection: str
+    rope_dimension: int
+    latent_rank: int | None
+    target_parameter_count: int
+    unknown_extra_projection_params: int
+    unknown_router_params: int
+    unknown_compression_params: int
+
+    def __post_init__(self) -> None:
+        """Reject geometry outside the approved V1 standard-MHA contract."""
+        for field_name in (
+            "hidden_size",
+            "num_query_heads",
+            "num_kv_heads",
+            "q_head_dim",
+            "k_head_dim",
+            "v_head_dim",
+            "rope_dimension",
+            "target_parameter_count",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer, got {value!r}")
+
+        for field_name in (
+            "unknown_extra_projection_params",
+            "unknown_router_params",
+            "unknown_compression_params",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer, got {value!r}")
+
+        for field_name in ("q_projection", "k_projection", "v_projection", "output_projection"):
+            value = getattr(self, field_name)
+            if value != "linear":
+                raise ValueError(f"{field_name} supports only 'linear', got {value!r}")
+
+        if self.latent_rank is not None:
+            raise ValueError(f"latent_rank must be null, got {self.latent_rank!r}")
+        if not (self.q_head_dim == self.k_head_dim == self.v_head_dim):
+            raise ValueError("requires equal q_head_dim, k_head_dim, and v_head_dim")
+        if self.rope_dimension > self.q_head_dim:
+            raise ValueError(f"rope_dimension {self.rope_dimension} exceeds q_head_dim {self.q_head_dim}")
+        if self.num_query_heads % self.num_kv_heads != 0:
+            raise ValueError(
+                f"num_query_heads {self.num_query_heads} must be divisible by num_kv_heads {self.num_kv_heads}"
+            )
+
+    def compute_parameter_count(self) -> int:
+        """Return trainable Q/K/V/O matrix elements."""
+        return self.hidden_size * (
+            self.num_query_heads * self.q_head_dim
+            + self.num_kv_heads * self.k_head_dim
+            + self.num_kv_heads * self.v_head_dim
+            + self.num_query_heads * self.v_head_dim
+        )
+
+    def compute_kv_cache_bytes(self, seq_len: int, *, tp_size: int, bytes_per_element: float) -> float:
+        """Return one layer's TP-sharded full-history K/V bytes."""
+        _validate_step4_cache_inputs(seq_len, tp_size=tp_size, bytes_per_element=bytes_per_element)
+        if self.num_kv_heads % tp_size != 0:
+            raise ValueError(f"num_kv_heads {self.num_kv_heads} must be divisible by tp_size {tp_size}")
+        local_kv_heads = self.num_kv_heads // tp_size
+        return float(seq_len * local_kv_heads * (self.k_head_dim + self.v_head_dim) * bytes_per_element)
+
+
+@dataclass(frozen=True)
+class NonFullAttentionConfig:
+    """Historical Step4-Pro-V1 SWA/HCA contract."""
+
+    hidden_size: int
+    mechanism: str
+    num_query_heads: int
+    q_lora_rank: int
+    o_lora_rank: int
+    o_groups: int
+    head_dim: int
+    rope_dimension: int
+    window_size: int
+    compression_ratio: int
+    index_n_heads: int
+    index_head_dim: int
+    index_topk: int
+    target_parameter_count: int
+    unknown_extra_projection_params: int
+    unknown_router_params: int
+    unknown_compression_params: int
+
+    def __post_init__(self) -> None:
+        """Reject geometry outside the approved V1 SWA/HCA contract."""
+        for field_name in (
+            "hidden_size",
+            "num_query_heads",
+            "q_lora_rank",
+            "o_lora_rank",
+            "o_groups",
+            "head_dim",
+            "rope_dimension",
+            "window_size",
+            "target_parameter_count",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"{field_name} must be a positive integer, got {value!r}")
+
+        if type(self.compression_ratio) is not int or self.compression_ratio not in {0, 128}:
+            raise ValueError(f"compression_ratio supports only 0 or 128, got {self.compression_ratio!r}")
+        for field_name in ("index_n_heads", "index_head_dim", "index_topk"):
+            value = getattr(self, field_name)
+            if type(value) is not int or value != 0:
+                raise ValueError("indexer fields must all be zero")
+        for field_name in (
+            "unknown_extra_projection_params",
+            "unknown_router_params",
+            "unknown_compression_params",
+        ):
+            value = getattr(self, field_name)
+            if type(value) is not int or value < 0:
+                raise ValueError(f"{field_name} must be a non-negative integer, got {value!r}")
+
+        if self.mechanism not in {"swa", "hca"}:
+            raise ValueError(f"mechanism supports only 'swa' or 'hca', got {self.mechanism!r}")
+        expected_ratio = 0 if self.mechanism == "swa" else 128
+        if self.compression_ratio != expected_ratio:
+            raise ValueError(f"mechanism {self.mechanism!r} requires compression_ratio {expected_ratio}")
+        if self.rope_dimension > self.head_dim:
+            raise ValueError(f"rope_dimension {self.rope_dimension} exceeds head_dim {self.head_dim}")
+
+    @property
+    def resident_state_elements(self) -> int:
+        """Return separate FP32 HCA router/compressor state elements."""
+        if self.mechanism == "swa":
+            return 0
+        return self.num_query_heads + self.compression_ratio * self.head_dim
+
+    def compute_parameter_count(self) -> int:
+        """Return the six approved trainable HCA/SWA matrix terms."""
+        return (
+            self.hidden_size * self.q_lora_rank
+            + self.q_lora_rank * self.num_query_heads * self.head_dim
+            + self.hidden_size * self.head_dim
+            + self.num_query_heads * self.head_dim * self.o_lora_rank
+            + self.o_groups * self.o_lora_rank * self.hidden_size
+            + 2 * self.hidden_size * self.head_dim
+        )
+
+    def compute_kv_cache_bytes(
+        self,
+        seq_len: int,
+        *,
+        bytes_per_element: float,
+        tp_size: int | None = None,
+    ) -> float:
+        """Return replicated SWA/HCA cache bytes, including HCA compressor state."""
+        _validate_step4_cache_inputs(seq_len, tp_size=tp_size, bytes_per_element=bytes_per_element)
+        retained_entries = min(seq_len, self.window_size)
+        compressor_state_elements = 0
+        if self.mechanism == "hca":
+            retained_entries += seq_len // self.compression_ratio
+            compressor_state_elements = self.q_lora_rank * self.head_dim
+        return float((retained_entries * self.head_dim + compressor_state_elements) * bytes_per_element)
+
+
 @dataclass(frozen=True)
 class Step4MFAAttentionConfig:
     """Explicit factorized-MFA geometry and replicated runtime-cache contract."""
@@ -631,8 +828,8 @@ class Step4ProConfig:
     """Explicit per-layer hybrid attention and FFN contract for Step4-Pro."""
 
     layers: tuple[Step4LayerSpec, ...]
-    full_attention: Step4MFAAttentionConfig
-    nonfull_attention: Step4MFAAttentionConfig
+    full_attention: FullAttentionConfig | Step4MFAAttentionConfig
+    nonfull_attention: NonFullAttentionConfig | Step4MFAAttentionConfig
     dense_inter_size: int
     shared_expert_inter_size: int
 

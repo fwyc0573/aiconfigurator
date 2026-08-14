@@ -1082,7 +1082,6 @@ class ContextDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
         prefix: int = 0,
     ) -> PerformanceResult | tuple[float, float, float]:
         """Verbatim port of legacy ``PerfDatabase.query_context_deepseek_v4_attention_module``."""
-        cls.load_data(database)
 
         def get_sol(b_: int = b, s_: int = s, prefix_: int = prefix) -> tuple[float, float, float]:
             return _deepseek_v4_attention_sol(
@@ -1184,6 +1183,9 @@ class ContextDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
             return PerformanceResult(get_sol()[0], energy=0.0, source="sol")
         if database_mode == common.DatabaseMode.SOL_FULL:
             return get_sol()
+
+        cls.load_data(database)
+
         if database_mode == common.DatabaseMode.EMPIRICAL:
             return PerformanceResult(get_empirical(), energy=0.0, source="empirical")
 
@@ -1489,7 +1491,6 @@ class GenerationDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
         database_mode: common.DatabaseMode | None = None,
     ) -> PerformanceResult | tuple[float, float, float]:
         """Verbatim port of legacy ``PerfDatabase.query_generation_deepseek_v4_attention_module``."""
-        cls.load_data(database)
 
         def get_sol(b_: int = b, s_: int = s) -> tuple[float, float, float]:
             return _deepseek_v4_attention_sol(
@@ -1557,6 +1558,9 @@ class GenerationDeepSeekV4AttentionModule(_BaseDeepSeekV4AttentionModule):
             return PerformanceResult(get_sol()[0], energy=0.0, source="sol")
         if database_mode == common.DatabaseMode.SOL_FULL:
             return get_sol()
+
+        cls.load_data(database)
+
         if database_mode == common.DatabaseMode.EMPIRICAL:
             return PerformanceResult(get_empirical(), energy=0.0, source="empirical")
 

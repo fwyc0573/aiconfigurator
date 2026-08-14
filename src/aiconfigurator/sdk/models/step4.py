@@ -105,24 +105,46 @@ class Step4Model(BaseModel):
                 )
             )
         else:
-            attention_parallel_geometry.extend(
+            full_attention = step4_config.full_attention
+            nonfull_attention = step4_config.nonfull_attention
+            attention_parallel_geometry.append(
                 (
-                    (
-                        "Step4-Pro",
-                        "full_attention.num_query_heads",
-                        step4_config.full_attention.num_query_heads,
-                        "tp_size",
-                        model_config.tp_size,
-                    ),
-                    (
-                        "Step4-Pro",
-                        "nonfull_attention.num_query_heads",
-                        step4_config.nonfull_attention.num_query_heads,
-                        "tp_size",
-                        model_config.tp_size,
-                    ),
+                    "Step4-Pro",
+                    "full_attention.num_query_heads",
+                    full_attention.num_query_heads,
+                    "tp_size",
+                    model_config.tp_size,
                 )
             )
+            if isinstance(full_attention, common.FullAttentionConfig):
+                attention_parallel_geometry.append(
+                    (
+                        "Step4-Pro",
+                        "full_attention.num_kv_heads",
+                        full_attention.num_kv_heads,
+                        "tp_size",
+                        model_config.tp_size,
+                    )
+                )
+            attention_parallel_geometry.append(
+                (
+                    "Step4-Pro",
+                    "nonfull_attention.num_query_heads",
+                    nonfull_attention.num_query_heads,
+                    "tp_size",
+                    model_config.tp_size,
+                )
+            )
+            if isinstance(nonfull_attention, common.NonFullAttentionConfig):
+                attention_parallel_geometry.append(
+                    (
+                        "Step4-Pro",
+                        "nonfull_attention.o_groups",
+                        nonfull_attention.o_groups,
+                        "tp_size",
+                        model_config.tp_size,
+                    )
+                )
 
         parallel_geometry = (
             *attention_parallel_geometry,
@@ -273,7 +295,11 @@ class Step4Model(BaseModel):
                 f"relative_error={relative_error * 100:.10f}% status={status}"
                 for label, target, estimate, absolute_error, relative_error, status in results
             ),
-            f"nonfull cache_entry_width={cfg.nonfull_attention.cache_entry_width}",
+            (
+                f"nonfull resident_state_elements={cfg.nonfull_attention.resident_state_elements}"
+                if isinstance(cfg.nonfull_attention, common.NonFullAttentionConfig)
+                else f"nonfull cache_entry_width={cfg.nonfull_attention.cache_entry_width}"
+            ),
             (
                 f"Step4-Pro-V1 KV target conflict at {_STEP4_PRO_KV_AUDIT_SEQUENCE_LENGTH} FP8 tokens: "
                 f"estimate={kv_estimate_gb:.8f} GB target={_STEP4_PRO_KV_TARGET_GB} GB "

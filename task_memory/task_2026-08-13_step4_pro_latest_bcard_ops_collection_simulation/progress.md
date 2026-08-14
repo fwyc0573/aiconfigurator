@@ -12,6 +12,8 @@
 | 2026-08-13 | Recorded user confirmation of operation-boundary option A and advanced to the dirty-worktree checkpoint gate. |
 | 2026-08-13 | Created the approved task branch and resolved the missing Git LFS dependency that caused its post-checkout hook to fail. |
 | 2026-08-13 | Recorded user confirmation of branch/checkpoint option A and staged the audited baseline file set. |
+| 2026-08-13 | Created baseline commit `4f2b0c31`, then recorded the focused baseline result: 859 passed and 128 failed. |
+| 2026-08-13 | Recorded the owner's decision to retain the temporary security-review file without any security action. |
 
 # Progress Log
 
@@ -374,3 +376,320 @@ clone outside the checkpoint.
 - No generated profiler output, cache, H800 performance dataset, historical
   task artifact directory, or `vllm-step4-pro` file is staged.
 - No commit has yet been created; staged-diff checks remain pending.
+
+## 2026-08-13 — Baseline checkpoint committed and focused tests failed
+
+**Status:** implementation paused for systematic root-cause analysis.
+
+### Motivation
+Verify that the checkpointed Step4 foundation is internally consistent before
+adding Step4-Pro-Latest behavior.
+
+### Expectation
+All selected Step4/Collector/runtime-spec baseline tests pass.
+
+### Method
+- Verified exactly 86 staged files, zero unstaged tracked files, no excluded
+  paths, and no whitespace errors.
+- Created commit `4f2b0c31` with message
+  `chore: checkpoint existing Step4 support`.
+- Ran 987 focused tests with Python 3.11.15 under a 4 GiB systemd memory scope.
+
+### Result
+- Checkpoint commit succeeded.
+- Test result: 859 passed, 128 failed, duration 69.92 seconds.
+- Failure distribution:
+  - factorized-attention runtime spec: 79;
+  - Step4-Pro-V1 model: 41;
+  - Step4-Pro-V1 roofline: 4;
+  - DeepSeek-V4 runtime spec: 4.
+- Raw log:
+  `/data/ycfeng/tmp/step4_latest_baseline_pytest.log`
+  (`sha256:5a8d406abc9e382322ef9ecc973c9a579fad415c1c66a854682a50f5d2f25289`).
+- No Step4-Pro-Latest production implementation has started.
+
+## 2026-08-13 — Security-review file decision
+
+**Status:** security follow-up closed by explicit owner decision; baseline
+contract investigation remains active.
+
+### Motivation
+A read-only audit reported that one temporary evidence file might contain
+environment variables, while repository rules prohibit deletion without owner
+approval.
+
+### Expectation
+Obtain an explicit retain/delete decision without reading or exposing the file.
+
+### Method
+Presented deletion plus credential rotation as option A and retain/no-action
+as option B.
+
+### Result
+The user selected B and stated that the current environment is sufficiently
+secure. The file will not be read, deleted, modified, moved, permission-changed,
+quoted, or otherwise processed. No credential action will be taken.
+
+## 2026-08-13 — Q6 scope clarified against pinned vLLM
+
+**Status:** awaiting confirmation of the clarified combined decision.
+
+### Motivation
+The original Q6 wording mixed a legacy `Step4-Pro-V1` baseline repair choice
+with the separate requirement that `Step4-Pro-Latest` follow the actual pinned
+vLLM operation graph.
+
+### Expectation
+Make it explicit that no legacy V1 choice can replace or simplify the
+Step4-Pro-Latest graph extracted from vLLM.
+
+### Method
+- Rechecked the existing pinned-source operation inventory for commit
+  `607d1641ee3fec43653fca510d717725828890c2`.
+- Compared the two Q6 descriptions with the active attention construction and
+  forward paths in `vllm/model_executor/models/step4pro.py`.
+- Recorded the clarified user intent and scope boundary in `requirements.md`.
+
+### Result
+- The pinned vLLM uses heterogeneous attention: shared-KV Full MFA/MQA on full
+  layers and sliding-window GQA/SWA on the other layers.
+- This is closest to the shared-MFA wording of Q6 option B, but Q6 itself is
+  only about repairing the pre-existing V1 baseline.
+- The recommended combined decision is to preserve the historical V1 contract
+  while implementing Latest independently and strictly from pinned vLLM.
+
+## 2026-08-13 — Q6 combined contract confirmed
+
+**Status:** resolved; baseline repair can proceed after obsolete-test ownership
+is explicitly settled.
+
+### Motivation
+Remove ambiguity between preserving the existing V1 model and implementing the
+new Latest model from the actual vLLM graph.
+
+### Expectation
+Keep the two model identities independent so legacy compatibility cannot alter
+Latest fidelity.
+
+### Method
+Presented the pinned-source result and asked for one combined decision instead
+of treating V1 and Latest as competing architectures.
+
+### Result
+The user explicitly confirmed:
+
+- V1 keeps its historical contract.
+- Latest strictly follows the pinned vLLM implementation.
+
+No production code was changed as part of this clarification.
+
+## 2026-08-13 — Obsolete-test and formula-loader audit completed
+
+**Status:** deletion permission pending; no test or production file changed.
+
+### Motivation
+Separate mistakenly checkpointed withdrawn tests from valid V1 regression
+tests before repairing the baseline.
+
+### Expectation
+Remove only tests whose entire contract was withdrawn, retain tests that
+enforce the confirmed V1 behavior, and fix the production root cause rather
+than weakening assertions.
+
+### Method
+- Audited failure names, historical task decisions, checkpoint file ancestry,
+  and the relevant `dsv4.py` query ordering.
+- Compared each failure cluster with the newly confirmed V1/Latest boundary.
+
+### Result
+- The 79 factorized-attention and 4 DeepSeek-V4 runtime-spec failures come from
+  two files newly and mistakenly added in checkpoint `4f2b0c31`; the historical
+  task explicitly withdrew that migration.
+- The four V1 roofline failures are valid regression tests and must remain.
+- Their root cause is an unconditional `load_data()` call before the
+  `SOL`/`SOL_FULL` formula-only branch.
+- Deleting the two obsolete files now requires explicit owner permission.
+
+## 2026-08-13 — Baseline repair and strict Latest fidelity approved
+
+**Status:** approved; execution started.
+
+### Motivation
+Close the final baseline ownership gate and make the vLLM implementation the
+explicit end-to-end standard for Latest definitions, tests, measurements, and
+validation.
+
+### Expectation
+Remove only the withdrawn tests, fix the valid V1 production defect, and reject
+any Latest profiling row not produced through the pinned vLLM operation path.
+
+### Method
+The user explicitly approved deletion and repair and restated the Latest
+operation-fidelity requirement.
+
+### Result
+- Permission exists to delete the two exact obsolete test files.
+- The four V1 formula-only tests remain acceptance tests.
+- Latest work is gated on exact pinned-vLLM operation/provider execution.
+
+## 2026-08-13 — Obsolete tests removed and formula-loader root cause fixed
+
+**Status:** this failure cluster is green; remaining V1 contract failures are
+under analysis.
+
+### Motivation
+Restore the approved baseline boundary and ensure formula-only HCA queries do
+not depend on collector data.
+
+### Expectation
+- The two withdrawn DSV4 runtime-spec files are absent.
+- All four `SOL`/`SOL_FULL` no-load tests pass.
+- The complete V1 roofline test file remains green.
+
+### Method
+- Deleted, with explicit owner approval:
+  - `tests/unit/sdk/database/test_factorized_attention_runtime_spec.py`
+  - `tests/unit/sdk/models/test_deepseek_v4_runtime_spec.py`
+- Reproduced the four valid RED cases:
+  `4 failed in 4.33s`.
+- Moved `ContextDeepSeekV4AttentionModule.load_data()` and
+  `GenerationDeepSeekV4AttentionModule.load_data()` after the `SOL` and
+  `SOL_FULL` early returns in
+  `src/aiconfigurator/sdk/operations/dsv4.py`.
+- Re-ran the focused cases and the complete roofline file.
+
+### Result
+- Focused formula-only cases: `4 passed in 3.72s`.
+- Complete V1 roofline file: `34 passed in 7.65s`.
+- `git diff --check`: PASS.
+- The fix changes source ordering only; empirical/silicon modes still call
+  `load_data()` before accessing measured data.
+
+## 2026-08-13 — Historical V1 contract RED baseline reproduced
+
+**Status:** RED confirmed; exact historical implementation recovery is in
+progress.
+
+### Motivation
+Verify the remaining baseline failures after removing obsolete tests and
+repairing the formula-loader defect.
+
+### Expectation
+The failures should be limited to the previously identified mixed V1 attention
+contract rather than Latest code.
+
+### Method
+Ran:
+
+```bash
+PYTHONPATH=src:. \
+  /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python \
+  -m pytest tests/unit/sdk/models/test_step4_pro_v1.py -q
+```
+
+### Result
+- `268` tests collected.
+- `227 passed`, `41 failed`, duration `3.26s`.
+- Failure groups cover missing historical `FullAttentionConfig` and
+  `NonFullAttentionConfig`, parser validation, explicit attention runtime
+  specs, independent Full/HCA geometry, and TP-sharded KV accounting.
+- Raw log:
+  `/data/ycfeng/tmp/step4_v1_contract_red_20260813.log`
+- SHA256:
+  `d4e8c6fc170f0cfd9f2052321c53f51256de8c521c5a83f1b2b40c39390354e8`
+- No Latest implementation or Collector file was changed.
+
+## 2026-08-13 — Historical V1 baseline restored and verified
+
+**Status:** baseline gate passed; Latest RED-test planning is now unblocked.
+
+### Motivation
+Restore the user-confirmed historical V1 boundary without allowing an
+unfinished shared-MFA migration to define either V1 or Latest.
+
+### Expectation
+- V1 uses standard Full Attention plus HCA with TP-sharded full K/V.
+- Generic MFA support can coexist but does not define the V1 cached model.
+- All adjusted focused baseline tests and static checks pass.
+
+### Method
+- Corrected the mixed test boundary:
+  - the cached V1 schema test now requires historical Full/HCA;
+  - the invalid V1 factorized-runtime-spec test was removed;
+  - generic MFA tests no longer claim to define the cached V1 model.
+- Reconstructed frozen `FullAttentionConfig` and
+  `NonFullAttentionConfig` from the approved historical requirements, tests,
+  formulas, and remaining model call paths.
+- Restored the cached V1 JSON Full/HCA sections.
+- Added dual Pro-schema parsing so historical V1 and generic MFA are explicit
+  alternatives rather than fallbacks.
+- Restored V1 TP divisibility checks, parameter reporting, differentiated KV
+  formulas, and formula-only loader ordering.
+- Ran focused RED/GREEN cycles, the full adjusted baseline, Ruff, format,
+  JSON, and whitespace checks.
+
+### Result
+- V1 model suite: `267 passed in 0.40s`.
+- V1 roofline suite: `34 passed in 7.65s`.
+- Final adjusted baseline: `899 passed in 51.84s`, `0 failed`.
+- Static validation: Ruff PASS, format PASS, JSON PASS,
+  `git diff --check` PASS.
+- Final log:
+  `/data/ycfeng/tmp/step4_latest_baseline_repaired_final_pytest.log`
+- SHA256:
+  `c7a869263afd16b8694259ecafbe7df29e5a3a02320298a01e9e6009d5b68154`
+- No `Step4-Pro-Latest` production implementation or B300 collection has
+  started.
+
+## 2026-08-14 — Pinned vLLM MTP1 boundary confirmed
+
+**Status:** MTP1 scope is blocked pending owner clarification; MTP-off Latest
+work is unblocked.
+
+### Motivation
+Determine whether the requirements' MTP1 graph is part of the authoritative
+pinned Step4-Pro implementation before defining or measuring it.
+
+### Expectation
+Accept MTP1 only if the pinned source contains a Step4Pro-specific construction
+and runtime path. Do not silently use Step3p5MTP or an AIC-only substitute.
+
+### Method
+- Audited the pinned checkout at commit
+  `607d1641ee3fec43653fca510d717725828890c2`.
+- Traced Step4Pro model registration, main forward construction, MTP registry,
+  speculative configuration conversion, and MTP layer construction.
+- Compared the result with the requirements' explicit Step4Pro MTP1 note.
+
+### Result
+- Step4Pro main forward has no native MTP predictor.
+- The available MTP path is `Step3p5MTP` with `Step3p5DecoderLayer`; it is not
+  a Step4Pro implementation.
+- MTP1 cannot be accepted, measured, or simulated under the pinned Latest
+  contract without an owner-approved source extension.
+- MTP-off Latest implementation, runtime trace, collection, and simulation may
+  proceed independently.
+- Evidence: `/data/ycfeng/tmp/step4_mtp1_boundary_audit_20260814.txt`.
+
+## 2026-08-14 — Baseline checkpoint freshly reverified
+
+**Status:** ready to commit after the MTP boundary record is included.
+
+### Motivation
+Create fresh evidence immediately before checkpointing the approved V1 repair.
+
+### Expectation
+The complete adjusted baseline must remain green with zero failures and no
+whitespace errors.
+
+### Method
+Re-ran the same 899-test adjusted baseline under Python 3.11.15 and a 4 GiB
+systemd memory scope, then ran `git diff --check`.
+
+### Result
+- `899 passed`, `0 failed`, `61.56s`.
+- `git diff --check`: PASS.
+- Log:
+  `/data/ycfeng/tmp/step4_latest_baseline_repaired_final_rerun.log`
+- SHA256:
+  `30b93e06095b32c0bc81d5b3740c2b4f4d1875414075d13f30f064e6dfc27a63`.

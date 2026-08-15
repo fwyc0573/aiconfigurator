@@ -5,10 +5,12 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING
+import os
+from typing import TYPE_CHECKING, ClassVar
 
 from aiconfigurator.sdk import common
-from aiconfigurator.sdk.operations.base import Operation
+from aiconfigurator.sdk.errors import PerfDataNotAvailableError
+from aiconfigurator.sdk.operations.base import Operation, _read_filtered_rows
 from aiconfigurator.sdk.operations.gemm import GEMM
 from aiconfigurator.sdk.performance_result import PerformanceResult
 
@@ -19,6 +21,7 @@ if TYPE_CHECKING:
 class GroupedGEMM(Operation):
     """A grouped matrix multiplication with one shape shared by each group."""
 
+    _data_cache: ClassVar[dict] = {}
     _CP_AWARE = True
 
     def __init__(
@@ -47,9 +50,86 @@ class GroupedGEMM(Operation):
         self._provider = provider
         self._weights = self._groups * self._n * self._k * quant_mode.value.memory
 
+    @classmethod
+    def _cache_key(cls, database: PerfDatabase) -> tuple:
+        return (
+            database.systems_root,
+            database.system,
+            database.backend,
+            database.version,
+            database.enable_shared_layer,
+        )
+
+    @classmethod
+    def load_data(cls, database: PerfDatabase) -> None:
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._data_cache:
+            system_data_root = os.path.join(database.systems_root, database.system_spec["data_dir"])
+            data_dir = os.path.join(system_data_root, database.backend, database.version)
+            primary_path = os.path.join(data_dir, PerfDataFilename.step4_grouped_gemm.value)
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_grouped_gemm,
+                primary_path,
+                system_data_root,
+            )
+            cls._data_cache[key] = LoadedOpData(
+                load_step4_grouped_gemm_data(sources),
+                PerfDataFilename.step4_grouped_gemm,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_grouped_gemm_data" not in database.__dict__:
+            database._step4_grouped_gemm_data = cls._data_cache[key]
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
-        """Reject dense-table queries until grouped data has an explicit consumer."""
-        raise NotImplementedError("GroupedGEMM requires a provider-specific grouped-GEMM performance dataset.")
+        """Query only the exact provider/shape slice and interpolate tokens."""
+        from aiconfigurator.sdk import interpolation
+
+        num_tokens = kwargs.get("x")
+        if not isinstance(num_tokens, int) or isinstance(num_tokens, bool) or num_tokens <= 0:
+            raise ValueError("GroupedGEMM requires a positive num_tokens integer.")
+        num_tokens = -(-num_tokens // self._seq_split)
+
+        self.load_data(database)
+        data = database._step4_grouped_gemm_data
+        data.raise_if_not_loaded()
+        structural_key = self._persisted_key()
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                "Grouped-GEMM perf data not available for exact provider/shape key. "
+                f"system='{database.system}', backend='{database.backend}', version='{database.version}', "
+                f"provider='{self._provider}', groups={self._groups}, n={self._n}, k={self._k}, "
+                f"quant_mode='{self._quant_mode.name}'."
+            )
+
+        token_data = data[structural_key]
+        if num_tokens in token_data:
+            result = token_data[num_tokens]
+        else:
+            token_points = sorted(token_data)
+            try:
+                left, right = interpolation.nearest_1d_point_helper(num_tokens, token_points)
+                result = interpolation.interp_1d(
+                    [left, right],
+                    [token_data[left], token_data[right]],
+                    num_tokens,
+                )
+            except interpolation.InterpolationDataNotAvailableError as exc:
+                raise PerfDataNotAvailableError(
+                    "Grouped-GEMM perf data does not bracket the requested token count. "
+                    f"provider='{self._provider}', groups={self._groups}, n={self._n}, k={self._k}, "
+                    f"quant_mode='{self._quant_mode.name}', num_tokens={num_tokens}, "
+                    f"available_tokens={token_points}."
+                ) from exc
+
+        return PerformanceResult(
+            latency=float(result["latency"]) * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * self._scale_factor,
+            source="silicon",
+        )
 
     def _persisted_key(self) -> tuple:
         """Return the physical identity required by the grouped-GEMM dataset."""
@@ -57,6 +137,53 @@ class GroupedGEMM(Operation):
 
     def get_weights(self, **kwargs) -> float:
         return self._weights * self._scale_factor
+
+
+def load_step4_grouped_gemm_data(perf_file):
+    """Load exact Step4 grouped-einsum rows keyed by structure then tokens."""
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    grouped_data: dict[tuple, dict[int, dict[str, float]]] = {}
+    for row in rows:
+        provider = str(row["provider"])
+        kernel_source = str(row["kernel_source"])
+        op_name = str(row["op_name"])
+        if op_name != "step4_grouped_gemm":
+            raise ValueError(f"unexpected op_name in grouped-GEMM data: {op_name!r}")
+        if kernel_source != provider:
+            raise ValueError(
+                "grouped-GEMM provider does not match kernel_source: "
+                f"provider={provider!r}, kernel_source={kernel_source!r}"
+            )
+
+        structural_key = (
+            provider,
+            int(row["groups"]),
+            int(row["n"]),
+            int(row["k"]),
+            common.GEMMQuantMode[str(row["quant_mode"])],
+        )
+        num_tokens = int(row["num_tokens"])
+        latency = float(row["latency"])
+        power = float(row.get("power", 0.0) or 0.0)
+        value = {
+            "latency": latency,
+            "power": power,
+            "energy": power * latency,
+        }
+
+        token_data = grouped_data.setdefault(structural_key, {})
+        existing = token_data.get(num_tokens)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting grouped-GEMM row for physical key "
+                f"{(*structural_key, num_tokens)!r}: {existing!r} != {value!r}"
+            )
+        token_data[num_tokens] = value
+
+    return grouped_data
 
 
 class FP32OutputGEMM(GEMM):

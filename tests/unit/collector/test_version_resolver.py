@@ -63,6 +63,12 @@ class TestNormalizeVersion:
     def test_local_metadata_ignored(self):
         assert _normalize_version("0.20.0+cu124") == _normalize_version("0.20.0")
 
+    def test_git_describe_suffix_is_normalized_for_compatibility(self):
+        runtime = "0.19.0.post20.dev26.gc820e5ae1"
+
+        assert _normalize_version(runtime) == Version("0.19.0.post20.dev26")
+        assert _check_compat("vllm>=0.19.0,<0.20.0", runtime)
+
     def test_ordering_dev_to_post(self):
         ordered = ["1.2.0dev1", "1.2.0a2", "1.2.0b1", "1.2.0rc2", "1.2.0", "1.2.0.post2"]
         versions = [_normalize_version(v) for v in ordered]

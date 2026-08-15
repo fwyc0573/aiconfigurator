@@ -1,0 +1,44 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+schema_version: 1
+architecture: Step4ProForCausalLM
+model_path: stepfun-ai/Step4-Pro-Latest
+model_paths:
+  - stepfun-ai/Step4-Pro-Latest
+include_base: false
+base_ops:
+  - gemm
+model_ops:
+  - step4_context_attention
+  - step4_deepep_ht
+  - step4_fp32_output_gemm
+  - step4_generation_attention
+  - step4_grouped_gemm
+  - step4_optimus_moe
+  - step4_qkv_norm_rope
+runtime_profile: step4_pro_latest
+required_sm_versions:
+  - 103
+description: >
+  Pinned vLLM Step4-Pro-Latest provider operation population for B300 SM103.
+  MTP is intentionally disabled. Generic GEMM covers only ordinary linear
+  operations; every provider-sensitive operation uses a separate perf file.
+
+all_frameworks_op_cases:
+  gemm:
+    cases: all
+  step4_context_attention:
+    cases: all
+  step4_deepep_ht:
+    cases: all
+  step4_fp32_output_gemm:
+    cases: all
+  step4_generation_attention:
+    cases: all
+  step4_grouped_gemm:
+    cases: all
+  step4_optimus_moe:
+    cases: all
+  step4_qkv_norm_rope:
+    cases: all

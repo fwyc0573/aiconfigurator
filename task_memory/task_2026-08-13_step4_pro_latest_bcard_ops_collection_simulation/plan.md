@@ -16,6 +16,7 @@
 | 2026-08-14 | Deferred MTP1 structure tests/simulation; activated MTP-off Latest execution and parallel B300 smoke. |
 | 2026-08-14 | Handed pinned-vLLM smoke/runtime trace to an external session; current execution now covers AIC-side work only. |
 | 2026-08-15 | Completed the MTP-off Latest model/op graph gate and advanced the active work to Collector implementation. |
+| 2026-08-15 | Split Collector work into provider-data vertical slices, beginning with runtime profile and grouped `wo_a`. |
 
 # Plan: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -82,9 +83,10 @@ reconstruction status.
   sha256: c7a869263afd16b8694259ecafbe7df29e5a3a02320298a01e9e6009d5b68154
   ```
 
-- The next AIC gate is a detailed MTP-off Latest implementation matrix that
-  maps every AIC operation and test to the pinned vLLM source/provider path
-  before production code is written.
+- The active AIC gate is the first provider-data vertical slice: pinned runtime
+  profile, Latest SM103 model plan, grouped `wo_a` exact cases, collector,
+  persisted key, loader, and real consumer query. RED tests must fail before
+  production implementation.
 - MTP1 structure tests, measurement, and simulation are deferred by explicit
   user decision. They remain visible as deferred scope and must not be
   substituted with `Step3p5MTP`.

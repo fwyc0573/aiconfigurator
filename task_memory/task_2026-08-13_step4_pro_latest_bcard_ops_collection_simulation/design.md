@@ -8,6 +8,7 @@
 | 2026-08-13 | Marked the minimal-extension design as user-approved. |
 | 2026-08-14 | Deferred MTP1 structure/tests/simulation and split execution into AIC and parallel B300 smoke tracks. |
 | 2026-08-14 | Converted the pinned-vLLM smoke/runtime trace track into an external-session handoff and retained AIC-only execution locally. |
+| 2026-08-15 | Defined the provider-specific perf-file boundary and exact-versus-interpolated lookup axes for Collector implementation. |
 
 # Design
 
@@ -85,3 +86,32 @@ task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/pin
 The AIC track remains responsible for exact operation-level provider use in
 Collector benchmarks. When supplied, the external report will be reconciled
 against the AIC operation/provider matrix before final sign-off.
+
+## Provider performance-data contract
+
+Latest provider rows remain separate from generic vLLM tables. Structural and
+provider fields require exact matches; only workload-size fields interpolate.
+
+| Perf family | Exact physical key | Interpolated workload axes |
+|---|---|---|
+| Grouped `wo_a` | provider, groups, per-group N/K, quant mode | num tokens |
+| FP32 router | provider, N/K, weight dtype, output dtype | num tokens |
+| QKV norm/RoPE | provider, normalized tensors, Q/KV heads, head dim | num tokens |
+| Context attention | provider, Q/KV heads, head dim, window, KV/FMHA dtype, K/V alias, page size | batch, query tokens, total context tokens |
+| Generation attention | provider, Q/KV heads, head dim, window, KV dtype, K/V alias, page size | batch, context tokens |
+| Optimus routed MoE | provider, phase, hidden/intermediate, top-k, experts, TP/EP, quant, routing distribution, gated flag | global input tokens |
+| DeepEP HT | provider, operation, phase, hidden, top-k, experts, TP/EP/DP, quant | input tokens per rank |
+
+The initial implementation proceeds as a vertical slice in this order:
+
+1. pinned runtime profile and Latest model-plan selection;
+2. grouped `wo_a` collector, persisted rows, loader, and consumer query;
+3. FP32 router and QKV norm/RoPE token-curve families;
+4. provider context/generation attention;
+5. Optimus FP8 MoE;
+6. distributed DeepEP HT EP16/EP32.
+
+The runtime manifest keeps stock vLLM as the default and adds a named
+Step4Pro profile. The profile records the exact StepCast image and pinned source
+commit. A Latest plan selects that profile explicitly; unrelated model plans
+remain unchanged.

@@ -20,6 +20,7 @@ from packaging.version import InvalidVersion, Version
 from collector.registry_types import OpEntry
 
 _FRAMEWORK_PREFIX_RE = re.compile(r"^[a-zA-Z_]+")
+_GIT_DESCRIBE_SUFFIX_RE = re.compile(r"\.g[0-9a-f]+$", re.IGNORECASE)
 
 
 def _strip_local_metadata(v: str) -> str:
@@ -37,7 +38,7 @@ def _normalize_version(v: str) -> Version:
     collector instead of rejecting every ``>=`` compatibility check.
     Invalid version strings are treated as ``0``.
     """
-    normalized = _strip_local_metadata(v)
+    normalized = _GIT_DESCRIBE_SUFFIX_RE.sub("", _strip_local_metadata(v))
     if not normalized:
         return Version("0")
     if normalized.startswith("0.0.0.dev"):

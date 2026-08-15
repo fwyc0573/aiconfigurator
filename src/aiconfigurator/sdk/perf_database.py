@@ -962,6 +962,7 @@ from aiconfigurator.sdk.operations.gemm import (  # noqa: F401
     load_gemm_data,
     load_scale_matrix_data,
 )
+from aiconfigurator.sdk.operations.identity import load_step4_grouped_gemm_data  # noqa: F401
 from aiconfigurator.sdk.operations.mamba import (  # noqa: F401
     load_gdn_data,
     load_mamba2_data,

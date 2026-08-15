@@ -92,7 +92,12 @@ def get_gemm_test_cases():
     model_path = os.environ.get("COLLECTOR_MODEL_PATH", "").strip()
     case_specs = (
         get_step4_model_gemm_case_specs(model_path, backend="vllm")
-        if model_path in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}
+        if model_path
+        in {
+            "stepfun-ai/Step4-Pro-V3",
+            "stepfun-ai/Step4-Pro-V4",
+            "stepfun-ai/Step4-Pro-Latest",
+        }
         else get_gemm_case_specs()
     )
     for gemm_common_testcase in case_specs:

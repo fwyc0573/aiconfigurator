@@ -1318,7 +1318,12 @@ def get_step4_model_gemm_case_specs(model_path: str, *, backend: str = "vllm") -
     base GEMM YAML. Structural N/K values come from each legal TP-built graph;
     the returned list is stably deduplicated on the persisted physical key.
     """
-    if model_path not in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}:
+    supported_models = {
+        "stepfun-ai/Step4-Pro-V3",
+        "stepfun-ai/Step4-Pro-V4",
+        "stepfun-ai/Step4-Pro-Latest",
+    }
+    if model_path not in supported_models:
         raise ValueError(f"Step4 model-scoped GEMM extraction does not support {model_path!r}")
 
     from aiconfigurator.sdk import common, config, models
@@ -1335,14 +1340,29 @@ def get_step4_model_gemm_case_specs(model_path: str, *, backend: str = "vllm") -
     # Build every dtype that the targeted Step4 graph can emit.  This is
     # deliberately independent of SM90's generic fp8_block capability: a
     # dtype is scheduled only when the model graph actually owns that identity.
-    for gemm_quant_mode in (common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.fp8):
-        for tp_size in (1, 2, 4):
+    if model_path == "stepfun-ai/Step4-Pro-Latest":
+        quant_modes = (common.GEMMQuantMode.bfloat16,)
+        tp_sizes = (1,)
+    else:
+        quant_modes = (common.GEMMQuantMode.bfloat16, common.GEMMQuantMode.fp8)
+        tp_sizes = (1, 2, 4)
+
+    for gemm_quant_mode in quant_modes:
+        for tp_size in tp_sizes:
             model_config = config.ModelConfig(
                 tp_size=tp_size,
                 pp_size=1,
                 gemm_quant_mode=gemm_quant_mode,
-                moe_quant_mode=common.MoEQuantMode.fp8,
-                kvcache_quant_mode=common.KVCacheQuantMode.fp8,
+                moe_quant_mode=(
+                    common.MoEQuantMode.fp8_block
+                    if model_path == "stepfun-ai/Step4-Pro-Latest"
+                    else common.MoEQuantMode.fp8
+                ),
+                kvcache_quant_mode=(
+                    common.KVCacheQuantMode.bfloat16
+                    if model_path == "stepfun-ai/Step4-Pro-Latest"
+                    else common.KVCacheQuantMode.fp8
+                ),
                 fmha_quant_mode=common.FMHAQuantMode.bfloat16,
                 moe_tp_size=1,
                 moe_ep_size=tp_size,

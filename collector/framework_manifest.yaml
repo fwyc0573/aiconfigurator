@@ -22,6 +22,16 @@ frameworks:
       cu130: "vllm/vllm-openai:v0.19.0-cu130"
     source_repo: "https://github.com/vllm-project/vllm.git"
 
+profiles:
+  step4_pro_latest:
+    framework: vllm
+    version: "0.19.0"
+    package_version: "0.19.0.post20.dev26.gc820e5ae1"
+    images:
+      default: "hub.stepfun-inc.com/stepcast/stepcast:2026-08-06-server-vllm-test-0.19.0.post20.dev26.gc820e5ae1.precompiled"
+    source_repo: "git@gitlab.basemind.com:sys/stepcast/vllm.git"
+    source_commit: "607d1641ee3fec43653fca510d717725828890c2"
+
 wideep:
   sglang:
     version: "0.5.10"

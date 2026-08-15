@@ -137,15 +137,6 @@ def test_deepep_dispatch_and_combine_have_distinct_persisted_keys():
 @pytest.mark.parametrize(
     "operation",
     [
-        ops.GroupedGEMM(
-            "wo_a",
-            1.0,
-            1024,
-            4096,
-            common.GEMMQuantMode.bfloat16,
-            groups=8,
-            provider="vllm_step4pro_torch_einsum",
-        ),
         ops.FP32OutputGEMM("router", 1.0, 896, 7168),
     ],
 )

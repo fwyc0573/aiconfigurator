@@ -11,6 +11,7 @@
 | 2026-07-16 | Added the verified short-`TMPDIR` recipe for Python multiprocessing AF_UNIX socket paths and documented pytest-native timing when `/usr/bin/time` is unavailable. |
 | 2026-07-19 | Extended the AIC Rust recipe with a verified locked/offline current-worktree in-place build and source/binary isolation checks. |
 | 2026-08-13 | Added the verified Git LFS installation and post-checkout hook recovery recipe. |
+| 2026-08-15 | Added the verified unprivileged `systemd-run --user --scope` memory-limit recipe. |
 
 # Environment Handbook
 
@@ -344,6 +345,40 @@ printf 'exit=%s\n' "$?"
 ```
 
 Observed on 2026-07-16: `/usr/bin/time -p ...` returned `/bin/bash: /usr/bin/time: No such file or directory` with exit code `127`; the direct pytest commands reported their own elapsed times and completed normally.
+
+## Applying a host memory limit without privileged systemd authorization
+
+### Root Cause
+
+- `systemd-run --scope -p MemoryMax=2G ...` targets the system manager and
+  requires interactive authorization on this host.
+- Non-interactive agent sessions therefore fail before the command starts with
+  `Failed to start transient scope unit: Interactive authentication required.`
+- The user systemd manager is available and can create an equivalent
+  user-owned transient scope without privileged authorization.
+
+### Verified Recipe
+
+Use the user manager and keep temporary files on the data filesystem:
+
+```bash
+timeout 900s systemd-run --user --scope -p MemoryMax=2G \
+  env TMPDIR=/data/ycfeng/tmp PYTHONPATH=src:. \
+  /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python \
+  -m pytest -q <paths>
+```
+
+### Verification Evidence
+
+Observed on 2026-08-15:
+
+```text
+system scope: Interactive authentication required
+user scope: Running as unit run-<id>.scope
+```
+
+Do not remove the memory limit or retry through the privileged system manager.
+Use `--user --scope` directly.
 
 ## Recovering a missing Git author identity without changing global configuration
 

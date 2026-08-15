@@ -22,6 +22,9 @@ class CollectorRuntime:
     source_repo: str | None = None
     collector_dir: str | None = None
     workload: str = "default"
+    profile: str | None = None
+    package_version: str | None = None
+    source_commit: str | None = None
 
     def image(self, variant: str = "default") -> str:
         return self.images.get(variant) or self.images["default"]
@@ -41,18 +44,28 @@ def get_collector_runtime(
     framework: str,
     *,
     workload: str = "default",
+    profile: str | None = None,
     path: str | Path = MANIFEST_PATH,
 ) -> CollectorRuntime:
     manifest = load_manifest(path)
     normalized = framework.lower()
-    if workload == "wideep":
+    if profile is not None:
+        if workload != "default":
+            raise KeyError("Named collector profiles are supported only for the default workload")
+        spec = manifest.get("profiles", {}).get(profile)
+        if spec is None:
+            raise KeyError(f"No collector runtime profile is configured for {profile!r}")
+        if spec["framework"].lower() != normalized:
+            raise KeyError(f"Collector runtime profile {profile!r} belongs to {spec['framework']!r}, not {framework!r}")
+    elif workload == "wideep":
         section = manifest.get("wideep", {})
+        spec = section.get(normalized)
     elif workload == "default":
         section = manifest.get("frameworks", {})
+        spec = section.get(normalized)
     else:
         raise KeyError(f"Unsupported collector workload {workload!r}")
 
-    spec = section.get(normalized)
     if spec is None:
         raise KeyError(f"No {workload} collector runtime is configured for {framework!r}")
     return CollectorRuntime(
@@ -62,7 +75,29 @@ def get_collector_runtime(
         source_repo=spec.get("source_repo") or manifest["frameworks"].get(normalized, {}).get("source_repo"),
         collector_dir=spec.get("collector_dir"),
         workload=workload,
+        profile=profile,
+        package_version=spec.get("package_version"),
+        source_commit=spec.get("source_commit"),
     )
+
+
+def validate_collector_runtime(
+    framework: str,
+    package_version: str,
+    *,
+    profile: str | None = None,
+    path: str | Path = MANIFEST_PATH,
+) -> CollectorRuntime:
+    """Require the installed package to match a named runtime profile."""
+    runtime = get_collector_runtime(framework, profile=profile, path=path)
+    expected = runtime.package_version or runtime.version
+    if package_version != expected:
+        profile_label = f" profile {profile!r}" if profile else ""
+        raise RuntimeError(
+            f"{framework}{profile_label} requires package version {expected!r}, "
+            f"but the active runtime reports {package_version!r}"
+        )
+    return runtime
 
 
 def validate_manifest(manifest: dict[str, Any]) -> None:
@@ -89,6 +124,15 @@ def validate_manifest(manifest: dict[str, Any]) -> None:
             )
         if not spec.get("collector_dir"):
             raise ValueError(f"wideep.{framework}.collector_dir is required")
+
+    profiles = manifest.get("profiles", {})
+    if not isinstance(profiles, dict):
+        raise TypeError("collector framework manifest profiles section must be a mapping")
+    for profile, spec in profiles.items():
+        _validate_runtime_spec(f"profiles.{profile}", spec)
+        framework = spec.get("framework")
+        if framework not in frameworks:
+            raise ValueError(f"profiles.{profile}.framework must name a configured framework")
 
 
 def _validate_runtime_spec(name: str, spec: object) -> None:

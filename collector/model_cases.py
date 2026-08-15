@@ -88,6 +88,7 @@ class CollectionCasePlan:
     model_cases_paths: list[Path] = field(default_factory=list)
     sm_exceptions_path: Path | None = None
     requested_model_path: str | None = None
+    runtime_profile: str | None = None
 
     @property
     def ops(self) -> list[str]:
@@ -105,6 +106,7 @@ class CollectionCasePlan:
             "base_cases_path": str(self.base_cases_path),
             "model_cases_paths": [str(path) for path in self.model_cases_paths],
             "sm_exceptions_path": str(self.sm_exceptions_path) if self.sm_exceptions_path else None,
+            "runtime_profile": self.runtime_profile,
         }
 
 
@@ -538,7 +540,11 @@ def _load_model_case_files(
     if model_cases_path:
         return [Path(model_cases_path).expanduser().resolve()]
     if full:
-        return sorted(MODEL_CASES_DIR.glob("*_cases.yaml"))
+        return [
+            path
+            for path in sorted(MODEL_CASES_DIR.glob("*_cases.yaml"))
+            if load_yaml_file(path).get("runtime_profile") is None
+        ]
     matches = _matching_model_case_files(model_path=model_path, model_architecture=model_architecture)
     if matches:
         return matches
@@ -675,6 +681,19 @@ def build_collection_case_plan(
         _merge_case_file(op_cases, data, backend, override_specific_selectors=not full)
 
     resolved_sm_version = resolve_sm_version(gpu_type=gpu_type, sm_version=sm_version)
+    runtime_profiles = {str(data["runtime_profile"]) for data in model_data if data.get("runtime_profile")}
+    if len(runtime_profiles) > 1:
+        raise ValueError(f"Model case files select conflicting runtime profiles: {sorted(runtime_profiles)}")
+    runtime_profile = next(iter(runtime_profiles), None)
+    required_sm_versions = {
+        int(required_sm)
+        for data in model_data
+        for required_sm in _as_list(data.get("required_sm_versions"), field_name="required_sm_versions")
+    }
+    if required_sm_versions and resolved_sm_version is not None and resolved_sm_version not in required_sm_versions:
+        raise ValueError(
+            f"Model case plan requires SM versions {sorted(required_sm_versions)}, got SM {resolved_sm_version}"
+        )
     resolved_sm_exceptions_path = None
     explicit_exceptions_path = sm_exceptions_path or gpu_exceptions_path
     if explicit_exceptions_path:
@@ -699,6 +718,7 @@ def build_collection_case_plan(
         model_cases_paths=model_paths,
         sm_exceptions_path=resolved_sm_exceptions_path,
         requested_model_path=requested_model_path,
+        runtime_profile=runtime_profile,
     )
 
 

@@ -1694,6 +1694,7 @@ class PerfDataFilename(Enum):
     """
 
     gemm = "gemm_perf.parquet"
+    step4_grouped_gemm = "step4_grouped_gemm_perf.parquet"
     nccl = "nccl_perf.parquet"
     oneccl = "oneccl_perf.parquet"
     generation_attention = "generation_attention_perf.parquet"

@@ -1199,6 +1199,15 @@ def collect_vllm(
         logger.exception("vLLM is not installed. Please install it from https://github.com/vllm-project/vllm")
         return
 
+    if case_plan is not None and case_plan.runtime_profile:
+        from collector.framework_manifest import validate_collector_runtime
+
+        validate_collector_runtime(
+            "vllm",
+            version,
+            profile=case_plan.runtime_profile,
+        )
+
     registry = _registry_with_requested_wideep(REGISTRY, "vllm", ops, case_plan)
     collections = build_collections(registry, "vllm", version, ops, logger=logger)
     all_errors = collect_ops(

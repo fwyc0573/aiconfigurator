@@ -9,7 +9,7 @@ import yaml
 
 from aiconfigurator.sdk import common
 from aiconfigurator.sdk.errors import PerfDataNotAvailableError
-from aiconfigurator.sdk.operations import FP32OutputGEMM, GroupedGEMM
+from aiconfigurator.sdk.operations import FP32OutputGEMM, GroupedGEMM, QKVNormRoPE
 from aiconfigurator.sdk.perf_database import PerfDatabase
 
 pytestmark = pytest.mark.unit
@@ -19,6 +19,10 @@ HEADER = "framework,version,device,op_name,kernel_source,provider,groups,num_tok
 ROUTER_PROVIDER = "vllm.optimus_matmul_fp32"
 ROUTER_HEADER = (
     "framework,version,device,op_name,kernel_source,provider,num_tokens,n,k,weight_dtype,output_dtype,latency\n"
+)
+QKV_HEADER = (
+    "framework,version,device,op_name,kernel_source,provider,num_tokens,"
+    "normalized_tensors,q_heads,kv_heads,head_dim,latency\n"
 )
 
 
@@ -87,6 +91,44 @@ def _router_operation(
         n,
         7168,
         provider=provider,
+    )
+
+
+def _build_qkv_database(tmp_path: Path, rows: list[str]) -> PerfDatabase:
+    systems_root = tmp_path / "systems"
+    data_dir = systems_root / "data" / "vllm" / "0.19.0"
+    data_dir.mkdir(parents=True)
+    source_spec = Path("src/aiconfigurator/systems/b300_sxm.yaml")
+    system_spec = yaml.safe_load(source_spec.read_text(encoding="utf-8"))
+    system_spec["data_dir"] = "data"
+    (systems_root / "b300_sxm.yaml").write_text(
+        yaml.safe_dump(system_spec),
+        encoding="utf-8",
+    )
+    (data_dir / "step4_qkv_norm_rope_perf.txt").write_text(
+        QKV_HEADER + "".join(rows),
+        encoding="utf-8",
+    )
+    return PerfDatabase("b300_sxm", "vllm", "0.19.0", str(systems_root))
+
+
+def _qkv_operation(
+    *,
+    provider: str = "vllm_step4pro_qkv_norm_rope",
+    normalized_tensors: tuple[str, ...] = ("q", "k", "v"),
+    q_heads: int = 128,
+    kv_heads: int = 8,
+    head_dim: int = 128,
+    scale_factor: float = 1.0,
+) -> QKVNormRoPE:
+    return QKVNormRoPE(
+        "qkv_norm_rope",
+        scale_factor,
+        normalized_tensors=normalized_tensors,
+        provider=provider,
+        q_heads=q_heads,
+        kv_heads=kv_heads,
+        head_dim=head_dim,
     )
 
 
@@ -212,3 +254,98 @@ def test_fp32_router_loader_rejects_conflicting_physical_key(tmp_path):
 
     with pytest.raises(ValueError, match="conflicting FP32-output GEMM row"):
         _router_operation().query(database, x=1)
+
+
+@pytest.mark.parametrize(
+    ("operation", "row"),
+    [
+        (
+            _qkv_operation(),
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.2\n",
+        ),
+        (
+            _qkv_operation(
+                provider="vllm_step4pro_k_norm_rope",
+                normalized_tensors=("k",),
+                q_heads=64,
+                kv_heads=1,
+                head_dim=512,
+            ),
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_k_norm_rope,"
+            "vllm_step4pro_k_norm_rope,1,k,64,1,512,0.3\n",
+        ),
+    ],
+)
+def test_qkv_norm_rope_queries_both_exact_provider_structures(tmp_path, operation, row):
+    database = _build_qkv_database(tmp_path, [row])
+
+    result = operation.query(database, x=1)
+
+    assert float(result) > 0
+    assert result.source == "silicon"
+
+
+def test_qkv_norm_rope_interpolates_only_tokens(tmp_path):
+    database = _build_qkv_database(
+        tmp_path,
+        [
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.2\n",
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,4,q+k+v,128,8,128,0.8\n",
+        ],
+    )
+
+    result = _qkv_operation(scale_factor=2.0).query(database, x=2)
+
+    assert float(result) == pytest.approx(0.8)
+
+
+@pytest.mark.parametrize(
+    "operation",
+    [
+        _qkv_operation(provider="generic_qkv_norm_rope"),
+        _qkv_operation(normalized_tensors=("q", "k")),
+        _qkv_operation(q_heads=64),
+    ],
+)
+def test_qkv_norm_rope_requires_exact_structural_key(tmp_path, operation):
+    database = _build_qkv_database(
+        tmp_path,
+        [
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.2\n",
+        ],
+    )
+
+    with pytest.raises(PerfDataNotAvailableError):
+        operation.query(database, x=1)
+
+
+def test_qkv_norm_rope_rejects_non_positive_token_count(tmp_path):
+    database = _build_qkv_database(
+        tmp_path,
+        [
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.2\n",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="positive num_tokens"):
+        _qkv_operation().query(database, x=0)
+
+
+def test_qkv_norm_rope_loader_rejects_conflicting_physical_key(tmp_path):
+    database = _build_qkv_database(
+        tmp_path,
+        [
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.2\n",
+            "VLLM,0.19.0,B300,step4_qkv_norm_rope,vllm_step4pro_qkv_norm_rope,"
+            "vllm_step4pro_qkv_norm_rope,1,q+k+v,128,8,128,0.3\n",
+        ],
+    )
+
+    with pytest.raises(ValueError, match="conflicting QKV norm/RoPE row"):
+        _qkv_operation().query(database, x=1)

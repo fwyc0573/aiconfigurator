@@ -111,6 +111,16 @@ def test_vllm_registry_exposes_distinct_fp32_router_provider_file():
     assert router.perf_filename == "step4_fp32_output_gemm_perf.txt"
 
 
+def test_vllm_registry_exposes_distinct_qkv_norm_rope_provider_file():
+    entries = {entry.op: entry for entry in VLLM_REGISTRY}
+
+    qkv = entries["step4_qkv_norm_rope"]
+    assert qkv.module == "collector.vllm.collect_step4_provider"
+    assert qkv.get_func == "get_step4_qkv_norm_rope_test_cases"
+    assert qkv.run_func == "run_step4_qkv_norm_rope"
+    assert qkv.perf_filename == "step4_qkv_norm_rope_perf.txt"
+
+
 def test_step4_grouped_gemm_cases_preserve_exact_einsum_identity():
     from collector.vllm.collect_step4_provider import (
         get_step4_grouped_gemm_test_cases,
@@ -135,6 +145,37 @@ def test_step4_fp32_router_cases_preserve_exact_optimus_identity():
         ("vllm.optimus_matmul_fp32", 896, 7168, "bfloat16", "float32")
     }
     assert len(cases) == len({case[1] for case in cases})
+
+
+def test_step4_qkv_norm_rope_cases_preserve_full_and_swa_identities():
+    from collector.vllm.collect_step4_provider import (
+        get_step4_qkv_norm_rope_test_cases,
+    )
+
+    cases = get_step4_qkv_norm_rope_test_cases()
+    assert cases
+    assert {(case[0], case[2], case[3], case[4], case[5]) for case in cases} == {
+        ("vllm_step4pro_k_norm_rope", "k", 64, 1, 512),
+        ("vllm_step4pro_qkv_norm_rope", "q+k+v", 128, 8, 128),
+    }
+    assert len(cases) == 2 * len({case[1] for case in cases})
+
+
+def test_full_qkv_norm_rope_runtime_probe_requires_query_and_key_outputs():
+    from collector.vllm.collect_step4_provider import (
+        _qkv_norm_rope_expected_output_shapes,
+    )
+
+    assert _qkv_norm_rope_expected_output_shapes(
+        "vllm_step4pro_k_norm_rope",
+        num_tokens=17,
+        q_heads=64,
+        kv_heads=1,
+        head_dim=512,
+    ) == (
+        (17, 64, 512),
+        (17, 1, 512),
+    )
 
 
 def test_step4_latest_generic_gemm_excludes_provider_specific_gemms():

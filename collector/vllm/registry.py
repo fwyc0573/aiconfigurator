@@ -34,6 +34,13 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.STEP4_FP32_OUTPUT_GEMM,
     ),
     OpEntry(
+        op="step4_qkv_norm_rope",
+        module="collector.vllm.collect_step4_provider",
+        get_func="get_step4_qkv_norm_rope_test_cases",
+        run_func="run_step4_qkv_norm_rope",
+        perf_filename=PerfFile.STEP4_QKV_NORM_ROPE,
+    ),
+    OpEntry(
         op="compute_scale",
         module="collector.vllm.collect_computescale",
         get_func="get_computescale_test_cases",

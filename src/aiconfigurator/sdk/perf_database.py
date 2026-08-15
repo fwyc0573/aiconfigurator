@@ -965,6 +965,7 @@ from aiconfigurator.sdk.operations.gemm import (  # noqa: F401
 from aiconfigurator.sdk.operations.identity import (  # noqa: F401
     load_step4_fp32_output_gemm_data,
     load_step4_grouped_gemm_data,
+    load_step4_qkv_norm_rope_data,
 )
 from aiconfigurator.sdk.operations.mamba import (  # noqa: F401
     load_gdn_data,

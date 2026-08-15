@@ -134,20 +134,6 @@ def test_deepep_dispatch_and_combine_have_distinct_persisted_keys():
     assert dispatch._persisted_key() != combine._persisted_key()
 
 
-def test_qkv_norm_rope_rejects_generic_perf_database():
-    operation = ops.QKVNormRoPE(
-        "qkv_norm_rope",
-        1.0,
-        normalized_tensors=("q", "k", "v"),
-        provider="vllm_step4pro_qkv_norm_rope",
-        q_heads=128,
-        kv_heads=8,
-        head_dim=128,
-    )
-    with pytest.raises(NotImplementedError, match="provider-specific"):
-        operation.query(object(), x=1)
-
-
 def test_provider_specific_attention_rejects_generic_perf_database():
     """Optimus FA4 metadata must affect consumer selection."""
     operation = ops.GenerationAttention(

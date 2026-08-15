@@ -774,8 +774,10 @@ class BaseBackend:
         # KV-per-seq context for capacity probing in CLI detail reports.
         try:
             kv_seq_len_used = isl + img_ctx_tokens + beam_width * osl
-            # CP shards persistent KV across cp ranks (full/cp per rank).
-            kv_bytes_per_seq = model.get_kvcache_bytes_per_sequence(kv_seq_len_used) / model._cp_kv_memory_divisor()
+            # CP shards peak physical KV across cp ranks (full/cp per rank).
+            kv_bytes_per_seq = (
+                model.get_kvcache_peak_allocated_bytes_per_sequence(kv_seq_len_used) / model._cp_kv_memory_divisor()
+            )
             summary.set_kv_per_seq(kv_bytes_per_seq, kv_seq_len_used)
         except Exception:
             # Best-effort; downstream report degrades gracefully when unset.
@@ -1725,9 +1727,11 @@ class BaseBackend:
             activations *= 1.0 + self.ACTIVATION_OVERHEAD_FRAC
 
         seq_tokens = max_seq_len if max_seq_len is not None else isl + beam_width * osl
-        # CP shards persistent KV across cp ranks (full/cp per rank); the
+        # CP shards peak physical KV across cp ranks (full/cp per rank); the
         # all-gather is a transient compute buffer, not steady-state footprint.
-        kvcache = batch_size * model.get_kvcache_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        kvcache = (
+            batch_size * model.get_kvcache_peak_allocated_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+        )
         # should not be divided by pp_size as you need to hold all kvcache for stages.
 
         # starting from 2.22

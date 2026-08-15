@@ -855,11 +855,15 @@ class Step4ProLatestConfig:
     full_o_lora_rank: int
     full_window_size: int
     full_page_size: int
+    full_physical_page_bytes: int
+    full_kv_block_stride_bytes: int
     swa_num_query_heads: int
     swa_num_kv_heads: int
     swa_head_dim: int
     swa_window_size: int
     swa_page_size: int
+    swa_physical_page_bytes: int
+    swa_kv_block_stride_bytes: int
     dense_inter_size: int
     shared_expert_inter_size: int
     latent_moe_dim: int
@@ -867,6 +871,7 @@ class Step4ProLatestConfig:
     swa_kv_elements_per_token: int = 2048
     kv_cache_requested_dtype: str = "auto"
     kv_cache_resolved_dtype: str = "bfloat16"
+    kv_cache_layout: str = "NHD"
     router_dtype: str = "float32"
     mtp_layers: int = 0
 
@@ -890,11 +895,15 @@ class Step4ProLatestConfig:
             "full_output_groups",
             "full_o_lora_rank",
             "full_page_size",
+            "full_physical_page_bytes",
+            "full_kv_block_stride_bytes",
             "swa_num_query_heads",
             "swa_num_kv_heads",
             "swa_head_dim",
             "swa_window_size",
             "swa_page_size",
+            "swa_physical_page_bytes",
+            "swa_kv_block_stride_bytes",
             "dense_inter_size",
             "shared_expert_inter_size",
             "latent_moe_dim",
@@ -919,8 +928,36 @@ class Step4ProLatestConfig:
             raise ValueError("Latest kv_cache_requested_dtype must be 'auto'.")
         if self.kv_cache_resolved_dtype != "bfloat16":
             raise ValueError("Latest kv_cache_resolved_dtype must be 'bfloat16'.")
+        if self.kv_cache_layout != "NHD":
+            raise ValueError("Pinned Step4-Pro-Latest requires kv_cache_layout='NHD'.")
         if self.router_dtype != "float32":
             raise ValueError("Latest router_dtype must be 'float32'.")
+        expected_full_logical_elements = self.full_num_kv_heads * self.full_head_dim
+        if self.full_kv_elements_per_token != expected_full_logical_elements:
+            raise ValueError(
+                "Latest Full-MFA logical KV elements must reflect aliased K/V storage: "
+                f"expected={expected_full_logical_elements}, actual={self.full_kv_elements_per_token}."
+            )
+        expected_swa_logical_elements = 2 * self.swa_num_kv_heads * self.swa_head_dim
+        if self.swa_kv_elements_per_token != expected_swa_logical_elements:
+            raise ValueError(
+                "Latest SWA logical KV elements must include separate K/V storage: "
+                f"expected={expected_swa_logical_elements}, actual={self.swa_kv_elements_per_token}."
+            )
+        expected_swa_page_bytes = self.swa_page_size * expected_swa_logical_elements * 2
+        if self.swa_physical_page_bytes != expected_swa_page_bytes:
+            raise ValueError(
+                "Latest SWA physical page bytes do not match pinned BF16 geometry: "
+                f"expected={expected_swa_page_bytes}, actual={self.swa_physical_page_bytes}."
+            )
+        if self.full_physical_page_bytes != self.swa_physical_page_bytes:
+            raise ValueError("Latest hybrid allocator requires equal Full-MFA and SWA physical page bytes.")
+        if self.full_page_size != self.swa_page_size:
+            raise ValueError("Pinned Step4-Pro-Latest requires equal Full-MFA and SWA token block sizes.")
+        if self.full_kv_block_stride_bytes != self.full_physical_page_bytes:
+            raise ValueError("Latest padded Full-MFA block stride must equal one physical page.")
+        if self.swa_kv_block_stride_bytes * 2 != self.swa_physical_page_bytes:
+            raise ValueError("Latest SWA per-plane block stride must equal half of one physical page.")
 
     def compute_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
         """Return logical KV bytes for one sequence across all layers."""
@@ -939,25 +976,45 @@ class Step4ProLatestConfig:
         )
 
     def compute_allocated_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
-        """Return page-allocated KV bytes using the pinned 128-token page size."""
+        """Return resident physical KV bytes after one MTP-off decode step."""
         if type(seq_len) is not int or seq_len < 0:
             raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
-        if bytes_per_element <= 0:
-            raise ValueError(f"bytes_per_element must be positive, got {bytes_per_element!r}")
-        full_pages = ((seq_len + self.full_page_size - 1) // self.full_page_size) * self.full_page_size
-        swa_pages = (
-            (min(seq_len, self.swa_window_size) + self.swa_page_size - 1) // self.swa_page_size
-        ) * self.swa_page_size
-        return float(
-            (
-                sum(layer.attention_type == "full" for layer in self.layers)
-                * full_pages
-                * self.full_kv_elements_per_token
-                + sum(layer.attention_type == "swa" for layer in self.layers)
-                * swa_pages
-                * self.swa_kv_elements_per_token
+        if bytes_per_element != 2:
+            raise ValueError(
+                f"Pinned Step4-Pro-Latest physical pages are defined for BF16 (2 bytes), got {bytes_per_element!r}."
             )
-            * bytes_per_element
+        full_blocks = (seq_len + self.full_page_size - 1) // self.full_page_size
+        swa_required_blocks = (seq_len + self.swa_page_size - 1) // self.swa_page_size
+        swa_first_materialized_block = max(0, seq_len - self.swa_window_size) // self.swa_page_size
+        swa_materialized_blocks = max(0, swa_required_blocks - swa_first_materialized_block)
+        return float(
+            sum(layer.attention_type == "full" for layer in self.layers) * full_blocks * self.full_physical_page_bytes
+            + sum(layer.attention_type == "swa" for layer in self.layers)
+            * swa_materialized_blocks
+            * self.swa_physical_page_bytes
+        )
+
+    def compute_peak_allocated_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
+        """Return peak resident physical KV bytes while decoding through ``seq_len``."""
+        if type(seq_len) is not int or seq_len < 0:
+            raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if seq_len == 0:
+            return self.compute_allocated_kv_cache_bytes(
+                0,
+                bytes_per_element=bytes_per_element,
+            )
+
+        block_size = self.full_page_size
+        latest_block_start = ((seq_len - 1) // block_size) * block_size + 1
+        return max(
+            self.compute_allocated_kv_cache_bytes(
+                seq_len,
+                bytes_per_element=bytes_per_element,
+            ),
+            self.compute_allocated_kv_cache_bytes(
+                latest_block_start,
+                bytes_per_element=bytes_per_element,
+            ),
         )
 
 
@@ -1697,6 +1754,8 @@ class PerfDataFilename(Enum):
     step4_grouped_gemm = "step4_grouped_gemm_perf.parquet"
     step4_fp32_output_gemm = "step4_fp32_output_gemm_perf.parquet"
     step4_qkv_norm_rope = "step4_qkv_norm_rope_perf.parquet"
+    step4_context_attention = "step4_context_attention_perf.parquet"
+    step4_generation_attention = "step4_generation_attention_perf.parquet"
     nccl = "nccl_perf.parquet"
     oneccl = "oneccl_perf.parquet"
     generation_attention = "generation_attention_perf.parquet"

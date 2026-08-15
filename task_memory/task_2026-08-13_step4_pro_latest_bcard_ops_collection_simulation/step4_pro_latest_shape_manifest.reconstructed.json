@@ -230,8 +230,12 @@
     "requested_dtype": "auto",
     "resolved_dtype": "bfloat16",
     "page_size": 128,
+    "layout": "NHD",
+    "physical_page_bytes": 524288,
     "full_mfa_elements_per_token_per_layer": 512,
+    "full_mfa_block_stride_bytes": 524288,
     "swa_gqa_elements_per_token_per_layer": 2048,
+    "swa_gqa_block_stride_bytes": 262144,
     "full_mfa_kv_storage_alias": true
   },
   "precision": {

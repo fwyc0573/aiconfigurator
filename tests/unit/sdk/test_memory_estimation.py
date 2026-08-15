@@ -188,8 +188,11 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
             def get_kvcache_bytes_per_sequence(self, seq_len):
                 return 100.0 * seq_len
 
+            def get_kvcache_peak_allocated_bytes_per_sequence(self, seq_len):
+                return 400.0 * seq_len
+
             def get_kvcache_max_tokens(self, budget):
-                return int(budget // 100)
+                return int(budget // 400)
 
         return _StubModel()
 
@@ -205,7 +208,7 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
     monkeypatch.setattr(memory, "get_backend", lambda backend: _StubBackend())
     monkeypatch.setattr(memory.perf_database, "get_database", lambda *a, **k: _StubDB())
 
-    memory.KVCacheEstimator.from_request(
+    estimator = memory.KVCacheEstimator.from_request(
         "Qwen/Qwen3-32B",
         "h200_sxm",
         "trtllm",
@@ -216,6 +219,8 @@ def test_breakdown_applies_nextn_to_model_config(monkeypatch):
     assert captured["nextn"] == 2
     # No explicit rates -> the project-wide MTP default is applied.
     assert captured["rates"] == [0.85, 0.3, 0.0, 0.0, 0.0]
+    assert estimator.breakdown["kv_size_per_token_bytes"] == 400.0
+    assert estimator.breakdown["tokens_from_kv_bytes"](1_600.0) == 4
 
 
 def test_native_capacity_override_wins():

@@ -938,6 +938,8 @@ from aiconfigurator.sdk.operations.attention import (  # noqa: F401
     load_context_attention_data,
     load_encoder_attention_data,
     load_generation_attention_data,
+    load_step4_context_attention_data,
+    load_step4_generation_attention_data,
 )
 from aiconfigurator.sdk.operations.communication import (  # noqa: F401
     load_custom_allreduce_data,

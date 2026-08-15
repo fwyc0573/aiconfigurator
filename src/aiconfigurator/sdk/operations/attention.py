@@ -248,6 +248,7 @@ class ContextAttention(Operation):
     """
 
     _data_cache: ClassVar[dict] = {}
+    _step4_data_cache: ClassVar[dict] = {}
 
     def __init__(
         self,
@@ -276,6 +277,9 @@ class ContextAttention(Operation):
         self._provider = kwargs.get("provider")
         self._kv_storage_alias = kwargs.get("kv_storage_alias", False)
         self._page_size = kwargs.get("page_size")
+        self._physical_page_bytes = kwargs.get("physical_page_bytes")
+        self._kv_block_stride_bytes = kwargs.get("kv_block_stride_bytes")
+        self._kv_cache_layout = kwargs.get("kv_cache_layout")
         # Context parallelism (sglang AllGather, zigzag in-seq split). When
         # cp_size > 1, query() models ONE representative CP rank (rank 0): the
         # sequence is split into 2*cp contiguous chunks, rank 0 owns chunk 0
@@ -296,6 +300,9 @@ class ContextAttention(Operation):
             self._fmha_quant_mode,
             self._kv_storage_alias,
             self._page_size,
+            self._physical_page_bytes,
+            self._kv_block_stride_bytes,
+            self._kv_cache_layout,
         )
 
     # ------------------------------------------------------------------
@@ -338,6 +345,44 @@ class ContextAttention(Operation):
     @classmethod
     def clear_cache(cls) -> None:
         cls._data_cache.clear()
+        cls._step4_data_cache.clear()
+
+    @classmethod
+    def load_step4_data(cls, database: PerfDatabase) -> None:
+        """Load the provider-specific Step4 context-attention table."""
+        import os
+
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._step4_data_cache:
+            system_data_root = os.path.join(
+                database.systems_root,
+                database.system_spec["data_dir"],
+            )
+            data_dir = os.path.join(
+                system_data_root,
+                database.backend,
+                database.version,
+            )
+            primary_path = os.path.join(
+                data_dir,
+                PerfDataFilename.step4_context_attention.value,
+            )
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_context_attention,
+                primary_path,
+                system_data_root,
+            )
+            cls._step4_data_cache[key] = LoadedOpData(
+                load_step4_context_attention_data(sources),
+                PerfDataFilename.step4_context_attention,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_context_attention_data" not in database.__dict__:
+            database._step4_context_attention_data = cls._step4_data_cache[key]
 
     @classmethod
     def _extrapolate(cls, data_wrapper) -> None:
@@ -560,12 +605,75 @@ class ContextAttention(Operation):
     # Op contract: query() + get_weights()
     # ------------------------------------------------------------------
 
+    def _query_step4_provider(
+        self,
+        database: PerfDatabase,
+        **kwargs,
+    ) -> PerformanceResult:
+        batch_size = kwargs.get("batch_size")
+        query_tokens = kwargs.get("s")
+        prefix = kwargs.get("prefix")
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("Step4 context attention requires a positive batch_size integer.")
+        if not isinstance(query_tokens, int) or isinstance(query_tokens, bool) or query_tokens <= 0:
+            raise ValueError("Step4 context attention requires a positive query token integer.")
+        if not isinstance(prefix, int) or isinstance(prefix, bool) or prefix < 0:
+            raise ValueError("Step4 context attention requires a non-negative prefix integer.")
+
+        self.load_step4_data(database)
+        data = database._step4_context_attention_data
+        data.raise_if_not_loaded()
+        structural_key = self._persisted_key()
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                f"Step4 context-attention data is unavailable for exact provider/structure key {structural_key!r}."
+            )
+        workload_data = data[structural_key]
+
+        def _query_one(batch: int, query: int, context_prefix: int) -> dict:
+            total_context = query + context_prefix
+            try:
+                return interpolation.interp_3d(
+                    batch,
+                    query,
+                    total_context,
+                    workload_data,
+                    "linear",
+                    database._extracted_metrics_cache,
+                )
+            except interpolation.InterpolationDataNotAvailableError as exc:
+                raise PerfDataNotAvailableError(
+                    "Step4 context-attention data does not bracket the requested "
+                    f"workload: provider={self._provider!r}, batch_size={batch}, "
+                    f"query_tokens={query}, total_context_tokens={total_context}."
+                ) from exc
+
+        if self._cp_size and self._cp_size > 1:
+            c = max(1, -(-query_tokens // (2 * self._cp_size)))
+            first = _query_one(batch_size, c, prefix)
+            second = _query_one(
+                batch_size,
+                c,
+                prefix + query_tokens - c,
+            )
+            result = {
+                "latency": first["latency"] + second["latency"],
+                "energy": first.get("energy", 0.0) + second.get("energy", 0.0),
+            }
+        else:
+            result = _query_one(batch_size, query_tokens, prefix)
+
+        imbalance_scale = float(kwargs.get("seq_imbalance_correction_scale", 1.0))
+        return PerformanceResult(
+            latency=float(result["latency"]) * imbalance_scale * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * imbalance_scale * self._scale_factor,
+            source="silicon",
+        )
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query context attention latency with energy data."""
         if self._provider is not None:
-            raise NotImplementedError(
-                f"ContextAttention provider-specific dataset is required for provider={self._provider!r}."
-            )
+            return self._query_step4_provider(database, **kwargs)
         batch_size = kwargs.get("batch_size")
         isl = kwargs.get("s")
         prefix = kwargs.get("prefix")
@@ -631,6 +739,7 @@ class GenerationAttention(Operation):
     """
 
     _data_cache: ClassVar[dict] = {}
+    _step4_data_cache: ClassVar[dict] = {}
     _raw_data_cache: ClassVar[dict] = {}
 
     def __init__(
@@ -657,6 +766,9 @@ class GenerationAttention(Operation):
         self._provider = kwargs.get("provider")
         self._kv_storage_alias = kwargs.get("kv_storage_alias", False)
         self._page_size = kwargs.get("page_size")
+        self._physical_page_bytes = kwargs.get("physical_page_bytes")
+        self._kv_block_stride_bytes = kwargs.get("kv_block_stride_bytes")
+        self._kv_cache_layout = kwargs.get("kv_cache_layout")
 
     def _persisted_key(self) -> tuple:
         """Return the provider-sensitive persisted identity."""
@@ -669,6 +781,9 @@ class GenerationAttention(Operation):
             self._kv_cache_dtype,
             self._kv_storage_alias,
             self._page_size,
+            self._physical_page_bytes,
+            self._kv_block_stride_bytes,
+            self._kv_cache_layout,
         )
 
     # ------------------------------------------------------------------
@@ -722,6 +837,44 @@ class GenerationAttention(Operation):
     def clear_cache(cls) -> None:
         cls._data_cache.clear()
         cls._raw_data_cache.clear()
+        cls._step4_data_cache.clear()
+
+    @classmethod
+    def load_step4_data(cls, database: PerfDatabase) -> None:
+        """Load the provider-specific Step4 generation-attention table."""
+        import os
+
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._step4_data_cache:
+            system_data_root = os.path.join(
+                database.systems_root,
+                database.system_spec["data_dir"],
+            )
+            data_dir = os.path.join(
+                system_data_root,
+                database.backend,
+                database.version,
+            )
+            primary_path = os.path.join(
+                data_dir,
+                PerfDataFilename.step4_generation_attention.value,
+            )
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_generation_attention,
+                primary_path,
+                system_data_root,
+            )
+            cls._step4_data_cache[key] = LoadedOpData(
+                load_step4_generation_attention_data(sources),
+                PerfDataFilename.step4_generation_attention,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_generation_attention_data" not in database.__dict__:
+            database._step4_generation_attention_data = cls._step4_data_cache[key]
 
     @classmethod
     def _correct_sol(cls, database: PerfDatabase, data_wrapper=None) -> None:
@@ -973,12 +1126,59 @@ class GenerationAttention(Operation):
     # Op contract: query() + get_weights()
     # ------------------------------------------------------------------
 
+    def _query_step4_provider(
+        self,
+        database: PerfDatabase,
+        **kwargs,
+    ) -> PerformanceResult:
+        beam_width = kwargs.get("beam_width")
+        if beam_width != 1:
+            raise ValueError(f"{self.__class__.__name__} only supports beam_width=1, got {beam_width}")
+        batch_size = kwargs.get("batch_size")
+        context_tokens = kwargs.get("s")
+        if not isinstance(batch_size, int) or isinstance(batch_size, bool) or batch_size <= 0:
+            raise ValueError("Step4 generation attention requires a positive batch_size integer.")
+        if not isinstance(context_tokens, int) or isinstance(context_tokens, bool) or context_tokens <= 0:
+            raise ValueError("Step4 generation attention requires a positive context token integer.")
+
+        self.load_step4_data(database)
+        data = database._step4_generation_attention_data
+        data.raise_if_not_loaded()
+        structural_key = self._persisted_key()
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                f"Step4 generation-attention data is unavailable for exact provider/structure key {structural_key!r}."
+            )
+        try:
+            result = interpolation.interp_2d_linear(
+                batch_size,
+                context_tokens,
+                data[structural_key],
+                database._extracted_metrics_cache,
+            )
+        except interpolation.InterpolationDataNotAvailableError as exc:
+            raise PerfDataNotAvailableError(
+                "Step4 generation-attention data does not bracket the requested "
+                f"workload: provider={self._provider!r}, batch_size={batch_size}, "
+                f"context_tokens={context_tokens}."
+            ) from exc
+
+        imbalance_scale = float(
+            kwargs.get(
+                "gen_seq_imbalance_correction_scale",
+                kwargs.get("seq_imbalance_correction_scale", 1.0),
+            )
+        )
+        return PerformanceResult(
+            latency=float(result["latency"]) * imbalance_scale * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * imbalance_scale * self._scale_factor,
+            source="silicon",
+        )
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query generation attention latency with energy data."""
         if self._provider is not None:
-            raise NotImplementedError(
-                f"GenerationAttention provider-specific dataset is required for provider={self._provider!r}."
-            )
+            return self._query_step4_provider(database, **kwargs)
         beam_width = kwargs.get("beam_width")
         if beam_width != 1:
             raise ValueError(f"{self.__class__.__name__} only supports beam_width=1, got {beam_width}")
@@ -1445,3 +1645,163 @@ def load_encoder_attention_data(encoder_attention_file):
             }
 
     return encoder_attention_data
+
+
+def _parse_step4_attention_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    token = str(value).strip().lower()
+    if token == "true":
+        return True
+    if token == "false":
+        return False
+    raise ValueError(f"{field_name} must be true or false, got {value!r}")
+
+
+def _step4_attention_row_structure(row: dict, *, phase: str) -> tuple:
+    provider = str(row["provider"])
+    kernel_source = str(row["kernel_source"])
+    op_name = str(row["op_name"])
+    expected_op_name = f"step4_{phase}_attention"
+    if op_name != expected_op_name:
+        raise ValueError(f"unexpected op_name in Step4 {phase}-attention data: {op_name!r}")
+    if kernel_source != provider:
+        raise ValueError(
+            f"Step4 {phase}-attention provider does not match kernel_source: "
+            f"provider={provider!r}, kernel_source={kernel_source!r}"
+        )
+    if str(row["attn_dtype"]) != "bfloat16":
+        raise ValueError("Step4 attention rows require attn_dtype='bfloat16'")
+    if str(row["kv_cache_dtype"]) != "bfloat16":
+        raise ValueError("Step4 attention rows require kv_cache_dtype='bfloat16'")
+
+    num_heads = int(row["num_heads"])
+    num_kv_heads = int(row["num_key_value_heads"])
+    head_dim = int(row["head_dim"])
+    window_size = int(row["window_size"])
+    kv_storage_alias = _parse_step4_attention_bool(
+        row["kv_storage_alias"],
+        field_name="kv_storage_alias",
+    )
+    page_size = int(row["page_size"])
+    physical_page_bytes = int(row["physical_page_bytes"])
+    kv_block_stride_bytes = int(row["kv_block_stride_bytes"])
+    kv_cache_layout = str(row["kv_cache_layout"])
+    expected = {
+        "optimus_fa4": (64, 1, 512, 0, True, 128, 524288, 524288, "NHD"),
+        "vllm_native_sliding_gqa": (128, 8, 128, 512, False, 128, 524288, 262144, "NHD"),
+    }
+    actual = (
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        window_size,
+        kv_storage_alias,
+        page_size,
+        physical_page_bytes,
+        kv_block_stride_bytes,
+        kv_cache_layout,
+    )
+    if provider not in expected or actual != expected[provider]:
+        raise ValueError(
+            f"unexpected Step4 {phase}-attention provider structure: provider={provider!r}, actual={actual!r}"
+        )
+
+    kv_cache_dtype = common.KVCacheQuantMode.bfloat16
+    if phase == "context":
+        return (
+            provider,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            window_size,
+            kv_cache_dtype,
+            common.FMHAQuantMode.bfloat16,
+            kv_storage_alias,
+            page_size,
+            physical_page_bytes,
+            kv_block_stride_bytes,
+            kv_cache_layout,
+        )
+    return (
+        provider,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        window_size,
+        kv_cache_dtype,
+        kv_storage_alias,
+        page_size,
+        physical_page_bytes,
+        kv_block_stride_bytes,
+        kv_cache_layout,
+    )
+
+
+def _step4_attention_row_value(row: dict) -> dict[str, float]:
+    latency = float(row["latency"])
+    power = float(row.get("power", 0.0) or 0.0)
+    if latency < 0.0 or power < 0.0:
+        raise ValueError("Step4 attention latency and power must be non-negative")
+    return {
+        "latency": latency,
+        "power": power,
+        "energy": power * latency,
+    }
+
+
+def load_step4_context_attention_data(perf_file):
+    """Load pinned Step4 context rows by structure, batch, query, and context."""
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    data: dict[tuple, dict[int, dict[int, dict[int, dict[str, float]]]]] = {}
+    for row in rows:
+        structural_key = _step4_attention_row_structure(row, phase="context")
+        batch_size = int(row["batch_size"])
+        query_tokens = int(row["query_tokens"])
+        total_context_tokens = int(row["total_context_tokens"])
+        if min(batch_size, query_tokens, total_context_tokens) < 1:
+            raise ValueError("Step4 context-attention workload values must be positive")
+        if query_tokens > total_context_tokens:
+            raise ValueError("Step4 context query_tokens cannot exceed total_context_tokens")
+
+        value = _step4_attention_row_value(row)
+        total_data = data.setdefault(structural_key, {}).setdefault(batch_size, {}).setdefault(query_tokens, {})
+        existing = total_data.get(total_context_tokens)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting Step4 context-attention row for physical key "
+                f"{(*structural_key, batch_size, query_tokens, total_context_tokens)!r}: "
+                f"{existing!r} != {value!r}"
+            )
+        total_data[total_context_tokens] = value
+    return data
+
+
+def load_step4_generation_attention_data(perf_file):
+    """Load pinned Step4 generation rows by structure, batch, and context."""
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    data: dict[tuple, dict[int, dict[int, dict[str, float]]]] = {}
+    for row in rows:
+        structural_key = _step4_attention_row_structure(row, phase="generation")
+        batch_size = int(row["batch_size"])
+        context_tokens = int(row["context_tokens"])
+        if min(batch_size, context_tokens) < 1:
+            raise ValueError("Step4 generation-attention workload values must be positive")
+
+        value = _step4_attention_row_value(row)
+        context_data = data.setdefault(structural_key, {}).setdefault(batch_size, {})
+        existing = context_data.get(context_tokens)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting Step4 generation-attention row for physical key "
+                f"{(*structural_key, batch_size, context_tokens)!r}: "
+                f"{existing!r} != {value!r}"
+            )
+        context_data[context_tokens] = value
+    return data

@@ -22,6 +22,7 @@
   "latent_moe_dim": 3584,
   "kv_cache_requested_dtype": "auto",
   "kv_cache_resolved_dtype": "bfloat16",
+  "kv_cache_layout": "NHD",
   "router_dtype": "float32",
   "layers": [
     {
@@ -426,6 +427,8 @@
     "o_lora_rank": 1024,
     "window_size": 0,
     "page_size": 128,
+    "physical_page_bytes": 524288,
+    "kv_block_stride_bytes": 524288,
     "kv_elements_per_token": 512
   },
   "nonfull_attention": {
@@ -434,6 +437,8 @@
     "head_dim": 128,
     "window_size": 512,
     "page_size": 128,
+    "physical_page_bytes": 524288,
+    "kv_block_stride_bytes": 262144,
     "kv_elements_per_token": 2048
   }
 }

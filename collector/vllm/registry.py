@@ -41,6 +41,20 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.STEP4_QKV_NORM_ROPE,
     ),
     OpEntry(
+        op="step4_context_attention",
+        module="collector.vllm.collect_step4_provider",
+        get_func="get_step4_context_attention_test_cases",
+        run_func="run_step4_context_attention",
+        perf_filename=PerfFile.STEP4_CONTEXT_ATTENTION,
+    ),
+    OpEntry(
+        op="step4_generation_attention",
+        module="collector.vllm.collect_step4_provider",
+        get_func="get_step4_generation_attention_test_cases",
+        run_func="run_step4_generation_attention",
+        perf_filename=PerfFile.STEP4_GENERATION_ATTENTION,
+    ),
+    OpEntry(
         op="compute_scale",
         module="collector.vllm.collect_computescale",
         get_func="get_computescale_test_cases",

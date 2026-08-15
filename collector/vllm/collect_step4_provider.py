@@ -15,6 +15,11 @@ The QKV benchmark keeps the two pinned paths separate:
   ``OptimusRMSNorm`` followed by the same tail-RoPE method for K.
 - Sliding GQA: ``fused_qknorm_rope_forward_impl`` for Q/K followed by
   ``Step4ProSlidingAttention._prepare_value_for_attention`` for V.
+
+Both attention benchmarks invoke the pinned
+``FlashAttentionImpl.do_kv_cache_update`` and ``FlashAttentionImpl.forward``
+methods. The pinned FA utility dispatcher routes hd512 to Optimus FA4 and hd128
+to the image's vLLM FlashAttention implementation.
 """
 
 from __future__ import annotations
@@ -26,6 +31,9 @@ GROUPED_WO_A_PROVIDER = "vllm_step4pro_torch_einsum"
 FP32_ROUTER_PROVIDER = "vllm.optimus_matmul_fp32"
 FULL_K_NORM_ROPE_PROVIDER = "vllm_step4pro_k_norm_rope"
 SWA_QKV_NORM_ROPE_PROVIDER = "vllm_step4pro_qkv_norm_rope"
+FULL_ATTENTION_PROVIDER = "optimus_fa4"
+SWA_ATTENTION_PROVIDER = "vllm_native_sliding_gqa"
+STEP4_ATTENTION_MAX_KV_CACHE_BYTES = 128 * 1024**3
 
 
 def _walk_operations(operations):
@@ -125,6 +133,146 @@ def _qkv_norm_rope_structural_keys() -> list[tuple[str, str, int, int, int]]:
     return sorted(keys)
 
 
+def _step4_attention_structural_keys(
+    phase: str,
+) -> list[tuple[str, int, int, int, int, str, str, bool, int, int, int, str]]:
+    from aiconfigurator.sdk.operations import ContextAttention, GenerationAttention
+
+    if phase == "context":
+        operation_type = ContextAttention
+    elif phase == "generation":
+        operation_type = GenerationAttention
+    else:
+        raise ValueError(f"Unsupported Step4 attention phase: {phase!r}")
+
+    keys = set()
+    for operation in _walk_operations(_latest_model_operations()):
+        if not isinstance(operation, operation_type) or operation._provider is None:
+            continue
+        kv_cache_dtype = (
+            operation._kvcache_quant_mode.name
+            if isinstance(operation, ContextAttention)
+            else operation._kv_cache_dtype.name
+        )
+        attn_dtype = operation._fmha_quant_mode.name if isinstance(operation, ContextAttention) else "bfloat16"
+        keys.add(
+            (
+                operation._provider,
+                operation._n,
+                operation._n_kv,
+                operation._head_size,
+                operation._window_size,
+                kv_cache_dtype,
+                attn_dtype,
+                operation._kv_storage_alias,
+                operation._page_size,
+                operation._physical_page_bytes,
+                operation._kv_block_stride_bytes,
+                operation._kv_cache_layout,
+            )
+        )
+
+    expected_keys = {
+        (
+            FULL_ATTENTION_PROVIDER,
+            64,
+            1,
+            512,
+            0,
+            "bfloat16",
+            "bfloat16",
+            True,
+            128,
+            524288,
+            524288,
+            "NHD",
+        ),
+        (
+            SWA_ATTENTION_PROVIDER,
+            128,
+            8,
+            128,
+            512,
+            "bfloat16",
+            "bfloat16",
+            False,
+            128,
+            524288,
+            262144,
+            "NHD",
+        ),
+    }
+    if keys != expected_keys:
+        raise RuntimeError(
+            f"Built {LATEST_MODEL!r} graph emitted unexpected {phase} attention "
+            f"structures: expected={sorted(expected_keys)}, actual={sorted(keys)}"
+        )
+    return sorted(keys)
+
+
+def _step4_attention_materialized_block_range(
+    *,
+    query_tokens: int,
+    total_context_tokens: int,
+    window_size: int,
+    page_size: int,
+) -> tuple[int, int]:
+    """Return the live logical block range used by one pinned invocation."""
+    if min(query_tokens, total_context_tokens, page_size) < 1:
+        raise ValueError("Step4 attention cache dimensions must be positive")
+    if query_tokens > total_context_tokens:
+        raise ValueError("Step4 query tokens cannot exceed total context")
+    if window_size < 0:
+        raise ValueError("Step4 attention window size cannot be negative")
+
+    end_block = (total_context_tokens + page_size - 1) // page_size
+    if window_size == 0:
+        return 0, end_block
+
+    computed_prefix = total_context_tokens - query_tokens
+    skipped_tokens = max(0, computed_prefix - window_size + 1)
+    first_materialized_block = min(end_block, skipped_tokens // page_size)
+    return first_materialized_block, end_block
+
+
+def _step4_attention_physical_cache_bytes(
+    *,
+    batch_size: int,
+    query_tokens: int,
+    total_context_tokens: int,
+    window_size: int,
+    page_size: int,
+    physical_page_bytes: int,
+) -> int:
+    """Return physical cache bytes for the live block range and batch."""
+    if min(batch_size, physical_page_bytes) < 1:
+        raise ValueError("Step4 attention physical cache dimensions must be positive")
+    first_block, end_block = _step4_attention_materialized_block_range(
+        query_tokens=query_tokens,
+        total_context_tokens=total_context_tokens,
+        window_size=window_size,
+        page_size=page_size,
+    )
+    return batch_size * (end_block - first_block) * physical_page_bytes
+
+
+def _step4_attention_expected_cache_strides_bytes(
+    *,
+    num_blocks: int,
+    kv_storage_alias: bool,
+    physical_page_bytes: int,
+) -> tuple[int, int]:
+    """Return pinned block and K/V-plane strides in bytes."""
+    if min(num_blocks, physical_page_bytes) < 1:
+        raise ValueError("Step4 attention stride dimensions must be positive")
+    if kv_storage_alias:
+        return physical_page_bytes, 0
+    if physical_page_bytes % 2:
+        raise ValueError("Non-aliased Step4 physical pages must split evenly into K/V planes")
+    block_stride_bytes = physical_page_bytes // 2
+    return block_stride_bytes, num_blocks * block_stride_bytes
+
+
 def _qkv_norm_rope_expected_output_shapes(
     provider: str,
     *,
@@ -190,6 +338,572 @@ def get_step4_qkv_norm_rope_test_cases() -> list[list[object]]:
         for provider, normalized_tensors, q_heads, kv_heads, head_dim in (_qkv_norm_rope_structural_keys())
         for num_tokens in token_counts
     ]
+
+
+def get_step4_context_attention_test_cases() -> list[list[object]]:
+    """Return exact requirements prefill/chunk workloads for both providers."""
+    from collector.case_generator import get_step4_attention_workload_config
+
+    config = get_step4_attention_workload_config(LATEST_MODEL)
+    workloads = config["context_workloads"]
+    return [
+        [
+            provider,
+            batch_size,
+            query_tokens,
+            total_context_tokens,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            window_size,
+            kv_cache_dtype,
+            attn_dtype,
+            kv_storage_alias,
+            page_size,
+            physical_page_bytes,
+            kv_block_stride_bytes,
+            kv_cache_layout,
+        ]
+        for (
+            provider,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            window_size,
+            kv_cache_dtype,
+            attn_dtype,
+            kv_storage_alias,
+            page_size,
+            physical_page_bytes,
+            kv_block_stride_bytes,
+            kv_cache_layout,
+        ) in _step4_attention_structural_keys("context")
+        for batch_size, query_tokens, total_context_tokens in workloads
+    ]
+
+
+def get_step4_generation_attention_test_cases() -> list[list[object]]:
+    """Return decode workload grids bounded by one B300 cache allocation."""
+    from collector.case_generator import get_step4_attention_workload_config
+
+    config = get_step4_attention_workload_config(LATEST_MODEL)
+    max_kv_cache_bytes = int(config["max_kv_cache_bytes"])
+    if max_kv_cache_bytes != STEP4_ATTENTION_MAX_KV_CACHE_BYTES:
+        raise RuntimeError(
+            "Step4 attention cache cap drifted from the pinned Collector contract: "
+            f"yaml={max_kv_cache_bytes}, expected={STEP4_ATTENTION_MAX_KV_CACHE_BYTES}"
+        )
+
+    test_cases = []
+    for (
+        provider,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        window_size,
+        kv_cache_dtype,
+        attn_dtype,
+        kv_storage_alias,
+        page_size,
+        physical_page_bytes,
+        kv_block_stride_bytes,
+        kv_cache_layout,
+    ) in _step4_attention_structural_keys("generation"):
+        for total_context_tokens in config["generation_context_tokens"]:
+            for batch_size in config["generation_batch_sizes"]:
+                cache_bytes = _step4_attention_physical_cache_bytes(
+                    batch_size=batch_size,
+                    query_tokens=1,
+                    total_context_tokens=total_context_tokens,
+                    window_size=window_size,
+                    page_size=page_size,
+                    physical_page_bytes=physical_page_bytes,
+                )
+                if cache_bytes > max_kv_cache_bytes:
+                    continue
+                test_cases.append(
+                    [
+                        provider,
+                        batch_size,
+                        total_context_tokens,
+                        num_heads,
+                        num_kv_heads,
+                        head_dim,
+                        window_size,
+                        kv_cache_dtype,
+                        attn_dtype,
+                        kv_storage_alias,
+                        page_size,
+                        physical_page_bytes,
+                        kv_block_stride_bytes,
+                        kv_cache_layout,
+                    ]
+                )
+    return test_cases
+
+
+def _step4_attention_expected_output_shape(
+    *,
+    batch_size: int,
+    query_tokens: int,
+    num_heads: int,
+    head_dim: int,
+) -> tuple[int, int, int]:
+    if min(batch_size, query_tokens, num_heads, head_dim) < 1:
+        raise ValueError("Step4 attention output dimensions must be positive")
+    return (batch_size * query_tokens, num_heads, head_dim)
+
+
+def _run_step4_attention(
+    *,
+    phase: str,
+    provider: str,
+    batch_size: int,
+    query_tokens: int,
+    total_context_tokens: int,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    window_size: int,
+    kv_cache_dtype: str,
+    attn_dtype: str,
+    kv_storage_alias: bool,
+    page_size: int,
+    physical_page_bytes: int,
+    kv_block_stride_bytes: int,
+    kv_cache_layout: str,
+    perf_filename: str,
+    device: str,
+) -> None:
+    """Run the pinned vLLM cache-update plus FlashAttention provider path."""
+    import os
+    from contextlib import ExitStack
+
+    import torch
+    from vllm.config import set_current_vllm_config
+    from vllm.v1.attention.backends.flash_attn import FlashAttentionBackend
+    from vllm.v1.attention.backends.utils import get_kv_cache_layout
+    from vllm.v1.kv_cache_interface import FullAttentionSpec, SlidingWindowSpec
+    from vllm.v1.worker.gpu.attn_utils import _reshape_attention_kv_cache
+    from vllm.version import __version__ as vllm_version
+
+    from collector.helper import benchmark_with_power, log_perf
+    from collector.vllm.utils import (
+        BatchSpec,
+        MockAttentionLayer,
+        create_common_attn_metadata,
+        create_vllm_config,
+    )
+
+    if phase not in {"context", "generation"}:
+        raise ValueError(f"Unsupported Step4 attention phase: {phase!r}")
+    if (
+        min(
+            batch_size,
+            query_tokens,
+            total_context_tokens,
+            num_heads,
+            num_kv_heads,
+            head_dim,
+            page_size,
+        )
+        < 1
+    ):
+        raise ValueError("Step4 attention dimensions must be positive")
+    if query_tokens > total_context_tokens:
+        raise ValueError("Step4 query_tokens cannot exceed total_context_tokens")
+
+    structural_key = (
+        provider,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        window_size,
+        kv_cache_dtype,
+        attn_dtype,
+        kv_storage_alias,
+        page_size,
+        physical_page_bytes,
+        kv_block_stride_bytes,
+        kv_cache_layout,
+    )
+    if structural_key not in _step4_attention_structural_keys(phase):
+        raise ValueError(f"Unexpected Step4 {phase}-attention structure: {structural_key!r}")
+    if kv_cache_dtype != "bfloat16" or attn_dtype != "bfloat16":
+        raise ValueError("Pinned Step4 attention requires BF16 query and KV cache")
+    if page_size != 128:
+        raise ValueError("Pinned Step4 attention requires page_size=128")
+    if physical_page_bytes != 524288:
+        raise ValueError("Pinned Step4 hybrid allocator requires physical_page_bytes=524288")
+    if kv_cache_layout != "NHD":
+        raise ValueError("Pinned Step4 attention requires kv_cache_layout='NHD'")
+
+    torch.cuda.set_device(device)
+    torch_device = torch.device(device)
+    capability = torch.cuda.get_device_capability(torch_device)
+    if capability != (10, 3):
+        raise RuntimeError(f"Pinned Step4 attention collection requires B300 SM103, got {capability}")
+    torch.manual_seed(42)
+
+    batch_spec = BatchSpec(
+        seq_lens=[total_context_tokens] * batch_size,
+        query_lens=[query_tokens] * batch_size,
+        name=f"step4_{phase}_{provider}",
+    )
+    first_materialized_block, end_block = _step4_attention_materialized_block_range(
+        query_tokens=query_tokens,
+        total_context_tokens=total_context_tokens,
+        window_size=window_size,
+        page_size=page_size,
+    )
+    blocks_per_sequence = end_block - first_materialized_block
+    num_blocks = batch_size * blocks_per_sequence
+    model = os.path.join(os.path.dirname(__file__), "fake_hf_model")
+    vllm_config = create_vllm_config(
+        model_name=model,
+        max_model_len=total_context_tokens,
+        block_size=page_size,
+        num_gpu_blocks=num_blocks,
+        max_num_seqs=batch_size,
+        max_num_batched_tokens=batch_size * query_tokens,
+        use_fp8_kv_cache=False,
+        sliding_window=window_size if window_size > 0 else None,
+        head_dim=head_dim,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+    )
+
+    with ExitStack() as exit_stack:
+        exit_stack.enter_context(set_current_vllm_config(vllm_config))
+        common_attn_metadata = create_common_attn_metadata(
+            batch_spec,
+            page_size,
+            torch_device,
+            arange_block_indices=False,
+        )
+        common_attn_metadata.block_table_tensor.zero_()
+        for sequence_index in range(batch_size):
+            physical_block_start = sequence_index * blocks_per_sequence
+            common_attn_metadata.block_table_tensor[
+                sequence_index,
+                first_materialized_block:end_block,
+            ] = torch.arange(
+                physical_block_start,
+                physical_block_start + blocks_per_sequence,
+                dtype=torch.int32,
+                device=torch_device,
+            )
+            token_offsets = (
+                torch.arange(
+                    query_tokens,
+                    dtype=torch.int64,
+                    device=torch_device,
+                )
+                + total_context_tokens
+                - query_tokens
+            )
+            block_indices = token_offsets // page_size
+            intra_block_offsets = token_offsets % page_size
+            start = int(common_attn_metadata.query_start_loc_cpu[sequence_index])
+            end = int(common_attn_metadata.query_start_loc_cpu[sequence_index + 1])
+            common_attn_metadata.slot_mapping[start:end] = (
+                common_attn_metadata.block_table_tensor[sequence_index, block_indices] * page_size + intra_block_offsets
+            )
+
+        spec_kwargs = {
+            "block_size": page_size,
+            "num_kv_heads": num_kv_heads,
+            "head_size": head_dim,
+            "dtype": torch.bfloat16,
+            "indexes_kv_by_block_stride": True,
+        }
+        if window_size == 0:
+            kv_cache_spec = FullAttentionSpec(
+                **spec_kwargs,
+                page_size_padded=physical_page_bytes,
+            )
+        else:
+            kv_cache_spec = SlidingWindowSpec(
+                **spec_kwargs,
+                sliding_window=window_size,
+            )
+        if kv_cache_spec.page_size_bytes != physical_page_bytes:
+            raise RuntimeError(
+                "Pinned Step4 KV specification produced an unexpected physical page: "
+                f"expected={physical_page_bytes}, actual={kv_cache_spec.page_size_bytes}"
+            )
+        actual_kv_cache_layout = get_kv_cache_layout()
+        if actual_kv_cache_layout != kv_cache_layout:
+            raise RuntimeError(
+                "Pinned Step4 KV cache layout mismatch: "
+                f"expected={kv_cache_layout!r}, actual={actual_kv_cache_layout!r}"
+            )
+        builder_cls = FlashAttentionBackend.get_builder_cls()
+        impl_cls = FlashAttentionBackend.get_impl_cls()
+        builder = builder_cls(
+            kv_cache_spec,
+            ["step4_provider_attention"],
+            vllm_config,
+            torch_device,
+        )
+        if window_size > 0 and hasattr(builder, "aot_sliding_window"):
+            builder.aot_sliding_window = (window_size - 1, 0)
+        attn_metadata = builder.build(
+            common_prefix_len=0,
+            common_attn_metadata=common_attn_metadata,
+        )
+        sliding_window = vllm_config.model_config.get_sliding_window()
+        impl = impl_cls(
+            num_heads=num_heads,
+            head_size=head_dim,
+            scale=1.0 / (head_dim**0.5),
+            num_kv_heads=num_kv_heads,
+            alibi_slopes=None,
+            sliding_window=sliding_window,
+            kv_cache_dtype="auto",
+        )
+        if impl.__class__.__module__ != "vllm.v1.attention.backends.flash_attn":
+            raise RuntimeError(
+                "Pinned Step4 attention did not instantiate FlashAttentionImpl: "
+                f"{impl.__class__.__module__}.{impl.__class__.__name__}"
+            )
+        if impl.vllm_flash_attn_version != 4:
+            raise RuntimeError(
+                "Pinned B300 Step4 attention requires vLLM FlashAttention "
+                f"version 4, got {impl.vllm_flash_attn_version}"
+            )
+
+        raw_cache_storage = torch.zeros(
+            num_blocks * physical_page_bytes,
+            dtype=torch.int8,
+            device=torch_device,
+        )
+        kv_cache_shape = FlashAttentionBackend.get_kv_cache_shape(
+            num_blocks,
+            page_size,
+            num_kv_heads,
+            head_dim,
+        )
+        kv_cache = _reshape_attention_kv_cache(
+            raw_cache_storage,
+            kv_cache_spec,
+            kv_cache_shape,
+            FlashAttentionBackend.get_kv_cache_stride_order(False),
+            block_dim=1,
+        )
+        expected_block_stride_bytes, expected_plane_stride_bytes = _step4_attention_expected_cache_strides_bytes(
+            num_blocks=num_blocks,
+            kv_storage_alias=kv_storage_alias,
+            physical_page_bytes=physical_page_bytes,
+        )
+        actual_block_stride_bytes = kv_cache.stride(1) * kv_cache.element_size()
+        actual_plane_stride_bytes = kv_cache.stride(0) * kv_cache.element_size()
+        if kv_block_stride_bytes != expected_block_stride_bytes:
+            raise RuntimeError(
+                "Step4 case block stride disagrees with the pinned layout: "
+                f"case={kv_block_stride_bytes}, expected={expected_block_stride_bytes}"
+            )
+        if (
+            actual_block_stride_bytes != expected_block_stride_bytes
+            or actual_plane_stride_bytes != expected_plane_stride_bytes
+        ):
+            raise RuntimeError(
+                "Pinned vLLM Step4 cache view has unexpected strides: "
+                f"expected={(expected_block_stride_bytes, expected_plane_stride_bytes)}, "
+                f"actual={(actual_block_stride_bytes, actual_plane_stride_bytes)}"
+            )
+        actual_alias = kv_cache[0].data_ptr() == kv_cache[1].data_ptr()
+        if actual_alias != kv_storage_alias:
+            raise RuntimeError(
+                f"Pinned vLLM Step4 K/V alias mismatch: expected={kv_storage_alias}, actual={actual_alias}"
+            )
+
+        num_query_tokens = batch_size * query_tokens
+        query = torch.randn(
+            (num_query_tokens, num_heads, head_dim),
+            dtype=torch.bfloat16,
+            device=torch_device,
+        )
+        key = torch.randn(
+            (num_query_tokens, num_kv_heads, head_dim),
+            dtype=torch.bfloat16,
+            device=torch_device,
+        )
+        value = (
+            key
+            if kv_storage_alias
+            else torch.randn(
+                (num_query_tokens, num_kv_heads, head_dim),
+                dtype=torch.bfloat16,
+                device=torch_device,
+            )
+        )
+        output = torch.empty_like(query)
+        mock_layer = MockAttentionLayer(torch_device)
+
+        def kernel_func():
+            impl.do_kv_cache_update(
+                mock_layer,
+                key,
+                value,
+                kv_cache,
+                attn_metadata.slot_mapping,
+            )
+            return impl.forward(
+                mock_layer,
+                query,
+                key,
+                value,
+                kv_cache,
+                attn_metadata,
+                output=output,
+            )
+
+        probe = kernel_func()
+        expected_shape = _step4_attention_expected_output_shape(
+            batch_size=batch_size,
+            query_tokens=query_tokens,
+            num_heads=num_heads,
+            head_dim=head_dim,
+        )
+        if tuple(probe.shape) != expected_shape:
+            raise RuntimeError(
+                "Pinned vLLM Step4 attention returned an unexpected shape: "
+                f"expected={expected_shape}, actual={tuple(probe.shape)}"
+            )
+        if probe.dtype != torch.bfloat16:
+            raise RuntimeError(
+                "Pinned vLLM Step4 attention returned an unexpected dtype: "
+                f"expected={torch.bfloat16}, actual={probe.dtype}"
+            )
+        del probe
+
+        with benchmark_with_power(
+            device=torch_device,
+            kernel_func=kernel_func,
+            num_warmups=3,
+            num_runs=6,
+            repeat_n=1,
+        ) as results:
+            pass
+
+    row = {
+        "provider": provider,
+        "batch_size": batch_size,
+        "num_heads": num_heads,
+        "num_key_value_heads": num_kv_heads,
+        "head_dim": head_dim,
+        "window_size": window_size,
+        "attn_dtype": attn_dtype,
+        "kv_cache_dtype": kv_cache_dtype,
+        "kv_storage_alias": kv_storage_alias,
+        "page_size": page_size,
+        "physical_page_bytes": physical_page_bytes,
+        "kv_block_stride_bytes": kv_block_stride_bytes,
+        "kv_cache_layout": kv_cache_layout,
+        "physical_blocks_per_sequence": blocks_per_sequence,
+        "allocated_kv_cache_bytes": num_blocks * physical_page_bytes,
+        "latency": results["latency_ms"],
+    }
+    if phase == "context":
+        row["query_tokens"] = query_tokens
+        row["total_context_tokens"] = total_context_tokens
+    else:
+        row["context_tokens"] = total_context_tokens
+
+    log_perf(
+        item_list=[row],
+        framework="VLLM",
+        version=vllm_version,
+        device_name=torch.cuda.get_device_name(torch_device),
+        op_name=f"step4_{phase}_attention",
+        kernel_source=provider,
+        perf_filename=perf_filename,
+        power_stats=results["power_stats"],
+    )
+
+
+def run_step4_context_attention(
+    provider: str,
+    batch_size: int,
+    query_tokens: int,
+    total_context_tokens: int,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    window_size: int,
+    kv_cache_dtype: str,
+    attn_dtype: str,
+    kv_storage_alias: bool,
+    page_size: int,
+    physical_page_bytes: int,
+    kv_block_stride_bytes: int,
+    kv_cache_layout: str,
+    *,
+    perf_filename: str,
+    device="cuda:0",
+) -> None:
+    _run_step4_attention(
+        phase="context",
+        provider=provider,
+        batch_size=batch_size,
+        query_tokens=query_tokens,
+        total_context_tokens=total_context_tokens,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        window_size=window_size,
+        kv_cache_dtype=kv_cache_dtype,
+        attn_dtype=attn_dtype,
+        kv_storage_alias=kv_storage_alias,
+        page_size=page_size,
+        physical_page_bytes=physical_page_bytes,
+        kv_block_stride_bytes=kv_block_stride_bytes,
+        kv_cache_layout=kv_cache_layout,
+        perf_filename=perf_filename,
+        device=device,
+    )
+
+
+def run_step4_generation_attention(
+    provider: str,
+    batch_size: int,
+    context_tokens: int,
+    num_heads: int,
+    num_kv_heads: int,
+    head_dim: int,
+    window_size: int,
+    kv_cache_dtype: str,
+    attn_dtype: str,
+    kv_storage_alias: bool,
+    page_size: int,
+    physical_page_bytes: int,
+    kv_block_stride_bytes: int,
+    kv_cache_layout: str,
+    *,
+    perf_filename: str,
+    device="cuda:0",
+) -> None:
+    _run_step4_attention(
+        phase="generation",
+        provider=provider,
+        batch_size=batch_size,
+        query_tokens=1,
+        total_context_tokens=context_tokens,
+        num_heads=num_heads,
+        num_kv_heads=num_kv_heads,
+        head_dim=head_dim,
+        window_size=window_size,
+        kv_cache_dtype=kv_cache_dtype,
+        attn_dtype=attn_dtype,
+        kv_storage_alias=kv_storage_alias,
+        page_size=page_size,
+        physical_page_bytes=physical_page_bytes,
+        kv_block_stride_bytes=kv_block_stride_bytes,
+        kv_cache_layout=kv_cache_layout,
+        perf_filename=perf_filename,
+        device=device,
+    )
 
 
 def run_step4_grouped_gemm(

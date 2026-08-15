@@ -2,6 +2,7 @@
 # SPDX-License-Identifier: Apache-2.0
 
 from types import SimpleNamespace
+from typing import ClassVar
 from unittest.mock import MagicMock
 
 import pytest
@@ -136,6 +137,87 @@ def test_run_static_latency_only_matches_run_static_latency(
 
     assert latency_only == pytest.approx(summary_latency)
     assert latency_only == pytest.approx(request_latency, abs=1e-3)
+
+
+def test_run_static_capacity_context_uses_peak_physical_kv(
+    backend: BaseBackend,
+    model,
+    database,
+    runtime_config: RuntimeConfig,
+) -> None:
+    model.get_kvcache_peak_allocated_bytes_per_sequence.return_value = 12_345.0
+    model.get_kvcache_bytes_per_sequence.side_effect = AssertionError(
+        "Logical KV bytes must not drive memory-capacity reporting."
+    )
+    model._cp_kv_memory_divisor.return_value = 1
+
+    summary = backend.run_static(
+        model,
+        database,
+        runtime_config,
+        mode="static",
+        stride=2,
+    )
+
+    assert summary.get_kv_per_seq() == (12_345.0, runtime_config.isl + runtime_config.osl)
+
+
+def test_memory_usage_uses_peak_physical_kv_allocation() -> None:
+    class _WeightlessOp:
+        @staticmethod
+        def get_weights() -> float:
+            return 0.0
+
+    class _PhysicalKVModel:
+        context_ops: ClassVar[list[_WeightlessOp]] = [_WeightlessOp()]
+        config = SimpleNamespace(
+            pp_size=1,
+            tp_size=1,
+            attention_dp_size=1,
+            nextn=0,
+        )
+        _num_heads = 1
+        _head_size = 1
+        _num_experts = 0
+        _topk = 0
+        model_family = "test"
+
+        @staticmethod
+        def get_kvcache_bytes_per_sequence(seq_len: int) -> float:
+            raise AssertionError("Logical KV bytes must not drive OOM checks.")
+
+        @staticmethod
+        def get_kvcache_allocated_bytes_per_sequence(seq_len: int) -> float:
+            raise AssertionError("Point-in-time residency must not drive OOM checks.")
+
+        @staticmethod
+        def get_kvcache_peak_allocated_bytes_per_sequence(seq_len: int) -> float:
+            assert seq_len == 10
+            return 1_024.0
+
+        @staticmethod
+        def _cp_kv_memory_divisor() -> int:
+            return 1
+
+    database = SimpleNamespace(
+        system_spec={
+            "misc": {
+                "nccl_mem": {1: 0.0},
+                "other_mem": 0.0,
+            }
+        }
+    )
+
+    memory = BaseBackend()._get_memory_usage(
+        _PhysicalKVModel(),
+        database,
+        batch_size=2,
+        beam_width=1,
+        isl=8,
+        osl=2,
+    )
+
+    assert memory["kvcache"] == pytest.approx(2_048.0 / (1 << 30))
 
 
 def test_run_static_can_route_to_rust_engine_step_backend(

@@ -895,6 +895,8 @@ def _parse_step4_pro_latest_config(
         "head_dim",
         "window_size",
         "page_size",
+        "physical_page_bytes",
+        "kv_block_stride_bytes",
         "kv_elements_per_token",
     }
     for name, section in (("full_attention", full), ("nonfull_attention", swa)):
@@ -916,11 +918,15 @@ def _parse_step4_pro_latest_config(
         full_o_lora_rank=full["o_lora_rank"],
         full_window_size=full["window_size"],
         full_page_size=full["page_size"],
+        full_physical_page_bytes=full["physical_page_bytes"],
+        full_kv_block_stride_bytes=full["kv_block_stride_bytes"],
         swa_num_query_heads=swa["num_query_heads"],
         swa_num_kv_heads=swa["num_kv_heads"],
         swa_head_dim=swa["head_dim"],
         swa_window_size=swa["window_size"],
         swa_page_size=swa["page_size"],
+        swa_physical_page_bytes=swa["physical_page_bytes"],
+        swa_kv_block_stride_bytes=swa["kv_block_stride_bytes"],
         dense_inter_size=config["intermediate_size"],
         shared_expert_inter_size=config["shared_expert_intermediate_size"],
         latent_moe_dim=config["latent_moe_dim"],
@@ -928,6 +934,7 @@ def _parse_step4_pro_latest_config(
         swa_kv_elements_per_token=swa["kv_elements_per_token"],
         kv_cache_requested_dtype=config.get("kv_cache_requested_dtype", "auto"),
         kv_cache_resolved_dtype=config.get("kv_cache_resolved_dtype", "bfloat16"),
+        kv_cache_layout=config.get("kv_cache_layout", "NHD"),
         router_dtype=config.get("router_dtype", "float32"),
         mtp_layers=config.get("num_nextn_predict_layers", 0),
     )

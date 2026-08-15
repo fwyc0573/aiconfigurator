@@ -147,8 +147,12 @@ def test_reconstructed_manifest_is_the_pinned_mtp_off_contract(manifest):
         "requested_dtype": "auto",
         "resolved_dtype": "bfloat16",
         "page_size": 128,
+        "layout": "NHD",
+        "physical_page_bytes": 524288,
         "full_mfa_elements_per_token_per_layer": 512,
+        "full_mfa_block_stride_bytes": 524288,
         "swa_gqa_elements_per_token_per_layer": 2048,
+        "swa_gqa_block_stride_bytes": 262144,
         "full_mfa_kv_storage_alias": True,
     }
     assert manifest["precision"]["router"] == "float32"
@@ -201,12 +205,16 @@ def test_latest_layer_map_has_78_layers_with_dense_then_latent_moe(manifest):
     assert manifest["ffn"]["latent_moe"]["latent_hidden_size"] == extra.latent_moe_dim
 
 
-def test_latest_kv_capacity_uses_hybrid_curve():
-    """Latest capacity inversion must account for the SWA window saturation."""
+def test_latest_kv_capacity_uses_peak_physical_allocation():
+    """Capacity must invert the monotonic peak, not non-monotonic residency."""
     model = _build_latest_model()
-    budget = model.get_kvcache_bytes_per_sequence(513)
+    budget = model.get_kvcache_allocated_bytes_per_sequence(513)
 
-    assert model.get_kvcache_max_tokens(budget) == 513
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(513) == budget
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(640) == budget
+    assert model.get_kvcache_max_tokens(budget) == 640
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(640) <= budget
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(641) > budget
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])
@@ -389,7 +397,7 @@ def test_latest_deepep_dispatch_and_combine_keys_remain_distinct(ep_size):
 
 
 def test_latest_kv_cache_reports_logical_and_page_allocated_bytes(manifest):
-    """KV accounting must preserve Full-MFA aliasing, SWA retention, and 128-token page padding."""
+    """KV accounting must preserve aliasing, padded pages, and SWA block release."""
     model = _build_latest_model()
     kv = manifest["kv_cache"]
     bytes_per_element = 2
@@ -397,18 +405,24 @@ def test_latest_kv_cache_reports_logical_and_page_allocated_bytes(manifest):
     expected_logical_513 = (
         20 * 513 * kv["full_mfa_elements_per_token_per_layer"] + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
     ) * bytes_per_element
-    expected_allocated_513 = (
-        20 * 640 * kv["full_mfa_elements_per_token_per_layer"] + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
-    ) * bytes_per_element
+    expected_allocated_513 = (20 * 5 + 58 * 5) * kv["physical_page_bytes"]
+    expected_allocated_640 = (20 * 5 + 58 * 4) * kv["physical_page_bytes"]
 
     assert model.kv_cache_requested_dtype == "auto"
     assert model.kv_cache_resolved_dtype == "bfloat16"
     assert model.kv_cache_page_size == 128
+    assert model.extra_params.kv_cache_layout == "NHD"
+    assert model.extra_params.full_physical_page_bytes == 524288
+    assert model.extra_params.full_kv_block_stride_bytes == 524288
+    assert model.extra_params.swa_physical_page_bytes == 524288
+    assert model.extra_params.swa_kv_block_stride_bytes == 262144
     assert model.config.gemm_quant_mode == common.GEMMQuantMode.bfloat16
     assert model.config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
     assert model.config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
     assert model.get_kvcache_bytes_per_sequence(513) == expected_logical_513
     assert model.get_kvcache_allocated_bytes_per_sequence(513) == expected_allocated_513
+    assert model.get_kvcache_allocated_bytes_per_sequence(640) == expected_allocated_640
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(640) == expected_allocated_513
 
 
 def test_latest_has_no_mtp1_graph_or_generic_nextn_scaling():

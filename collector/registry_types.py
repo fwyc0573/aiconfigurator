@@ -27,6 +27,8 @@ class PerfFile(str, Enum):
     STEP4_GROUPED_GEMM = "step4_grouped_gemm_perf.txt"
     STEP4_FP32_OUTPUT_GEMM = "step4_fp32_output_gemm_perf.txt"
     STEP4_QKV_NORM_ROPE = "step4_qkv_norm_rope_perf.txt"
+    STEP4_CONTEXT_ATTENTION = "step4_context_attention_perf.txt"
+    STEP4_GENERATION_ATTENTION = "step4_generation_attention_perf.txt"
     CONTEXT_ATTENTION = "context_attention_perf.txt"
     GENERATION_ATTENTION = "generation_attention_perf.txt"
     ENCODER_ATTENTION = "encoder_attention_perf.txt"

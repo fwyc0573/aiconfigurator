@@ -1455,6 +1455,70 @@ def get_compute_scale_case_specs() -> list[ComputeScaleCommonTestCase]:
     return test_cases
 
 
+def get_step4_attention_workload_config(model_path: str) -> dict[str, object]:
+    """Return the exact requirements-derived Step4 attention workload policy."""
+    matching = [
+        value
+        for value in _model_case_values("step4_attention", apply_model_filter=False)
+        if _model_case_matches_path(value, model_path)
+    ]
+    if len(matching) != 1:
+        raise RuntimeError(f"Expected one Step4 attention workload config for {model_path!r}, got {len(matching)}")
+    value = matching[0]
+
+    raw_context_workloads = value.get("context_workloads")
+    if not isinstance(raw_context_workloads, list) or not raw_context_workloads:
+        raise TypeError("model_case_values.step4_attention.context_workloads must be a non-empty list")
+    context_workloads: list[tuple[int, int, int]] = []
+    for index, raw_workload in enumerate(raw_context_workloads):
+        if not isinstance(raw_workload, dict):
+            raise TypeError(f"model_case_values.step4_attention.context_workloads[{index}] must be a mapping")
+        workload = (
+            int(raw_workload["batch_size"]),
+            int(raw_workload["query_tokens"]),
+            int(raw_workload["total_context_tokens"]),
+        )
+        if min(workload) < 1:
+            raise ValueError(f"Step4 context workload values must be positive: {workload!r}")
+        if workload[1] > workload[2]:
+            raise ValueError(f"Step4 query tokens cannot exceed total context: {workload!r}")
+        context_workloads.append(workload)
+    if len(context_workloads) != len(set(context_workloads)):
+        raise ValueError("Step4 context workloads contain duplicate physical points")
+
+    generation_batch_sizes = tuple(
+        _as_int_list(
+            value.get("generation_batch_sizes"),
+            field_name="model_case_values.step4_attention.generation_batch_sizes",
+        )
+    )
+    generation_context_tokens = tuple(
+        _as_int_list(
+            value.get("generation_context_tokens"),
+            field_name="model_case_values.step4_attention.generation_context_tokens",
+        )
+    )
+    if not generation_batch_sizes or min(generation_batch_sizes) < 1:
+        raise ValueError("Step4 generation batch sizes must be non-empty and positive")
+    if not generation_context_tokens or min(generation_context_tokens) < 1:
+        raise ValueError("Step4 generation context tokens must be non-empty and positive")
+    if len(generation_batch_sizes) != len(set(generation_batch_sizes)):
+        raise ValueError("Step4 generation batch sizes contain duplicates")
+    if len(generation_context_tokens) != len(set(generation_context_tokens)):
+        raise ValueError("Step4 generation context tokens contain duplicates")
+
+    max_kv_cache_bytes = int(value.get("max_kv_cache_bytes", 0))
+    if max_kv_cache_bytes < 1:
+        raise ValueError("Step4 max_kv_cache_bytes must be positive")
+
+    return {
+        "context_workloads": tuple(context_workloads),
+        "generation_batch_sizes": generation_batch_sizes,
+        "generation_context_tokens": generation_context_tokens,
+        "max_kv_cache_bytes": max_kv_cache_bytes,
+    }
+
+
 @dataclasses.dataclass
 class MLACommonTestCase:
     num_heads: int

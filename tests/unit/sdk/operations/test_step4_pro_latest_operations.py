@@ -63,6 +63,9 @@ def test_attention_accepts_provider_kv_alias_and_page_size_metadata():
         provider="optimus_fa4",
         kv_storage_alias=True,
         page_size=128,
+        physical_page_bytes=524288,
+        kv_block_stride_bytes=524288,
+        kv_cache_layout="NHD",
     )
     generation = ops.GenerationAttention(
         "generation_attention",
@@ -73,13 +76,19 @@ def test_attention_accepts_provider_kv_alias_and_page_size_metadata():
         provider="optimus_fa4",
         kv_storage_alias=True,
         page_size=128,
+        physical_page_bytes=524288,
+        kv_block_stride_bytes=524288,
+        kv_cache_layout="NHD",
     )
 
     for operation in (context, generation):
         assert operation._provider == "optimus_fa4"
         assert operation._kv_storage_alias is True
         assert operation._page_size == 128
-        assert operation._persisted_key()[0] == "optimus_fa4"
+        assert operation._physical_page_bytes == 524288
+        assert operation._kv_block_stride_bytes == 524288
+        assert operation._kv_cache_layout == "NHD"
+        assert operation._persisted_key()[-3:] == (524288, 524288, "NHD")
 
 
 def test_qkv_norm_rope_exposes_normalized_tensors_and_provider():
@@ -132,23 +141,6 @@ def test_deepep_dispatch_and_combine_have_distinct_persisted_keys():
     assert dispatch._operation == "dispatch"
     assert combine._operation == "combine"
     assert dispatch._persisted_key() != combine._persisted_key()
-
-
-def test_provider_specific_attention_rejects_generic_perf_database():
-    """Optimus FA4 metadata must affect consumer selection."""
-    operation = ops.GenerationAttention(
-        "generation_attention",
-        1.0,
-        64,
-        1,
-        common.KVCacheQuantMode.bfloat16,
-        head_size=512,
-        provider="optimus_fa4",
-        kv_storage_alias=True,
-        page_size=128,
-    )
-    with pytest.raises(NotImplementedError, match="provider-specific"):
-        operation.query(object(), batch_size=1, s=1)
 
 
 def test_provider_specific_moe_and_deepep_reject_generic_perf_database():

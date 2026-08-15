@@ -389,14 +389,24 @@ class Step4Model(BaseModel):
         """Return page-allocated KV bytes for the pinned Latest cache geometry."""
         cfg = self.extra_params
         if not isinstance(cfg, common.Step4ProLatestConfig):
-            raise TypeError("Page-allocated KV accounting is defined only for Step4-Pro-Latest.")
+            return super().get_kvcache_allocated_bytes_per_sequence(seq_len)
         return cfg.compute_allocated_kv_cache_bytes(
             seq_len,
             bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
         )
 
+    def get_kvcache_peak_allocated_bytes_per_sequence(self, seq_len: int) -> float:
+        """Return peak page allocation while decoding through ``seq_len``."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            return super().get_kvcache_peak_allocated_bytes_per_sequence(seq_len)
+        return cfg.compute_peak_allocated_kv_cache_bytes(
+            seq_len,
+            bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
+        )
+
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
-        """Invert the Pro hybrid KV curve without assuming a constant per-token slope."""
+        """Invert the Pro peak-allocation curve without assuming a constant slope."""
         if not isinstance(
             self.extra_params,
             (common.Step4ProConfig, common.Step4ProMQAConfig, common.Step4ProLatestConfig),
@@ -1034,6 +1044,9 @@ class Step4Model(BaseModel):
                     provider="optimus_fa4",
                     kv_storage_alias=True,
                     page_size=cfg.full_page_size,
+                    physical_page_bytes=cfg.full_physical_page_bytes,
+                    kv_block_stride_bytes=cfg.full_kv_block_stride_bytes,
+                    kv_cache_layout=cfg.kv_cache_layout,
                 )
             elif phase == "generation":
                 attention = ops.GenerationAttention(
@@ -1047,6 +1060,9 @@ class Step4Model(BaseModel):
                     provider="optimus_fa4",
                     kv_storage_alias=True,
                     page_size=cfg.full_page_size,
+                    physical_page_bytes=cfg.full_physical_page_bytes,
+                    kv_block_stride_bytes=cfg.full_kv_block_stride_bytes,
+                    kv_cache_layout=cfg.kv_cache_layout,
                 )
             else:
                 raise ValueError(f"Unsupported Latest attention phase: {phase!r}")
@@ -1150,6 +1166,9 @@ class Step4Model(BaseModel):
                 head_size=cfg.swa_head_dim,
                 provider="vllm_native_sliding_gqa",
                 page_size=cfg.swa_page_size,
+                physical_page_bytes=cfg.swa_physical_page_bytes,
+                kv_block_stride_bytes=cfg.swa_kv_block_stride_bytes,
+                kv_cache_layout=cfg.kv_cache_layout,
             )
         elif phase == "generation":
             attention = ops.GenerationAttention(
@@ -1162,6 +1181,9 @@ class Step4Model(BaseModel):
                 head_size=cfg.swa_head_dim,
                 provider="vllm_native_sliding_gqa",
                 page_size=cfg.swa_page_size,
+                physical_page_bytes=cfg.swa_physical_page_bytes,
+                kv_block_stride_bytes=cfg.swa_kv_block_stride_bytes,
+                kv_cache_layout=cfg.kv_cache_layout,
             )
         else:
             raise ValueError(f"Unsupported Latest attention phase: {phase!r}")

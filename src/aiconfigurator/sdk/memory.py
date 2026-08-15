@@ -347,7 +347,7 @@ class KVCacheEstimator:
                 "runtime_overhead_bytes": runtime_overhead_bytes,
                 "comm_overhead_bytes": comm_overhead_bytes,
                 "non_kv_bytes": non_kv_bytes,
-                "kv_size_per_token_bytes": float(model.get_kvcache_bytes_per_sequence(1)),
+                "kv_size_per_token_bytes": float(model.get_kvcache_peak_allocated_bytes_per_sequence(1)),
                 "gpu_memory_capacity_bytes": float(database.system_spec["gpu"]["mem_capacity"]),
                 # Model's byte-budget -> token-count inverse (KV-curve aware).
                 "tokens_from_kv_bytes": model.get_kvcache_max_tokens,

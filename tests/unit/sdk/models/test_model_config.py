@@ -816,6 +816,13 @@ class TestGetKvcacheMaxTokens:
         assert model.get_kvcache_max_tokens(0) == 0
         assert model.get_kvcache_max_tokens(model.get_kvcache_bytes_per_sequence(1) - 1) == 0
 
+    def test_standard_model_physical_kv_contract_defaults_to_logical_bytes(self):
+        model = self._build_model("Qwen/Qwen3-32B", 4)
+        for seq_len in (0, 1, 137, 4096):
+            logical = model.get_kvcache_bytes_per_sequence(seq_len)
+            assert model.get_kvcache_allocated_bytes_per_sequence(seq_len) == logical
+            assert model.get_kvcache_peak_allocated_bytes_per_sequence(seq_len) == logical
+
     def test_deepseek_v4_inverts_nonlinear_curve(self):
         """DeepSeek-V4 caps local attention at its window and compresses past it
         (plus fixed decode-state buffers), so its KV growth is non-linear; the

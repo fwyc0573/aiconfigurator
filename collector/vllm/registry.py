@@ -27,6 +27,13 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.STEP4_GROUPED_GEMM,
     ),
     OpEntry(
+        op="step4_fp32_output_gemm",
+        module="collector.vllm.collect_step4_provider",
+        get_func="get_step4_fp32_output_gemm_test_cases",
+        run_func="run_step4_fp32_output_gemm",
+        perf_filename=PerfFile.STEP4_FP32_OUTPUT_GEMM,
+    ),
+    OpEntry(
         op="compute_scale",
         module="collector.vllm.collect_computescale",
         get_func="get_computescale_test_cases",

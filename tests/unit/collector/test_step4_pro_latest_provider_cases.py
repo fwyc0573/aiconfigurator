@@ -101,6 +101,16 @@ def test_vllm_registry_exposes_distinct_grouped_gemm_provider_file():
     assert grouped.perf_filename == "step4_grouped_gemm_perf.txt"
 
 
+def test_vllm_registry_exposes_distinct_fp32_router_provider_file():
+    entries = {entry.op: entry for entry in VLLM_REGISTRY}
+
+    router = entries["step4_fp32_output_gemm"]
+    assert router.module == "collector.vllm.collect_step4_provider"
+    assert router.get_func == "get_step4_fp32_output_gemm_test_cases"
+    assert router.run_func == "run_step4_fp32_output_gemm"
+    assert router.perf_filename == "step4_fp32_output_gemm_perf.txt"
+
+
 def test_step4_grouped_gemm_cases_preserve_exact_einsum_identity():
     from collector.vllm.collect_step4_provider import (
         get_step4_grouped_gemm_test_cases,
@@ -112,6 +122,19 @@ def test_step4_grouped_gemm_cases_preserve_exact_einsum_identity():
         ("vllm_step4pro_torch_einsum", 8, 1024, 4096, "bfloat16")
     }
     assert len(cases) == len({case[2] for case in cases})
+
+
+def test_step4_fp32_router_cases_preserve_exact_optimus_identity():
+    from collector.vllm.collect_step4_provider import (
+        get_step4_fp32_output_gemm_test_cases,
+    )
+
+    cases = get_step4_fp32_output_gemm_test_cases()
+    assert cases
+    assert {(case[0], case[2], case[3], case[4], case[5]) for case in cases} == {
+        ("vllm.optimus_matmul_fp32", 896, 7168, "bfloat16", "float32")
+    }
+    assert len(cases) == len({case[1] for case in cases})
 
 
 def test_step4_latest_generic_gemm_excludes_provider_specific_gemms():

@@ -134,18 +134,6 @@ def test_deepep_dispatch_and_combine_have_distinct_persisted_keys():
     assert dispatch._persisted_key() != combine._persisted_key()
 
 
-@pytest.mark.parametrize(
-    "operation",
-    [
-        ops.FP32OutputGEMM("router", 1.0, 896, 7168),
-    ],
-)
-def test_provider_specific_identity_rejects_generic_perf_database(operation):
-    """Provider-sensitive operations must not silently query generic tables."""
-    with pytest.raises(NotImplementedError, match="provider-specific"):
-        operation.query(object(), x=1)
-
-
 def test_qkv_norm_rope_rejects_generic_perf_database():
     operation = ops.QKVNormRoPE(
         "qkv_norm_rope",

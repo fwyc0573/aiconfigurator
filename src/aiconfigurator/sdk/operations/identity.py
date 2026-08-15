@@ -189,6 +189,8 @@ def load_step4_grouped_gemm_data(perf_file):
 class FP32OutputGEMM(GEMM):
     """GEMM with BF16 weights and an explicitly FP32 output contract."""
 
+    _data_cache: ClassVar[dict] = {}
+
     def __init__(
         self,
         name: str,
@@ -212,13 +214,131 @@ class FP32OutputGEMM(GEMM):
         self._output_dtype = output_dtype
         self._provider = provider
 
+    @classmethod
+    def clear_cache(cls) -> None:
+        cls._data_cache.clear()
+
+    @classmethod
+    def load_data(cls, database: PerfDatabase) -> None:
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._data_cache:
+            system_data_root = os.path.join(database.systems_root, database.system_spec["data_dir"])
+            data_dir = os.path.join(system_data_root, database.backend, database.version)
+            primary_path = os.path.join(data_dir, PerfDataFilename.step4_fp32_output_gemm.value)
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_fp32_output_gemm,
+                primary_path,
+                system_data_root,
+            )
+            cls._data_cache[key] = LoadedOpData(
+                load_step4_fp32_output_gemm_data(sources),
+                PerfDataFilename.step4_fp32_output_gemm,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_fp32_output_gemm_data" not in database.__dict__:
+            database._step4_fp32_output_gemm_data = cls._data_cache[key]
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
-        """Reject generic GEMM rows because they omit FP32 output and provider."""
-        raise NotImplementedError("FP32OutputGEMM requires a provider-specific FP32-output GEMM performance dataset.")
+        """Query the exact Optimus provider/shape slice and interpolate tokens."""
+        from aiconfigurator.sdk import interpolation
+
+        num_tokens = kwargs.get("x")
+        if not isinstance(num_tokens, int) or isinstance(num_tokens, bool) or num_tokens <= 0:
+            raise ValueError("FP32OutputGEMM requires a positive num_tokens integer.")
+        num_tokens = -(-num_tokens // self._seq_split)
+
+        self.load_data(database)
+        data = database._step4_fp32_output_gemm_data
+        data.raise_if_not_loaded()
+        structural_key = self._persisted_key()
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                "FP32-output GEMM perf data not available for exact provider/shape key. "
+                f"system='{database.system}', backend='{database.backend}', version='{database.version}', "
+                f"provider='{self._provider}', n={self._n}, k={self._k}, "
+                f"weight_dtype='{self._weight_dtype}', output_dtype='{self._output_dtype}'."
+            )
+
+        token_data = data[structural_key]
+        if num_tokens in token_data:
+            result = token_data[num_tokens]
+        else:
+            token_points = sorted(token_data)
+            try:
+                left, right = interpolation.nearest_1d_point_helper(num_tokens, token_points)
+                result = interpolation.interp_1d(
+                    [left, right],
+                    [token_data[left], token_data[right]],
+                    num_tokens,
+                )
+            except interpolation.InterpolationDataNotAvailableError as exc:
+                raise PerfDataNotAvailableError(
+                    "FP32-output GEMM perf data does not bracket the requested token count. "
+                    f"provider='{self._provider}', n={self._n}, k={self._k}, "
+                    f"weight_dtype='{self._weight_dtype}', output_dtype='{self._output_dtype}', "
+                    f"num_tokens={num_tokens}, available_tokens={token_points}."
+                ) from exc
+
+        return PerformanceResult(
+            latency=float(result["latency"]) * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * self._scale_factor,
+            source="silicon",
+        )
 
     def _persisted_key(self) -> tuple:
         """Return the physical identity required by the FP32-output dataset."""
         return (self._provider, self._n, self._k, self._weight_dtype, self._output_dtype)
+
+
+def load_step4_fp32_output_gemm_data(perf_file):
+    """Load exact pinned vLLM FP32-router rows keyed by structure then tokens."""
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    router_data: dict[tuple, dict[int, dict[str, float]]] = {}
+    for row in rows:
+        provider = str(row["provider"])
+        kernel_source = str(row["kernel_source"])
+        op_name = str(row["op_name"])
+        if op_name != "step4_fp32_output_gemm":
+            raise ValueError(f"unexpected op_name in FP32-output GEMM data: {op_name!r}")
+        if kernel_source != provider:
+            raise ValueError(
+                "FP32-output GEMM provider does not match kernel_source: "
+                f"provider={provider!r}, kernel_source={kernel_source!r}"
+            )
+
+        structural_key = (
+            provider,
+            int(row["n"]),
+            int(row["k"]),
+            str(row["weight_dtype"]),
+            str(row["output_dtype"]),
+        )
+        num_tokens = int(row["num_tokens"])
+        latency = float(row["latency"])
+        power = float(row.get("power", 0.0) or 0.0)
+        value = {
+            "latency": latency,
+            "power": power,
+            "energy": power * latency,
+        }
+
+        token_data = router_data.setdefault(structural_key, {})
+        existing = token_data.get(num_tokens)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting FP32-output GEMM row for physical key "
+                f"{(*structural_key, num_tokens)!r}: {existing!r} != {value!r}"
+            )
+        token_data[num_tokens] = value
+
+    return router_data
 
 
 class QKVNormRoPE(Operation):

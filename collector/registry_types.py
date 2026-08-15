@@ -25,6 +25,7 @@ class PerfFile(str, Enum):
 
     GEMM = "gemm_perf.txt"
     STEP4_GROUPED_GEMM = "step4_grouped_gemm_perf.txt"
+    STEP4_FP32_OUTPUT_GEMM = "step4_fp32_output_gemm_perf.txt"
     CONTEXT_ATTENTION = "context_attention_perf.txt"
     GENERATION_ATTENTION = "generation_attention_perf.txt"
     ENCODER_ATTENTION = "encoder_attention_perf.txt"

@@ -17,6 +17,7 @@
 | 2026-08-14 | Handed pinned-vLLM smoke/runtime trace to an external session; current execution now covers AIC-side work only. |
 | 2026-08-15 | Completed the MTP-off Latest model/op graph gate and advanced the active work to Collector implementation. |
 | 2026-08-15 | Split Collector work into provider-data vertical slices, beginning with runtime profile and grouped `wo_a`. |
+| 2026-08-15 | Completed grouped `wo_a` and FP32 router slices; advanced the active slice to QKV norm/RoPE. |
 
 # Plan: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -83,9 +84,9 @@ reconstruction status.
   sha256: c7a869263afd16b8694259ecafbe7df29e5a3a02320298a01e9e6009d5b68154
   ```
 
-- The active AIC gate is the first provider-data vertical slice: pinned runtime
-  profile, Latest SM103 model plan, grouped `wo_a` exact cases, collector,
-  persisted key, loader, and real consumer query. RED tests must fail before
+- The active AIC gate is the QKV norm/RoPE provider-data vertical slice.
+  Runtime profile, Latest SM103 model plan, grouped `wo_a`, and FP32 router
+  collector/consumer paths are complete. QKV RED tests must fail before its
   production implementation.
 - MTP1 structure tests, measurement, and simulation are deferred by explicit
   user decision. They remain visible as deferred scope and must not be

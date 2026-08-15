@@ -9,6 +9,9 @@
 | 2026-08-13 | Reviewed and accepted the root-cause baseline repair with 899/899 passing tests. |
 | 2026-08-14 | Reviewed the pinned-vLLM MTP1 boundary and fresh baseline checkpoint evidence. |
 | 2026-08-14 | Recorded the owner-approved MTP-off execution scope and parallel B300 smoke gate. |
+| 2026-08-14 | Reviewed the external B300 Stage 0 and Stage 1 probe wrapper after two platform-control failures and their root-cause fixes. |
+| 2026-08-14 | Reviewed and approved the 3 GiB controller-scope and low-memory I/O wrapper repair for live validation. |
+| 2026-08-15 | Reviewed and approved the complete Latest MTP-off model/op graph and nonlinear KV-capacity fix. |
 
 # Checkpoint Review Log
 
@@ -164,3 +167,75 @@
 - **Identified Issues/Anomalies:** The pinned Step4Pro source has no native MTP1 path. The requirements smoke and formal B300 collection remain uncompleted.
 - **Remediation/Verification Code Actions Taken:** Marked ISSUE-011 resolved as deferred; limited current acceptance to MTP-off; activated two parallel lanes: AIC Latest ops/Collector/measurement/simulation and pinned-vLLM B300 smoke. Prohibited `Step3p5MTP` substitution.
 - **Verdict:** MTP-off execution APPROVED; MTP1 structure, measurement, and simulation DEFERRED.
+
+### Review 8 — External B300 Stage 0 and source-probe control path
+
+- **Target Component/Phase:** External handoff Stage 0 and Stage 1 launch,
+  source transport, identity validation, and cleanup.
+- **Reviewer Agent Identity:** Codex external B300 execution session,
+  2026-08-14.
+- **Inspected Artifacts:**
+  - `pinned_vllm_b300_smoke_runtime_trace_execution.md`;
+  - `vllm-step4-pro/rjob-step4pro-optimus-single.sh`;
+  - `vllm-step4-pro/rjob-step4pro-2node.sh`;
+  - `tests/e2e/step4_pro_latest/run_b300_source_probe.sh`;
+  - prior and current logs under
+    `/data/ycfeng/tmp/b300_step4_smoke_20260814/`.
+- **Identified Issues/Anomalies:** Namespace-wide Replica inventory exceeded
+  `MemoryMax=2G`; a `60s` diagnostic timeout was incorrectly reused for the
+  live launch and interrupted a queued RJob.
+- **Remediation/Verification Code Actions Taken:** Replaced full Replica
+  inventory with the exact RJob label selector; bound live launch to the
+  worker-ready deadline; added four static contract tests; verified explicit
+  zero-resource cleanup for the interrupted attempt.
+- **Verdict:** Stage 0 APPROVED. Stage 1 wrapper control path APPROVED for the
+  next bounded live attempt; runtime source identity remains unproven until
+  that attempt completes.
+
+### Review 9 — 3 GiB host-memory and cleanup control path
+
+- **Target Component/Phase:** B300 one-GPU host wrapper, controller memory
+  scope, I/O behavior, launcher process ownership, and cleanup ordering.
+- **Reviewer Agent Identity:** Codex external B300 execution session,
+  2026-08-14.
+- **Inspected Artifacts:**
+  - `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/run_b300_source_probe.sh`;
+  - `tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py`;
+  - `tests/e2e/step4_pro_latest/test_run_b300_source_probe_static.py`;
+  - owner-reported host OOM and current artifact sizes.
+- **Identified Issues/Anomalies:** The prior launcher retained an unnecessary
+  `bash -c` layer; cleanup killed the launcher before explicitly deleting the
+  RJob; the handoff still documented `MemoryMax=2G`; large artifact handling
+  needed an explicit disk-streaming rule.
+- **Remediation/Verification Code Actions Taken:** Set controller scopes to
+  3 GiB; kept exact resource queries; used direct
+  `setsid sudo -n systemd-run`; reordered cleanup; retained disk-backed
+  patch/manifest/tar/log handling; updated the stale static assertion.
+  Verification passed `10/10` focused tests, three `bash -n` checks, and
+  `git diff --check`.
+- **Verdict:** STATIC CONTROL PATH APPROVED for a bounded live attempt.
+  Runtime source, model, provider, and no-OOM evidence remain pending.
+
+### Review 10 — Latest MTP-off model/op graph
+
+- **Target Component/Phase:** Phase 4 and the model/op portion of Phase 5.
+- **Reviewer Agent Identity:** Codex lead execution agent, 2026-08-15.
+- **Inspected Artifacts:**
+  - `src/aiconfigurator/sdk/common.py`;
+  - `src/aiconfigurator/sdk/utils.py`;
+  - `src/aiconfigurator/sdk/models/step4.py`;
+  - `src/aiconfigurator/sdk/operations/identity.py`;
+  - `src/aiconfigurator/sdk/operations/attention.py`;
+  - `src/aiconfigurator/sdk/operations/moe.py`;
+  - Latest config, reconstructed manifest, and focused unit tests;
+  - focused 28-test log and historical 899-test log.
+- **Identified Issues/Anomalies:** Latest initially bypassed the nonlinear KV
+  inverse, returning 512 tokens for a budget that exactly fits 513. Provider
+  operations intentionally still fail fast because their Collector datasets
+  and consumer tables do not yet exist.
+- **Remediation/Verification Code Actions Taken:** Added a RED capacity test,
+  routed Latest through the existing binary-search inverse, and re-ran both
+  the focused and historical suites.
+- **Verdict:** MODEL/OP GRAPH APPROVED. Collector and provider-specific
+  PerfDatabase support remain the next required gate.

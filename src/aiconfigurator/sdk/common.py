@@ -834,6 +834,133 @@ class Step4ProConfig:
     shared_expert_inter_size: int
 
 
+@dataclass(frozen=True)
+class Step4ProLatestConfig:
+    """Pinned Step4-Pro-Latest MTP-off geometry and cache contract.
+
+    Unlike the historical Step4-Pro schemas, Latest has two different
+    attention geometries in one trunk: Full MFA and native sliding-window
+    GQA.  The layer tuple is therefore the only source of truth for graph
+    construction; no layer-family aggregation is permitted.
+    """
+
+    layers: tuple[Step4LayerSpec, ...]
+    full_num_query_heads: int
+    full_num_kv_heads: int
+    full_head_dim: int
+    full_q_lora_rank: int
+    full_nope_head_dim: int
+    full_rope_head_dim: int
+    full_output_groups: int
+    full_o_lora_rank: int
+    full_window_size: int
+    full_page_size: int
+    swa_num_query_heads: int
+    swa_num_kv_heads: int
+    swa_head_dim: int
+    swa_window_size: int
+    swa_page_size: int
+    dense_inter_size: int
+    shared_expert_inter_size: int
+    latent_moe_dim: int
+    full_kv_elements_per_token: int = 512
+    swa_kv_elements_per_token: int = 2048
+    kv_cache_requested_dtype: str = "auto"
+    kv_cache_resolved_dtype: str = "bfloat16"
+    router_dtype: str = "float32"
+    mtp_layers: int = 0
+
+    def __post_init__(self) -> None:
+        """Reject malformed Latest geometry before graph construction."""
+        for layer_id, layer in enumerate(self.layers):
+            if layer.layer_id != layer_id:
+                raise ValueError(f"Latest layer ids must be contiguous; got {layer.layer_id} at index {layer_id}.")
+            if layer.attention_type not in {"full", "swa"}:
+                raise ValueError(f"Latest layer {layer_id} has unsupported attention_type {layer.attention_type!r}.")
+            if layer.ffn_type not in {"dense", "latent_moe"}:
+                raise ValueError(f"Latest layer {layer_id} has unsupported ffn_type {layer.ffn_type!r}.")
+
+        positive_fields = (
+            "full_num_query_heads",
+            "full_num_kv_heads",
+            "full_head_dim",
+            "full_q_lora_rank",
+            "full_nope_head_dim",
+            "full_rope_head_dim",
+            "full_output_groups",
+            "full_o_lora_rank",
+            "full_page_size",
+            "swa_num_query_heads",
+            "swa_num_kv_heads",
+            "swa_head_dim",
+            "swa_window_size",
+            "swa_page_size",
+            "dense_inter_size",
+            "shared_expert_inter_size",
+            "latent_moe_dim",
+            "full_kv_elements_per_token",
+            "swa_kv_elements_per_token",
+        )
+        for field_name in positive_fields:
+            value = getattr(self, field_name)
+            if type(value) is not int or value <= 0:
+                raise ValueError(f"Latest {field_name} must be a positive integer, got {value!r}.")
+        if self.full_window_size != 0:
+            raise ValueError("Latest Full MFA requires full_window_size=0.")
+        if self.full_num_query_heads % self.full_num_kv_heads != 0:
+            raise ValueError("Latest Full MFA query heads must be divisible by KV heads.")
+        if self.swa_num_query_heads % self.swa_num_kv_heads != 0:
+            raise ValueError("Latest SWA query heads must be divisible by KV heads.")
+        if self.full_output_groups != 8:
+            raise ValueError("Latest Full MFA output_groups must be 8.")
+        if self.mtp_layers != 0:
+            raise ValueError("Pinned Step4-Pro-Latest currently supports MTP-off only.")
+        if self.kv_cache_requested_dtype != "auto":
+            raise ValueError("Latest kv_cache_requested_dtype must be 'auto'.")
+        if self.kv_cache_resolved_dtype != "bfloat16":
+            raise ValueError("Latest kv_cache_resolved_dtype must be 'bfloat16'.")
+        if self.router_dtype != "float32":
+            raise ValueError("Latest router_dtype must be 'float32'.")
+
+    def compute_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
+        """Return logical KV bytes for one sequence across all layers."""
+        if type(seq_len) is not int or seq_len < 0:
+            raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if bytes_per_element <= 0:
+            raise ValueError(f"bytes_per_element must be positive, got {bytes_per_element!r}")
+        return float(
+            (
+                sum(layer.attention_type == "full" for layer in self.layers) * seq_len * self.full_kv_elements_per_token
+                + sum(layer.attention_type == "swa" for layer in self.layers)
+                * min(seq_len, self.swa_window_size)
+                * self.swa_kv_elements_per_token
+            )
+            * bytes_per_element
+        )
+
+    def compute_allocated_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
+        """Return page-allocated KV bytes using the pinned 128-token page size."""
+        if type(seq_len) is not int or seq_len < 0:
+            raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if bytes_per_element <= 0:
+            raise ValueError(f"bytes_per_element must be positive, got {bytes_per_element!r}")
+        full_pages = ((seq_len + self.full_page_size - 1) // self.full_page_size) * self.full_page_size
+        swa_pages = (
+            (min(seq_len, self.swa_window_size) + self.swa_page_size - 1) // self.swa_page_size
+        ) * self.swa_page_size
+        return float(
+            (
+                sum(layer.attention_type == "full" for layer in self.layers)
+                * full_pages
+                * self.full_kv_elements_per_token
+                + sum(layer.attention_type == "swa" for layer in self.layers)
+                * swa_pages
+                * self.swa_kv_elements_per_token
+            )
+            * bytes_per_element
+        )
+
+
 def indexer_cache_entry_bytes(index_head_dim: int) -> int:
     """Bytes per token in the FP8 indexer KV cache, including one scale per 128 values."""
     return index_head_dim + ((index_head_dim + 127) // 128) * 4
@@ -1082,6 +1209,7 @@ DefaultHFModels = {
     "stepfun-ai/Step4-Pro-V1",
     "stepfun-ai/Step4-Pro-V3",
     "stepfun-ai/Step4-Pro-V4",
+    "stepfun-ai/Step4-Pro-Latest",
     # Qwen 3 Models
     "Qwen/Qwen3-0.6B",
     "Qwen/Qwen3-1.7B",
@@ -1188,6 +1316,7 @@ ARCHITECTURE_TO_MODEL_FAMILY = {
     "GlmMoeDsaForCausalLM": "DEEPSEEKV32",
     "DeepseekV4ForCausalLM": "DEEPSEEKV4",
     "Step4ForCausalLM": "STEP4",
+    "Step4ProForCausalLM": "STEP4",
     "KimiK25ForConditionalGeneration": "KIMIK25",
     "NemotronForCausalLM": "NEMOTRONNAS",
     "DeciLMForCausalLM": "NEMOTRONNAS",

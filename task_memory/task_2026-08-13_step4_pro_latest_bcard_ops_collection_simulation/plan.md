@@ -15,6 +15,7 @@
 | 2026-08-14 | Completed the pinned-vLLM MTP1 boundary audit and opened the owner decision gate. |
 | 2026-08-14 | Deferred MTP1 structure tests/simulation; activated MTP-off Latest execution and parallel B300 smoke. |
 | 2026-08-14 | Handed pinned-vLLM smoke/runtime trace to an external session; current execution now covers AIC-side work only. |
+| 2026-08-15 | Completed the MTP-off Latest model/op graph gate and advanced the active work to Collector implementation. |
 
 # Plan: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -29,7 +30,7 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 1. Requirements and historical review | Completed | Requirements, historical tasks, repository state, and environment rules are recorded. |
 | 2. Latest vLLM source/image identity confirmation | Completed | Pinned checkout, commit, source files, and B300 path are recorded; later image is reference-only. |
 | 3. Grill-me clarification gate | Completed | Source/runtime, model identity, manifest reconstruction, operation boundaries, profiling provenance, and branch/checkpoint handling are explicitly resolved. |
-| 4. Latest op inventory and AIC design | In progress | MTP-off prefill/decode inventory and the pinned-vLLM implementation matrix are finalized; MTP1 structure work is explicitly deferred. |
+| 4. Latest op inventory and AIC design | Completed | MTP-off prefill/decode inventory and the pinned-vLLM implementation matrix are finalized; MTP1 structure work is explicitly deferred. |
 | 5. AIC model/op and Collector implementation | In progress | Latest RED tests are written first, then the MTP-off definition and case population pass identity/deduplication checks. |
 | 6. AIC B-card operation collection | In progress | AIC Collector cases and exact vLLM operation providers are measured on B300; source/provider acceptance remains traceable. |
 | 6E. External pinned-vLLM smoke/runtime trace | External handoff | Another session follows `pinned_vllm_b300_smoke_runtime_trace_execution.md`; its report is ingested later and is not executed here. |

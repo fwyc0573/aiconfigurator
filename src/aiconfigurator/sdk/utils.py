@@ -857,6 +857,82 @@ def _parse_step4_pro_mqa_config(config: dict, *, num_hidden_layers: int, hidden_
     )
 
 
+def _parse_step4_pro_latest_config(
+    config: dict,
+    *,
+    num_hidden_layers: int,
+) -> common.Step4ProLatestConfig:
+    """Parse the pinned Step4-Pro-Latest MTP-off schema."""
+    raw_layers = config.get("layers")
+    if not isinstance(raw_layers, list) or len(raw_layers) != num_hidden_layers:
+        raise ValueError(
+            f"Step4-Pro-Latest layers must contain {num_hidden_layers} records, "
+            f"got {type(raw_layers).__name__} with length {len(raw_layers) if isinstance(raw_layers, list) else 'n/a'}"
+        )
+    layers = []
+    for index, raw_layer in enumerate(raw_layers):
+        if not isinstance(raw_layer, dict):
+            raise TypeError(f"Step4-Pro-Latest layer {index} must be a mapping")
+        if raw_layer.get("layer_id") != index:
+            raise ValueError(f"Step4-Pro-Latest layer {index} must have contiguous layer_id {index}")
+        if raw_layer.get("attention_type") not in {"full", "swa"}:
+            raise ValueError(f"Step4-Pro-Latest layer {index} has unsupported attention_type")
+        if raw_layer.get("ffn_type") not in {"dense", "latent_moe"}:
+            raise ValueError(f"Step4-Pro-Latest layer {index} has unsupported ffn_type")
+        layers.append(
+            common.Step4LayerSpec(
+                layer_id=index,
+                attention_type=raw_layer["attention_type"],
+                ffn_type=raw_layer["ffn_type"],
+            )
+        )
+
+    full = config["full_attention"]
+    swa = config["nonfull_attention"]
+    required = {
+        "num_query_heads",
+        "num_kv_heads",
+        "head_dim",
+        "window_size",
+        "page_size",
+        "kv_elements_per_token",
+    }
+    for name, section in (("full_attention", full), ("nonfull_attention", swa)):
+        if not isinstance(section, dict):
+            raise TypeError(f"Step4-Pro-Latest {name} must be a mapping")
+        missing = sorted(required - set(section))
+        if missing:
+            raise ValueError(f"Step4-Pro-Latest {name} missing required fields: {', '.join(missing)}")
+
+    return common.Step4ProLatestConfig(
+        layers=tuple(layers),
+        full_num_query_heads=full["num_query_heads"],
+        full_num_kv_heads=full["num_kv_heads"],
+        full_head_dim=full["head_dim"],
+        full_q_lora_rank=full["q_lora_rank"],
+        full_nope_head_dim=full["nope_head_dim"],
+        full_rope_head_dim=full["rope_head_dim"],
+        full_output_groups=full["output_groups"],
+        full_o_lora_rank=full["o_lora_rank"],
+        full_window_size=full["window_size"],
+        full_page_size=full["page_size"],
+        swa_num_query_heads=swa["num_query_heads"],
+        swa_num_kv_heads=swa["num_kv_heads"],
+        swa_head_dim=swa["head_dim"],
+        swa_window_size=swa["window_size"],
+        swa_page_size=swa["page_size"],
+        dense_inter_size=config["intermediate_size"],
+        shared_expert_inter_size=config["shared_expert_intermediate_size"],
+        latent_moe_dim=config["latent_moe_dim"],
+        full_kv_elements_per_token=full["kv_elements_per_token"],
+        swa_kv_elements_per_token=swa["kv_elements_per_token"],
+        kv_cache_requested_dtype=config.get("kv_cache_requested_dtype", "auto"),
+        kv_cache_resolved_dtype=config.get("kv_cache_resolved_dtype", "bfloat16"),
+        router_dtype=config.get("router_dtype", "float32"),
+        mtp_layers=config.get("num_nextn_predict_layers", 0),
+    )
+
+
 def _validate_step4_pro_layers(raw_layers: object, *, num_hidden_layers: int) -> None:
     """Validate layer records shared by the MFA and MQA Step4-Pro schemas."""
     if not isinstance(raw_layers, list):
@@ -1101,6 +1177,19 @@ def _parse_hf_config_json(config: dict) -> dict:
             f"csa_layers={extra_params.compress_ratios.count(4)}, "
             f"hca_layers={extra_params.compress_ratios.count(128)}, "
             f"hc_mult={extra_params.hc_mult}"
+        )
+    elif architecture == "Step4ProForCausalLM":
+        extra_params = _parse_step4_pro_latest_config(
+            config,
+            num_hidden_layers=layers,
+        )
+        logger.info(
+            "Step4-Pro-Latest config: full=%d, swa=%d, dense=%d, latent_moe=%d, mtp=%d",
+            sum(layer.attention_type == "full" for layer in extra_params.layers),
+            sum(layer.attention_type == "swa" for layer in extra_params.layers),
+            sum(layer.ffn_type == "dense" for layer in extra_params.layers),
+            sum(layer.ffn_type == "latent_moe" for layer in extra_params.layers),
+            extra_params.mtp_layers,
         )
     elif architecture == "Step4ForCausalLM":
         pro_schema_fields = ("layers", "full_attention", "nonfull_attention")

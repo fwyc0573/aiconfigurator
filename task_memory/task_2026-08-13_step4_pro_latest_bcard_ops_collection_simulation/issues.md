@@ -15,8 +15,31 @@
 | 2026-08-13 | Closed the temporary-file security follow-up with the owner's explicit retain/no-action decision. |
 | 2026-08-14 | Resolved ISSUE-011 as deferred: MTP1 structure, measurement, and simulation are postponed; MTP-off Latest work is active. |
 | 2026-08-14 | Recorded ISSUE-012: whole-model pinned-vLLM B300 smoke/runtime trace is externally owned; current session is AIC-only. |
+| 2026-08-14 | Opened and resolved ISSUE-013 for memory-heavy full Replica inventory and ISSUE-014 for an undersized live-launch timeout in the external B300 session. |
+| 2026-08-14 | Recorded ISSUE-015 for the new host OOM and applied the owner-directed 3 GiB low-memory execution policy. |
+| 2026-08-15 | Opened and resolved ISSUE-016: Latest KV capacity incorrectly used the linear base-model inverse. |
 
 # Issues and Resolutions
+
+## ISSUE-016 — Latest nonlinear KV capacity used the linear inverse
+
+**Status:** Resolved on 2026-08-15.
+
+**Observed failure:** With a KV budget equal to the exact logical cost of 513
+tokens, `get_kvcache_max_tokens()` returned `512`.
+
+**Root cause:** `Step4ProLatestConfig` was absent from the Step4 model's
+nonlinear-capacity type gate. The method therefore delegated to the base
+linear floor-division path, which cannot represent the 512-token saturation
+of the 58 SWA layers.
+
+**Resolution:** Route Latest through the existing monotonic binary search used
+for other hybrid Step4-Pro schemas. No scale factor, fallback, or altered KV
+formula was added.
+
+**Verification:** The RED test observed `512`; after the fix it observed the
+expected `513`. The focused Latest suite passed `28/28`, and the historical
+regression passed `899/899`.
 
 ## ISSUE-001 — Latest runtime identity conflicts with the fixed requirements input
 
@@ -439,3 +462,70 @@ return its results later.
 `pinned_vllm_b300_smoke_runtime_trace_execution.md` with fixed identities,
 handbooks, reusable artifacts, known failure roots, bounded launch rules,
 acceptance criteria, cleanup requirements, and the report schema.
+
+## ISSUE-013 — Full Replica inventory exceeds the diagnostic memory scope
+
+**Status:** Resolved on 2026-08-14.
+
+**Observed failure:** The first external Stage 1 attempt was killed with exit
+`137` before creating an RJob. The failing command was the namespace-wide
+`brainctl get replica` query inside `MemoryMax=2G`.
+
+**Root cause:** The full namespace inventory can materialize enough Replica
+state to exceed the mandatory 2 GiB diagnostic scope. This was an inventory
+query problem, not a B300 scheduling or model-runtime failure.
+
+**Resolution:** Query Replicas with the server-side label selector
+`rjob.brainpp.cn/rjob-name=<exact-job-name>`. Keep exact-name RJob queries and
+the 60-second diagnostic boundary.
+
+**Verification:** A nonexistent selector query returned exit `0`,
+`No resources found`, without exceeding the memory scope.
+
+## ISSUE-014 — Live launch was incorrectly limited to 60 seconds
+
+**Status:** Resolved on 2026-08-14; live verification pending.
+
+**Observed failure:** The second Stage 1 attempt created the RJob and reached
+`Queued`, but the wrapper sent SIGTERM at `60s`; the launcher returned exit
+`124` and stopped the RJob.
+
+**Root cause:** The handbook's 60-second bound applies to inventory and
+diagnostic queries. It is too short for a live B300 allocation whose explicit
+worker-ready deadline is longer.
+
+**Resolution:** Bind the launch process timeout to
+`READY_TIMEOUT_SECONDS`; retain 60 seconds for inventory/cleanup commands and
+the outer hard timeout for the full Stage 1 attempt.
+
+**Verification:** A RED static test reproduced the mismatch, then passed after
+the timeout binding was corrected. The interrupted RJob and Replica were
+explicitly deleted; final matching counts were both `0`.
+
+## ISSUE-015 — New host OOM requires a smaller controller scope and bounded I/O
+
+**Status:** Mitigation implemented on 2026-08-14; live verification pending.
+
+**Observed failure:** The owner reported that the host OOMed while the external
+B300 task was active and suspected the then-current 5 GiB controller setting.
+No new kernel or transient-scope OOM stack has yet been preserved for that
+specific event.
+
+**Root-cause assessment:** The exact trigger is not proven. However, the
+control path had avoidable peak-memory risks: an extra `bash -c` process around
+the live launcher, prior namespace-wide inventory behavior, and potential
+whole-artifact reads. These risks are independent of model GPU memory and can
+increase host pressure.
+
+**Resolution:**
+
+- Enforce `MemoryMax=3G` for controller queries and live launch.
+- Permit only exact-name RJob and exact-label Replica queries.
+- Keep patches, manifests, tar streams, evidence, and logs disk-backed under
+  `/data/ycfeng/tmp`; prohibit whole Git pack/bundle/tar/log reads into memory.
+- Launch `systemd-run` directly under `setsid`.
+- Delete and poll the remote resource before terminating the local launcher.
+
+**Verification:** Focused static tests passed `10/10`; all three shell syntax
+checks and the focused whitespace check exited `0`. A live attempt is still
+required to prove that the 3 GiB path completes without host OOM.

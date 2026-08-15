@@ -167,6 +167,7 @@ class MoE(Operation):
         self._is_gated = is_gated
         self._moe_backend = kwargs.get("moe_backend")
         self._enable_eplb = kwargs.get("enable_eplb", False)
+        self._provider = kwargs.get("provider")
         # 3 GEMMs for gated (gate, up, down), 2 GEMMs for non-gated (up, down)
         num_gemms = 3 if is_gated else 2
         self._weights = (
@@ -956,6 +957,8 @@ class MoE(Operation):
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query MoE latency with energy data."""
+        if self._provider is not None:
+            raise NotImplementedError(f"MoE provider-specific dataset is required for provider={self._provider!r}.")
         # attention dp size will scale up the total input tokens.
         x = kwargs.get("x") * self._attention_dp_size
         overwrite_quant_mode = kwargs.get("quant_mode")
@@ -1039,6 +1042,10 @@ class MoEDispatch(Operation):
         self._quant_mode = kwargs.get("quant_mode")
         self._reduce_results = kwargs.get("reduce_results", True)
         self._attn_cp_size = kwargs.get("attn_cp_size", 1)
+        self._provider = kwargs.get("provider")
+        self._operation = kwargs.get("operation")
+        if self._operation not in (None, "dispatch", "combine"):
+            raise ValueError("MoEDispatch operation must be 'dispatch' or 'combine'.")
 
     # ------------------------------------------------------------------
     # Data ownership
@@ -1196,6 +1203,11 @@ class MoEDispatch(Operation):
     # ------------------------------------------------------------------
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
+        if self._provider is not None:
+            raise NotImplementedError(
+                f"MoEDispatch provider-specific dataset is required for provider={self._provider!r}, "
+                f"operation={self._operation!r}."
+            )
         num_tokens = kwargs.get("x")
         volume = num_tokens * self._hidden_size
         _sm_version = database.system_spec["gpu"].get("sm_version", -1)
@@ -1476,6 +1488,21 @@ class MoEDispatch(Operation):
 
     def get_weights(self, **kwargs):
         return self._weights * self._scale_factor
+
+    def _persisted_key(self) -> tuple:
+        """Return the provider-aware identity used by operation persistence."""
+        return (
+            self._provider,
+            self._operation,
+            self._hidden_size,
+            self._topk,
+            self._num_experts,
+            self._moe_tp_size,
+            self._moe_ep_size,
+            self._attention_dp_size,
+            self._sms,
+            self._is_context,
+        )
 
     def query_ideal(self, database: PerfDatabase, **kwargs):
         """

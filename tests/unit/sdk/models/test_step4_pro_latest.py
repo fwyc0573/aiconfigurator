@@ -201,6 +201,14 @@ def test_latest_layer_map_has_78_layers_with_dense_then_latent_moe(manifest):
     assert manifest["ffn"]["latent_moe"]["latent_hidden_size"] == extra.latent_moe_dim
 
 
+def test_latest_kv_capacity_uses_hybrid_curve():
+    """Latest capacity inversion must account for the SWA window saturation."""
+    model = _build_latest_model()
+    budget = model.get_kvcache_bytes_per_sequence(513)
+
+    assert model.get_kvcache_max_tokens(budget) == 513
+
+
 @pytest.mark.parametrize("phase", ["context", "generation"])
 def test_latest_full_mfa_key_order_and_dimensions(phase, manifest):
     """Full layers expose the pinned low-rank shared-KV and grouped-output path."""
@@ -208,9 +216,7 @@ def test_latest_full_mfa_key_order_and_dimensions(phase, manifest):
     full = manifest["attention"]["full_mfa"]
     prefix = f"{phase}_layer_003_full_"
     layer_ops = [
-        operation
-        for operation in _layer_operations(model, phase, layer_id=3)
-        if operation._name.startswith(prefix)
+        operation for operation in _layer_operations(model, phase, layer_id=3) if operation._name.startswith(prefix)
     ]
     suffixes = _suffixes(layer_ops, prefix)
     _assert_required_subsequence(suffixes, full["required_op_order"])
@@ -218,6 +224,8 @@ def test_latest_full_mfa_key_order_and_dimensions(phase, manifest):
 
     for name, shape in full["gemm_shapes"].items():
         _assert_gemm_shape(by_name[name], **shape)
+    for name in ("wq_a_gemm", "wq_b_gemm", "wkv_gemm", "head_gate_gemm", "wo_b_gemm"):
+        assert _quant_mode_name(by_name[name]) == "bfloat16"
 
     attention = by_name["attention"]
     assert attention._n == 64
@@ -234,6 +242,7 @@ def test_latest_full_mfa_key_order_and_dimensions(phase, manifest):
     assert grouped_wo_a._groups == 8
     assert grouped_wo_a._n == 1024
     assert grouped_wo_a._k == 4096
+    assert _quant_mode_name(grouped_wo_a) == "bfloat16"
     assert suffixes.count("inverse_rope") == 1
 
 
@@ -244,9 +253,7 @@ def test_latest_swa_gqa_key_order_and_dimensions(phase, manifest):
     swa = manifest["attention"]["swa_gqa"]
     prefix = f"{phase}_layer_002_swa_"
     layer_ops = [
-        operation
-        for operation in _layer_operations(model, phase, layer_id=2)
-        if operation._name.startswith(prefix)
+        operation for operation in _layer_operations(model, phase, layer_id=2) if operation._name.startswith(prefix)
     ]
     suffixes = _suffixes(layer_ops, prefix)
     _assert_required_subsequence(suffixes, swa["required_op_order"])
@@ -254,6 +261,7 @@ def test_latest_swa_gqa_key_order_and_dimensions(phase, manifest):
 
     for name, shape in swa["gemm_shapes"].items():
         _assert_gemm_shape(by_name[name], **shape)
+        assert _quant_mode_name(by_name[name]) == "bfloat16"
 
     attention = by_name["attention"]
     assert attention._n == 128
@@ -273,9 +281,7 @@ def test_latest_dense_ffn_uses_pinned_situ_glu_order_and_shapes(phase, manifest)
     dense = manifest["ffn"]["dense"]
     prefix = f"{phase}_layer_000_dense_"
     layer_ops = [
-        operation
-        for operation in _layer_operations(model, phase, layer_id=0)
-        if operation._name.startswith(prefix)
+        operation for operation in _layer_operations(model, phase, layer_id=0) if operation._name.startswith(prefix)
     ]
     suffixes = _suffixes(layer_ops, prefix)
     _assert_required_subsequence(suffixes, dense["required_op_order"])
@@ -283,6 +289,8 @@ def test_latest_dense_ffn_uses_pinned_situ_glu_order_and_shapes(phase, manifest)
 
     _assert_gemm_shape(by_name["gate_up_gemm"], **dense["gate_up_gemm"])
     _assert_gemm_shape(by_name["down_gemm"], **dense["down_gemm"])
+    assert _quant_mode_name(by_name["gate_up_gemm"]) == "bfloat16"
+    assert _quant_mode_name(by_name["down_gemm"]) == "bfloat16"
     assert (by_name["situ_glu"]._dim_in, by_name["situ_glu"]._dim_out) == (52224, 26112)
     assert not any("shared" in suffix or "moe" in suffix for suffix in suffixes)
 
@@ -294,9 +302,7 @@ def test_latest_latent_moe_is_serial_and_uses_exact_provider_identities(phase, m
     latent = manifest["ffn"]["latent_moe"]
     prefix = f"{phase}_layer_002_latent_moe_"
     layer_ops = [
-        operation
-        for operation in _layer_operations(model, phase, layer_id=2)
-        if operation._name.startswith(prefix)
+        operation for operation in _layer_operations(model, phase, layer_id=2) if operation._name.startswith(prefix)
     ]
     suffixes = _suffixes(layer_ops, prefix)
     _assert_required_subsequence(suffixes, latent["required_op_order"])
@@ -332,10 +338,13 @@ def test_latest_latent_moe_is_serial_and_uses_exact_provider_identities(phase, m
     assert routed._num_experts == 896
     assert routed._topk == 16
     assert routed._provider == "optimus_fp8_moe"
+    assert _quant_mode_name(routed) == "fp8_block"
 
     _assert_gemm_shape(by_name["shared_gate_up_gemm"], n=7168, k=7168)
+    assert _quant_mode_name(by_name["shared_gate_up_gemm"]) == "bfloat16"
     assert (by_name["shared_situ_glu"]._dim_in, by_name["shared_situ_glu"]._dim_out) == (7168, 3584)
     _assert_gemm_shape(by_name["shared_down_gemm"], n=7168, k=3584)
+    assert _quant_mode_name(by_name["shared_down_gemm"]) == "bfloat16"
 
 
 @pytest.mark.parametrize("phase", ["context", "generation"])
@@ -386,17 +395,18 @@ def test_latest_kv_cache_reports_logical_and_page_allocated_bytes(manifest):
     bytes_per_element = 2
 
     expected_logical_513 = (
-        20 * 513 * kv["full_mfa_elements_per_token_per_layer"]
-        + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
+        20 * 513 * kv["full_mfa_elements_per_token_per_layer"] + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
     ) * bytes_per_element
     expected_allocated_513 = (
-        20 * 640 * kv["full_mfa_elements_per_token_per_layer"]
-        + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
+        20 * 640 * kv["full_mfa_elements_per_token_per_layer"] + 58 * 512 * kv["swa_gqa_elements_per_token_per_layer"]
     ) * bytes_per_element
 
     assert model.kv_cache_requested_dtype == "auto"
     assert model.kv_cache_resolved_dtype == "bfloat16"
     assert model.kv_cache_page_size == 128
+    assert model.config.gemm_quant_mode == common.GEMMQuantMode.bfloat16
+    assert model.config.fmha_quant_mode == common.FMHAQuantMode.bfloat16
+    assert model.config.kvcache_quant_mode == common.KVCacheQuantMode.bfloat16
     assert model.get_kvcache_bytes_per_sequence(513) == expected_logical_513
     assert model.get_kvcache_allocated_bytes_per_sequence(513) == expected_allocated_513
 

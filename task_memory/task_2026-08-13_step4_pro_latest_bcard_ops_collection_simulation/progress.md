@@ -16,6 +16,9 @@
 | 2026-08-13 | Recorded the owner's decision to retain the temporary security-review file without any security action. |
 | 2026-08-14 | Stopped the local pinned-vLLM smoke lane, created an external execution handoff, and restricted this session to AIC-side work. |
 | 2026-08-14 | Strengthened the Latest MTP-off RED contract and verified the expected missing-implementation failure. |
+| 2026-08-14 | External execution session resumed the pinned-vLLM B300 handoff, completed Stage 0, and began a bounded Stage 1 source-identity probe. |
+| 2026-08-14 | Reduced all B300 controller scopes to 3 GiB, made launcher cleanup deterministic, and verified the static contracts. |
+| 2026-08-15 | Completed and verified the MTP-off Latest model/op graph, including the hybrid KV-capacity inversion fix. |
 
 # Progress Log
 
@@ -792,6 +795,95 @@ testing, and simulation.
   runtime result is claimed in this session.
 - Current execution scope is now AIC-only.
 
+## 2026-08-14 — External B300 execution session resumed
+
+**Status:** Stage 0 PASS; Stage 1 in progress.
+
+### Motivation
+
+Execute the externally owned pinned-vLLM smoke/runtime-provider trace without
+repeating the already diagnosed entrypoint and `/jobutil` failures.
+
+### Expectation
+
+- Prove a writable worker path and pinned runtime source identity before model
+  loading.
+- Fail fast on any Git, SHA256, or Python import-path mismatch.
+- Leave zero matching RJobs and Replicas after every attempt.
+
+### Method
+
+- Re-read the handoff, parent requirements, GPU/Docker handbooks, pinned
+  scripts, and prior B300 evidence.
+- Verified commit
+  `607d1641ee3fec43653fca510d717725828890c2`, all five pinned SHA256 values,
+  and both pinned scripts with `bash -n`.
+- Added the bounded wrapper
+  `tests/e2e/step4_pro_latest/run_b300_source_probe.sh` and static contract
+  tests.
+- Replaced full Replica inventory with server-side
+  `rjob.brainpp.cn/rjob-name=<job>` selection after the full query exceeded
+  the required 2 GiB memory scope.
+- Increased the live-launch timeout from `60s` to the configured worker-ready
+  deadline after the platform launch client was interrupted while queued.
+
+### Result
+
+- Static wrapper contract: `4 passed` under Python `3.11.15`.
+- First Stage 1 attempt created no RJob because the full Replica inventory was
+  killed at the 2 GiB boundary, exit `137`.
+- Second Stage 1 attempt created one RJob but the `60s` launch wrapper
+  interrupted it while queued, exit `124`; explicit deletion succeeded and
+  the final exact-name RJob and label-selected Replica counts were both `0`.
+- No model load or provider PASS is claimed yet.
+
+### Evidence
+
+- `/data/ycfeng/tmp/b300_step4_smoke_20260814/source_probe_step4pro-b300-source-probe-20260814-174004/`
+- `/data/ycfeng/tmp/b300_step4_smoke_20260814/source_probe_step4pro-b300-source-probe-20260814-180227/`
+- `tests/e2e/step4_pro_latest/test_run_b300_source_probe_static.py`
+
+## 2026-08-14 — Host OOM control scope reduced to 3 GiB
+
+**Status:** Static control-path repair PASS; live runtime verification pending.
+
+### Motivation
+
+The owner reported a new host OOM and requested that the controller memory
+scope be reduced from 5 GiB to 3 GiB, with I/O structured to avoid another
+OOM.
+
+### Expectation
+
+- Every controller-side `brainctl` query and live launcher runs under
+  `MemoryMax=3G`.
+- No namespace-wide Replica inventory or whole-file in-memory handling of
+  large Git/data artifacts is used.
+- Cleanup explicitly deletes the RJob and verifies resource disappearance
+  before stopping the launcher process group.
+
+### Method
+
+- Set both B300 wrappers to a 3 GiB controller scope.
+- Preserved exact-name RJob queries and exact-label Replica queries.
+- Kept generated patches, manifests, tar streams, and logs disk-backed under
+  `/data/ycfeng/tmp`.
+- Replaced `setsid bash -c ... systemd-run` with direct
+  `setsid sudo -n systemd-run`.
+- Reordered cleanup to delete and poll the RJob/Replica first, then terminate
+  and wait for the launcher process group.
+- Updated the static contract to match the direct `-- -lc
+  "${remote_command}"` invocation.
+
+### Result
+
+- RED reproduced the old launcher form: `1 failed` at the expected
+  `setsid sudo -n systemd-run` assertion.
+- Full focused static suite: `10 passed in 0.05s` under Python `3.11.15`.
+- `bash -n` passed for all three B300 wrapper/remote scripts.
+- `git diff --check -- tests/e2e/step4_pro_latest` passed.
+- No live RJob was launched by this repair step.
+
 ## 2026-08-14 — Complete Latest MTP-off RED contract established
 
 **Status:** RED verified; production implementation is the next step.
@@ -832,3 +924,46 @@ The test contract must fail until AIC provides:
 - JSON parse: PASS.
 - `git diff --check`: PASS.
 - No production AIC code was changed during this RED step.
+
+## 2026-08-15 — Latest MTP-off model/op graph completed
+
+**Status:** Model/op graph PASS; Collector implementation is now active.
+
+### Motivation
+
+Implement the complete AIC graph from the pinned Step4-Pro vLLM source while
+keeping the historical `Step4-Pro-V4` contract unchanged.
+
+### Expectation
+
+- Build all 78 layers in vLLM execution order for both prefill and decode.
+- Preserve provider identities for Optimus FA4, grouped `wo_a`, FP32 router,
+  Optimus routed MoE, and DeepEP high-throughput communication.
+- Keep attention, dense/shared projections, FMHA, and KV cache in BF16; use
+  FP8 block quantization only for routed MoE.
+- Invert the nonlinear Full-plus-SWA KV curve exactly.
+- Keep MTP disabled and reject TP greater than one.
+
+### Method
+
+- Added the independent `Step4ProForCausalLM` config/parser/registry path.
+- Added provider-aware operation identities and a 78-layer interleaved graph.
+- Added logical and page-allocated KV accounting.
+- Reproduced the KV capacity bug with a RED test: a budget sized for 513
+  tokens returned 512 because Latest was using the base linear inversion.
+- Included `Step4ProLatestConfig` in the existing nonlinear binary-search
+  inversion and re-ran the focused and historical suites.
+
+### Result
+
+- KV RED: expected `513`, observed `512`.
+- KV GREEN: expected `513`, observed `513`.
+- Focused Latest suite: `28 passed`, `0 failed`, `0.20s`.
+- Historical Step4/Collector/performance regression: `899 passed`,
+  `0 failed`, `67.69s`.
+- Context operations: `1,821`; generation operations: `1,821`.
+- Logical KV at 513 tokens: `132,141,056 bytes`.
+- Page-allocated KV at 513 tokens: `134,742,016 bytes`.
+- Evidence:
+  - `/data/ycfeng/tmp/step4_latest_model_ops_green_20260814.log`
+  - `/data/ycfeng/tmp/step4_latest_baseline_repaired_final_rerun_20260815.log`

@@ -261,6 +261,7 @@ class ContextAttention(Operation):
         head_size: int = 128,
         use_qk_norm: bool = False,
         cp_size: int = 1,
+        **kwargs,
     ) -> None:
         """Initialize context attention query parameters."""
         super().__init__(name, scale_factor)
@@ -272,6 +273,9 @@ class ContextAttention(Operation):
         self._window_size = window_size
         self._head_size = head_size
         self._use_qk_norm = use_qk_norm
+        self._provider = kwargs.get("provider")
+        self._kv_storage_alias = kwargs.get("kv_storage_alias", False)
+        self._page_size = kwargs.get("page_size")
         # Context parallelism (sglang AllGather, zigzag in-seq split). When
         # cp_size > 1, query() models ONE representative CP rank (rank 0): the
         # sequence is split into 2*cp contiguous chunks, rank 0 owns chunk 0
@@ -279,6 +283,20 @@ class ContextAttention(Operation):
         # to the balanced per-rank total isl^2/(2*cp). See
         # docs/CONTEXT_PARALLEL_DSA_MODELING.md (dense analog).
         self._cp_size = cp_size
+
+    def _persisted_key(self) -> tuple:
+        """Return the provider-sensitive persisted identity."""
+        return (
+            self._provider,
+            self._n,
+            self._n_kv,
+            self._head_size,
+            self._window_size,
+            self._kvcache_quant_mode,
+            self._fmha_quant_mode,
+            self._kv_storage_alias,
+            self._page_size,
+        )
 
     # ------------------------------------------------------------------
     # Data ownership
@@ -544,6 +562,10 @@ class ContextAttention(Operation):
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query context attention latency with energy data."""
+        if self._provider is not None:
+            raise NotImplementedError(
+                f"ContextAttention provider-specific dataset is required for provider={self._provider!r}."
+            )
         batch_size = kwargs.get("batch_size")
         isl = kwargs.get("s")
         prefix = kwargs.get("prefix")
@@ -621,6 +643,7 @@ class GenerationAttention(Operation):
         window_size: int = 0,
         head_size: int = 128,
         use_qk_norm: bool = False,
+        **kwargs,
     ) -> None:
         """Initialize generation attention query parameters."""
         super().__init__(name, scale_factor)
@@ -631,6 +654,22 @@ class GenerationAttention(Operation):
         self._window_size = window_size
         self._head_size = head_size
         self._use_qk_norm = use_qk_norm
+        self._provider = kwargs.get("provider")
+        self._kv_storage_alias = kwargs.get("kv_storage_alias", False)
+        self._page_size = kwargs.get("page_size")
+
+    def _persisted_key(self) -> tuple:
+        """Return the provider-sensitive persisted identity."""
+        return (
+            self._provider,
+            self._n,
+            self._n_kv,
+            self._head_size,
+            self._window_size,
+            self._kv_cache_dtype,
+            self._kv_storage_alias,
+            self._page_size,
+        )
 
     # ------------------------------------------------------------------
     # Data ownership
@@ -936,6 +975,10 @@ class GenerationAttention(Operation):
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query generation attention latency with energy data."""
+        if self._provider is not None:
+            raise NotImplementedError(
+                f"GenerationAttention provider-specific dataset is required for provider={self._provider!r}."
+            )
         beam_width = kwargs.get("beam_width")
         if beam_width != 1:
             raise ValueError(f"{self.__class__.__name__} only supports beam_width=1, got {beam_width}")

@@ -63,7 +63,13 @@ class Step4Model(BaseModel):
     @classmethod
     def create(cls, model_info: dict, model_config, backend_name: str) -> BaseModel:
         step4_config = model_info["extra_params"]
-        if not isinstance(step4_config, common.Step4Config | common.Step4ProConfig | common.Step4ProMQAConfig):
+        supported_configs = (
+            common.Step4Config,
+            common.Step4ProConfig,
+            common.Step4ProMQAConfig,
+            common.Step4ProLatestConfig,
+        )
+        if not isinstance(step4_config, supported_configs):
             raise TypeError("Step4Model requires a supported Step4 extra_params contract.")
 
         attention_parallel_geometry = []
@@ -71,6 +77,11 @@ class Step4Model(BaseModel):
             attention_parallel_geometry.append(
                 ("Step4", "num_attention_heads", model_info["n"], "tp_size", model_config.tp_size)
             )
+        elif isinstance(step4_config, common.Step4ProLatestConfig):
+            if model_config.nextn != 0:
+                raise ValueError("Step4-Pro-Latest is MTP-off and does not support nextn or multi-token prediction.")
+            if model_config.tp_size != 1:
+                raise NotImplementedError("Step4-Pro-Latest Full MFA currently requires tensor parallel TP=1.")
         elif isinstance(step4_config, common.Step4ProMQAConfig):
             attention_parallel_geometry.extend(
                 (
@@ -215,7 +226,13 @@ class Step4Model(BaseModel):
             raise NotImplementedError(
                 f"Step4 predefined ops currently support only backend='vllm'; got backend={backend_name!r}."
             )
-        if not isinstance(self.extra_params, common.Step4Config | common.Step4ProConfig | common.Step4ProMQAConfig):
+        supported_configs = (
+            common.Step4Config,
+            common.Step4ProConfig,
+            common.Step4ProMQAConfig,
+            common.Step4ProLatestConfig,
+        )
+        if not isinstance(self.extra_params, supported_configs):
             raise TypeError("Step4Model requires a supported Step4 extra_params contract.")
 
         attention_width = self.config.tp_size * self.config.attention_dp_size * self.config.cp_size
@@ -236,7 +253,11 @@ class Step4Model(BaseModel):
             / self._num_layers
         )
 
-        if isinstance(self.extra_params, common.Step4ProConfig):
+        if isinstance(self.extra_params, common.Step4ProLatestConfig):
+            self.kv_cache_requested_dtype = self.extra_params.kv_cache_requested_dtype
+            self.kv_cache_resolved_dtype = self.extra_params.kv_cache_resolved_dtype
+            self.kv_cache_page_size = self.extra_params.full_page_size
+        elif isinstance(self.extra_params, common.Step4ProConfig):
             self._validate_and_report_pro_attention()
         self._build_context_ops()
         self._build_generation_ops()
@@ -318,7 +339,7 @@ class Step4Model(BaseModel):
     def get_kvcache_elements_per_token(self) -> int:
         """Return the per-GPU latent MLA KV elements retained for every trunk layer."""
         cfg = self.extra_params
-        if isinstance(cfg, (common.Step4ProConfig, common.Step4ProMQAConfig)):
+        if isinstance(cfg, (common.Step4ProConfig, common.Step4ProMQAConfig, common.Step4ProLatestConfig)):
             raise ValueError(  # noqa: TRY004
                 "Step4-Pro KV cache is sequence-length dependent; use get_kvcache_bytes_per_sequence instead."
             )
@@ -327,6 +348,11 @@ class Step4Model(BaseModel):
     def get_kvcache_bytes_per_sequence(self, seq_len: int) -> float:
         """Return per-GPU bytes from each explicit Pro attention layer's KV curve."""
         cfg = self.extra_params
+        if isinstance(cfg, common.Step4ProLatestConfig):
+            return cfg.compute_kv_cache_bytes(
+                seq_len,
+                bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
+            )
         if isinstance(cfg, common.Step4ProMQAConfig):
             bytes_per_element = self.config.kvcache_quant_mode.value.memory
             return sum(
@@ -359,9 +385,22 @@ class Step4Model(BaseModel):
                 )
         return total_bytes
 
+    def get_kvcache_allocated_bytes_per_sequence(self, seq_len: int) -> float:
+        """Return page-allocated KV bytes for the pinned Latest cache geometry."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            raise TypeError("Page-allocated KV accounting is defined only for Step4-Pro-Latest.")
+        return cfg.compute_allocated_kv_cache_bytes(
+            seq_len,
+            bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
+        )
+
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
         """Invert the Pro hybrid KV curve without assuming a constant per-token slope."""
-        if not isinstance(self.extra_params, (common.Step4ProConfig, common.Step4ProMQAConfig)):
+        if not isinstance(
+            self.extra_params,
+            (common.Step4ProConfig, common.Step4ProMQAConfig, common.Step4ProLatestConfig),
+        ):
             return super().get_kvcache_max_tokens(kv_budget_bytes)
         return self._binary_search_kvcache_max_tokens(kv_budget_bytes)
 
@@ -973,7 +1012,353 @@ class Step4Model(BaseModel):
             ops.ElementWise("generation_moe_shared_merge", scale, 2 * h, h, 0.8),
         ]
 
+    def _latest_attention_ops(self, phase: str, layer: common.Step4LayerSpec, scale: float) -> list:
+        """Build one pinned Latest attention block with provider metadata."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            raise TypeError("Latest attention builder requires Step4ProLatestConfig.")
+        h = self._hidden_size
+        prefix = f"{phase}_layer_{layer.layer_id:03d}_{layer.attention_type}"
+
+        if layer.attention_type == "full":
+            if phase == "context":
+                attention = ops.ContextAttention(
+                    f"{prefix}_attention",
+                    scale,
+                    cfg.full_num_query_heads,
+                    cfg.full_num_kv_heads,
+                    self.config.kvcache_quant_mode,
+                    self.config.fmha_quant_mode,
+                    window_size=cfg.full_window_size,
+                    head_size=cfg.full_head_dim,
+                    provider="optimus_fa4",
+                    kv_storage_alias=True,
+                    page_size=cfg.full_page_size,
+                )
+            elif phase == "generation":
+                attention = ops.GenerationAttention(
+                    f"{prefix}_attention",
+                    scale,
+                    cfg.full_num_query_heads,
+                    cfg.full_num_kv_heads,
+                    self.config.kvcache_quant_mode,
+                    window_size=cfg.full_window_size,
+                    head_size=cfg.full_head_dim,
+                    provider="optimus_fa4",
+                    kv_storage_alias=True,
+                    page_size=cfg.full_page_size,
+                )
+            else:
+                raise ValueError(f"Unsupported Latest attention phase: {phase!r}")
+
+            return [
+                ops.ElementWise(f"{prefix}_attn_norm", scale, 2 * h, 2 * h, 0.8),
+                ops.GEMM(f"{prefix}_wq_a_gemm", scale, cfg.full_q_lora_rank, h, self.config.gemm_quant_mode),
+                ops.ElementWise(
+                    f"{prefix}_q_lora_norm",
+                    scale,
+                    cfg.full_q_lora_rank,
+                    cfg.full_q_lora_rank,
+                    0.8,
+                ),
+                ops.GEMM(
+                    f"{prefix}_wq_b_gemm",
+                    scale,
+                    cfg.full_num_query_heads * cfg.full_head_dim,
+                    cfg.full_q_lora_rank,
+                    self.config.gemm_quant_mode,
+                ),
+                ops.ElementWise(
+                    f"{prefix}_q_norm",
+                    scale,
+                    cfg.full_num_query_heads * cfg.full_head_dim,
+                    cfg.full_num_query_heads * cfg.full_head_dim,
+                    0.8,
+                ),
+                ops.GEMM(
+                    f"{prefix}_wkv_gemm",
+                    scale,
+                    cfg.full_num_kv_heads * cfg.full_head_dim,
+                    h,
+                    self.config.gemm_quant_mode,
+                ),
+                ops.QKVNormRoPE(
+                    f"{prefix}_k_norm_rope",
+                    scale,
+                    normalized_tensors=("k",),
+                    provider="vllm_step4pro_k_norm_rope",
+                    q_heads=cfg.full_num_query_heads,
+                    kv_heads=cfg.full_num_kv_heads,
+                    head_dim=cfg.full_head_dim,
+                ),
+                attention,
+                ops.ElementWise(
+                    f"{prefix}_inverse_rope",
+                    scale,
+                    cfg.full_num_query_heads * cfg.full_head_dim,
+                    cfg.full_num_query_heads * cfg.full_head_dim,
+                    0.8,
+                ),
+                ops.GEMM(
+                    f"{prefix}_head_gate_gemm",
+                    scale,
+                    cfg.full_num_query_heads,
+                    h,
+                    self.config.gemm_quant_mode,
+                ),
+                ops.ElementWise(
+                    f"{prefix}_head_gate_sigmoid_mul",
+                    scale,
+                    cfg.full_num_query_heads,
+                    cfg.full_num_query_heads,
+                    0.8,
+                ),
+                ops.GroupedGEMM(
+                    f"{prefix}_wo_a_grouped_gemm",
+                    scale,
+                    cfg.full_o_lora_rank,
+                    cfg.full_num_query_heads * cfg.full_head_dim // cfg.full_output_groups,
+                    self.config.gemm_quant_mode,
+                    groups=cfg.full_output_groups,
+                    provider="vllm_step4pro_torch_einsum",
+                ),
+                ops.GEMM(
+                    f"{prefix}_wo_b_gemm",
+                    scale,
+                    h,
+                    cfg.full_output_groups * cfg.full_o_lora_rank,
+                    self.config.gemm_quant_mode,
+                ),
+                ops.ElementWise(
+                    f"{phase}_layer_{layer.layer_id:03d}_attention_residual_add",
+                    scale,
+                    2 * h,
+                    h,
+                    0.8,
+                ),
+            ]
+
+        if phase == "context":
+            attention = ops.ContextAttention(
+                f"{prefix}_attention",
+                scale,
+                cfg.swa_num_query_heads,
+                cfg.swa_num_kv_heads,
+                self.config.kvcache_quant_mode,
+                self.config.fmha_quant_mode,
+                window_size=cfg.swa_window_size,
+                head_size=cfg.swa_head_dim,
+                provider="vllm_native_sliding_gqa",
+                page_size=cfg.swa_page_size,
+            )
+        elif phase == "generation":
+            attention = ops.GenerationAttention(
+                f"{prefix}_attention",
+                scale,
+                cfg.swa_num_query_heads,
+                cfg.swa_num_kv_heads,
+                self.config.kvcache_quant_mode,
+                window_size=cfg.swa_window_size,
+                head_size=cfg.swa_head_dim,
+                provider="vllm_native_sliding_gqa",
+                page_size=cfg.swa_page_size,
+            )
+        else:
+            raise ValueError(f"Unsupported Latest attention phase: {phase!r}")
+
+        q_width = cfg.swa_num_query_heads * cfg.swa_head_dim
+        kv_width = cfg.swa_num_kv_heads * cfg.swa_head_dim
+        return [
+            ops.ElementWise(f"{prefix}_attn_norm", scale, 2 * h, 2 * h, 0.8),
+            ops.GEMM(
+                f"{prefix}_qkv_proj_gemm",
+                scale,
+                q_width + 2 * kv_width,
+                h,
+                self.config.gemm_quant_mode,
+            ),
+            ops.QKVNormRoPE(
+                f"{prefix}_qkv_norm_rope",
+                scale,
+                normalized_tensors=("q", "k", "v"),
+                provider="vllm_step4pro_qkv_norm_rope",
+                q_heads=cfg.swa_num_query_heads,
+                kv_heads=cfg.swa_num_kv_heads,
+                head_dim=cfg.swa_head_dim,
+            ),
+            attention,
+            ops.GEMM(
+                f"{prefix}_head_gate_gemm",
+                scale,
+                cfg.swa_num_query_heads,
+                h,
+                self.config.gemm_quant_mode,
+            ),
+            ops.ElementWise(
+                f"{prefix}_head_gate_sigmoid_mul",
+                scale,
+                cfg.swa_num_query_heads,
+                cfg.swa_num_query_heads,
+                0.8,
+            ),
+            ops.GEMM(
+                f"{prefix}_o_proj_gemm",
+                scale,
+                h,
+                q_width,
+                self.config.gemm_quant_mode,
+            ),
+            ops.ElementWise(
+                f"{phase}_layer_{layer.layer_id:03d}_attention_residual_add",
+                scale,
+                2 * h,
+                h,
+                0.8,
+            ),
+        ]
+
+    def _latest_dense_ffn_ops(self, phase: str, layer_id: int, scale: float) -> list:
+        """Build one pinned dense SiTU-GLU block."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            raise TypeError("Latest dense FFN builder requires Step4ProLatestConfig.")
+        h = self._hidden_size
+        inter = cfg.dense_inter_size
+        prefix = f"{phase}_layer_{layer_id:03d}_dense"
+        return [
+            ops.ElementWise(f"{prefix}_ffn_norm", scale, 2 * h, 2 * h, 0.8),
+            ops.GEMM(f"{prefix}_gate_up_gemm", scale, 2 * inter, h, self.config.gemm_quant_mode),
+            ops.ElementWise(f"{prefix}_situ_glu", scale, 2 * inter, inter, 0.8),
+            ops.GEMM(
+                f"{prefix}_down_gemm",
+                scale,
+                h,
+                inter,
+                self.config.gemm_quant_mode,
+                low_precision_input=True,
+            ),
+            ops.ElementWise(f"{prefix}_ffn_residual_add", scale, 2 * h, h, 0.8),
+        ]
+
+    def _latest_latent_moe_ops(self, phase: str, layer_id: int, scale: float) -> list:
+        """Build one serial Latest latent-MoE block."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            raise TypeError("Latest latent MoE builder requires Step4ProLatestConfig.")
+        h = self._hidden_size
+        latent = cfg.latent_moe_dim
+        shared = cfg.shared_expert_inter_size
+        prefix = f"{phase}_layer_{layer_id:03d}_latent_moe"
+        is_context = phase == "context"
+
+        experts = ops.MoE(
+            f"{prefix}_experts",
+            scale,
+            latent,
+            self._moe_inter_size,
+            self._topk,
+            self._num_experts,
+            self.config.moe_tp_size,
+            self.config.moe_ep_size,
+            common.MoEQuantMode.fp8_block,
+            _STEP4_PRO_MOE_WORKLOAD_DISTRIBUTION,
+            self.config.attention_dp_size,
+            is_context=is_context,
+            is_gated=True,
+            provider="optimus_fp8_moe",
+        )
+
+        dispatch_args = (
+            latent,
+            self._topk,
+            self._num_experts,
+            self.config.moe_tp_size,
+            self.config.moe_ep_size,
+            self.config.attention_dp_size,
+        )
+        return [
+            ops.ElementWise(f"{prefix}_ffn_norm", scale, 2 * h, 2 * h, 0.8),
+            ops.FP32OutputGEMM(f"{prefix}_router_gemm", scale, self._num_experts, h),
+            ops.GEMM(f"{prefix}_pre_proj", scale, latent, h, common.GEMMQuantMode.bfloat16),
+            ops.MoEDispatch(
+                f"{prefix}_dispatch",
+                scale,
+                *dispatch_args,
+                True,
+                quant_mode=common.MoEQuantMode.fp8_block,
+                reduce_results=False,
+                is_context=is_context,
+                provider="vllm_deepep_high_throughput",
+                operation="dispatch",
+            ),
+            experts,
+            ops.MoEDispatch(
+                f"{prefix}_combine",
+                scale,
+                *dispatch_args,
+                False,
+                quant_mode=common.MoEQuantMode.fp8_block,
+                is_context=is_context,
+                provider="vllm_deepep_high_throughput",
+                operation="combine",
+            ),
+            ops.GEMM(
+                f"{prefix}_shared_gate_up_gemm",
+                scale,
+                2 * shared,
+                h,
+                self.config.gemm_quant_mode,
+            ),
+            ops.ElementWise(f"{prefix}_shared_situ_glu", scale, 2 * shared, shared, 0.8),
+            ops.GEMM(
+                f"{prefix}_shared_down_gemm",
+                scale,
+                h,
+                shared,
+                self.config.gemm_quant_mode,
+                low_precision_input=True,
+            ),
+            ops.ElementWise(f"{prefix}_post_proj_norm", scale, latent, latent, 0.8),
+            ops.GEMM(f"{prefix}_post_proj", scale, h, latent, common.GEMMQuantMode.bfloat16),
+            ops.ElementWise(f"{prefix}_shared_scale_mul", scale, h, h, 0.8),
+            ops.ElementWise(f"{prefix}_routed_shared_add", scale, 2 * h, h, 0.8),
+            ops.ElementWise(f"{prefix}_ffn_residual_add", scale, 2 * h, h, 0.8),
+        ]
+
+    def _build_latest_ops(self, phase: str) -> list:
+        """Build the complete Latest graph in decoder-layer execution order."""
+        cfg = self.extra_params
+        if not isinstance(cfg, common.Step4ProLatestConfig):
+            raise TypeError("Latest graph builder requires Step4ProLatestConfig.")
+        h = self._hidden_size
+        scale = 1.0 if phase == "context" else self._mtp_scale_factor
+        result = [ops.Embedding(f"{phase}_embedding", scale, self._vocab_size, h, 0.3)]
+        for layer in cfg.layers:
+            result.extend(self._latest_attention_ops(phase, layer, scale))
+            if layer.ffn_type == "dense":
+                result.extend(self._latest_dense_ffn_ops(phase, layer.layer_id, scale))
+            elif layer.ffn_type == "latent_moe":
+                result.extend(self._latest_latent_moe_ops(phase, layer.layer_id, scale))
+            else:
+                raise ValueError(f"Unsupported Latest ffn_type {layer.ffn_type!r}.")
+        result.extend(
+            [
+                ops.ElementWise(f"{phase}_final_norm", scale, h, h, 0.8),
+                ops.GEMM(
+                    f"{phase}_logits_gemm",
+                    scale,
+                    self._vocab_size,
+                    h,
+                    common.GEMMQuantMode.bfloat16,
+                ),
+            ]
+        )
+        return result
+
     def _build_context_ops(self) -> None:
+        if isinstance(self.extra_params, common.Step4ProLatestConfig):
+            self.context_ops = self._build_latest_ops("context")
+            return
         dense_count, full_count, nonfull_count = self._layer_counts()
         moe_count = self._moe_layer_count()
         h = self._hidden_size
@@ -1011,6 +1396,9 @@ class Step4Model(BaseModel):
         )
 
     def _build_generation_ops(self) -> None:
+        if isinstance(self.extra_params, common.Step4ProLatestConfig):
+            self.generation_ops = self._build_latest_ops("generation")
+            return
         dense_count, full_count, nonfull_count = self._layer_counts()
         moe_count = self._moe_layer_count()
         h = self._hidden_size

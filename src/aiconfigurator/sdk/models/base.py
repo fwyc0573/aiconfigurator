@@ -242,8 +242,15 @@ class BaseModel:
         """Point-in-time physical KV allocation for one sequence on one GPU."""
         return self.get_kvcache_bytes_per_sequence(seq_len)
 
-    def get_kvcache_peak_allocated_bytes_per_sequence(self, seq_len: int) -> float:
+    def get_kvcache_peak_allocated_bytes_per_sequence(
+        self,
+        seq_len: int,
+        *,
+        in_flight_tokens: int = 1,
+    ) -> float:
         """Peak physical KV allocation while growing one sequence to ``seq_len``."""
+        if type(in_flight_tokens) is not int or in_flight_tokens <= 0:
+            raise ValueError(f"in_flight_tokens must be a positive integer, got {in_flight_tokens!r}")
         return self.get_kvcache_allocated_bytes_per_sequence(seq_len)
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:

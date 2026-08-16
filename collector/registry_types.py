@@ -29,6 +29,8 @@ class PerfFile(str, Enum):
     STEP4_QKV_NORM_ROPE = "step4_qkv_norm_rope_perf.txt"
     STEP4_CONTEXT_ATTENTION = "step4_context_attention_perf.txt"
     STEP4_GENERATION_ATTENTION = "step4_generation_attention_perf.txt"
+    STEP4_OPTIMUS_MOE = "step4_optimus_moe_perf.txt"
+    STEP4_DEEPEP_HT = "step4_deepep_ht_perf.txt"
     CONTEXT_ATTENTION = "context_attention_perf.txt"
     GENERATION_ATTENTION = "generation_attention_perf.txt"
     ENCODER_ATTENTION = "encoder_attention_perf.txt"

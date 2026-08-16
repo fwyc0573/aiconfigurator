@@ -578,6 +578,18 @@ class BaseBackend:
             runtime_config.osl,
             runtime_config.prefix,
         )
+        kv_in_flight_tokens = 1
+        if mode == "static_ctx" and runtime_config.max_num_batched_tokens is not None:
+            max_num_batched_tokens = runtime_config.max_num_batched_tokens
+            if type(max_num_batched_tokens) is not int or max_num_batched_tokens <= 0:
+                raise ValueError(f"max_num_batched_tokens must be a positive integer, got {max_num_batched_tokens!r}")
+            if batch_size != 1:
+                raise NotImplementedError(
+                    "max_num_batched_tokens is a global scheduler budget and "
+                    "cannot be mapped to one per-sequence chunk when "
+                    f"batch_size={batch_size}; use a scheduler-aware prefill driver."
+                )
+            kv_in_flight_tokens = max_num_batched_tokens
 
         if mode == "static_gen":
             encoder_latency_dict, encoder_energy_wms_dict = defaultdict(float), defaultdict(float)
@@ -627,6 +639,7 @@ class BaseBackend:
                 1,
                 prefix=prefix,
                 encoder_memory=encoder_memory,
+                kv_in_flight_tokens=kv_in_flight_tokens,
             )
         elif mode == "static_gen":
             memory = self._get_memory_usage(
@@ -776,7 +789,11 @@ class BaseBackend:
             kv_seq_len_used = isl + img_ctx_tokens + beam_width * osl
             # CP shards peak physical KV across cp ranks (full/cp per rank).
             kv_bytes_per_seq = (
-                model.get_kvcache_peak_allocated_bytes_per_sequence(kv_seq_len_used) / model._cp_kv_memory_divisor()
+                model.get_kvcache_peak_allocated_bytes_per_sequence(
+                    kv_seq_len_used,
+                    in_flight_tokens=kv_in_flight_tokens,
+                )
+                / model._cp_kv_memory_divisor()
             )
             summary.set_kv_per_seq(kv_bytes_per_seq, kv_seq_len_used)
         except Exception:
@@ -1662,6 +1679,7 @@ class BaseBackend:
         max_seq_len: int | None = None,
         encoder_memory: dict[str, float] | None = None,
         mtp_activation_scaling: bool = True,
+        kv_in_flight_tokens: int = 1,
     ) -> dict[str, float]:
         """
         Get the memory usage of the backend.
@@ -1679,6 +1697,9 @@ class BaseBackend:
                 KV-cache capacity path, where ``num_tokens`` is the engine's
                 ``max_num_tokens`` budget that already caps total per-forward tokens
                 (draft tokens included), so re-multiplying would double-count.
+            kv_in_flight_tokens: maximum tokens allocated for each sequence in
+                the current scheduler step. The default of one preserves
+                MTP-off decode and capacity-sizing behavior.
         """
         weights = 0.0
         for op in model.context_ops:
@@ -1730,7 +1751,12 @@ class BaseBackend:
         # CP shards peak physical KV across cp ranks (full/cp per rank); the
         # all-gather is a transient compute buffer, not steady-state footprint.
         kvcache = (
-            batch_size * model.get_kvcache_peak_allocated_bytes_per_sequence(seq_tokens) / model._cp_kv_memory_divisor()
+            batch_size
+            * model.get_kvcache_peak_allocated_bytes_per_sequence(
+                seq_tokens,
+                in_flight_tokens=kv_in_flight_tokens,
+            )
+            / model._cp_kv_memory_divisor()
         )
         # should not be divided by pp_size as you need to hold all kvcache for stages.
 

@@ -134,6 +134,9 @@ class RuntimeConfig:
     beam_width: int = 1
     isl: int = None
     osl: int = None
+    # vLLM's global scheduler budget. AIC maps it directly to one sequence
+    # only for batch=1 static prefill; multi-sequence mapping needs a scheduler.
+    max_num_batched_tokens: int | None = None
     prefix: int = 0  # prefix len of isl
     ttft: float = None
     tpot: Union[float, list] = None

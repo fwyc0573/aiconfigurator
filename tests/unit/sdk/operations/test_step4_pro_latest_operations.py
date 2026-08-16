@@ -6,6 +6,7 @@ import pytest
 
 import aiconfigurator.sdk.operations as ops
 from aiconfigurator.sdk import common
+from aiconfigurator.sdk.errors import PerfDataNotAvailableError
 
 pytestmark = pytest.mark.unit
 
@@ -143,8 +144,7 @@ def test_deepep_dispatch_and_combine_have_distinct_persisted_keys():
     assert dispatch._persisted_key() != combine._persisted_key()
 
 
-def test_provider_specific_moe_and_deepep_reject_generic_perf_database():
-    """Optimus MoE and vLLM DeepEP require their own measured consumers."""
+def test_optimus_moe_preserves_provider_activation_and_physical_identity():
     moe = ops.MoE(
         "experts",
         1.0,
@@ -158,7 +158,27 @@ def test_provider_specific_moe_and_deepep_reject_generic_perf_database():
         "power_law_1.2",
         16,
         provider="optimus_fp8_moe",
+        activation="situ_glu",
     )
+
+    assert moe._provider == "optimus_fp8_moe"
+    assert moe._activation == "situ_glu"
+    assert moe._step4_optimus_persisted_key() == (
+        "optimus_fp8_moe",
+        3584,
+        3584,
+        16,
+        896,
+        1,
+        16,
+        "fp8_block",
+        "power_law_1.2",
+        "situ_glu",
+    )
+
+
+def test_provider_specific_deepep_rejects_missing_exact_perf_key():
+    """vLLM DeepEP never falls back when its exact measured key is absent."""
     dispatch = ops.MoEDispatch(
         "dispatch",
         1.0,
@@ -171,10 +191,23 @@ def test_provider_specific_moe_and_deepep_reject_generic_perf_database():
         True,
         provider="vllm_deepep_high_throughput",
         operation="dispatch",
+        quant_mode=common.MoEQuantMode.fp8_block,
+        ep_ranks_per_node=8,
+        dispatch_format="fp8_e4m3_block128",
+        sms=20,
+        max_tokens_per_rank=0,
     )
+    database = type(
+        "MissingExactDeepEPDatabase",
+        (),
+        {
+            "_step4_deepep_ht_data": {},
+            "system_spec": {"node": {"num_gpus_per_node": 8}},
+        },
+    )()
 
-    assert moe._provider == "optimus_fp8_moe"
-    with pytest.raises(NotImplementedError, match="provider-specific"):
-        moe.query(object(), x=1)
-    with pytest.raises(NotImplementedError, match="provider-specific"):
-        dispatch.query(object(), x=1)
+    with pytest.raises(
+        PerfDataNotAvailableError,
+        match="exact provider/structure key",
+    ):
+        dispatch.query(database, x=1)

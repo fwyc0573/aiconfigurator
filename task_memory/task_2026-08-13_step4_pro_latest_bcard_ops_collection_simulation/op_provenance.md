@@ -4,6 +4,8 @@
 |------------|--------------------|
 | 2026-08-13 | Created the pinned-source Step4-Pro-Latest logical operation and provenance inventory. |
 | 2026-08-13 | Replaced the unresolved DeepEP consumer note with the audited vLLM HT dispatch/combine contract. |
+| 2026-08-15 | Added the implemented AIC/Collector status and B300 dataset coverage for each provider-sensitive family. |
+| 2026-08-16 | Recorded complete Full-MFA/SWA QKV measurement and narrowed the remaining B300 gap to DeepEP. |
 
 # Step4-Pro-Latest Operation Provenance
 
@@ -17,8 +19,31 @@ commit: 607d1641ee3fec43653fca510d717725828890c2
 shape: task_memory/step4pro_v4_external_simulator_requirements.md
 ```
 
-It describes the required AIC logical operations. It does not claim that the
-production AIC definition, Collector cases, or B300 data are complete yet.
+It describes the required AIC logical operations and their current
+implementation/measurement status. MTP1 remains explicitly deferred because
+the pinned Step4Pro source has no native MTP1 construction path.
+
+## Current AIC and B300 Coverage
+
+| Operation family | Pinned vLLM implementation | AIC/Collector status | B300 data status |
+|---|---|---|---|
+| Full-MFA Q/K normalization and RoPE | `step4pro.py` Full MFA path | Defined and exact-key consumed | `75/75` rows |
+| SWA Q/K/V normalization and RoPE | `step3p5_util.fused_qknorm_rope_forward_impl` | Defined and exact-key consumed | `75/75` rows through the approved source-hash-bounded annotation overlay |
+| Full-MFA context/generation Attention | Optimus FA4 hd512 | Defined and exact-key consumed | `29` context + `71` generation rows |
+| SWA context/generation Attention | native vLLM sliding GQA hd128/window512 | Defined and exact-key consumed | `29` context + `96` generation rows |
+| Full-MFA grouped `wo_a` | pinned `torch.einsum` expression | Defined and exact-key consumed | `75/75` rows |
+| FP32 router | `torch.ops.vllm.optimus_matmul_fp32` | Defined and exact-key consumed | `75/75` rows |
+| Optimus routed MoE | pinned masked/contiguous Optimus custom ops | Defined and exact-key consumed | `174/174` rows |
+| DeepEP HT dispatch/combine | vLLM DeepEP manager/Buffer path | Defined and fail-fast exact-key consumed | `0/116`, owner-deferred |
+| Generic BF16 GEMM/ElementWise/Embedding | existing AIC families mapped from pinned graph | Reused where identity is faithful | Existing B300 vLLM data/analytic behavior |
+
+The combined canonical QKV table contains `150/150` unique physical keys,
+passes `150/150` unchanged AIC silicon queries, and has `0.0 ms` maximum
+absolute query error. The SWA compatibility overlay only resolves
+`reload_from` and `delay_w_load` from postponed strings to the installed
+`cutlass.Constexpr` object after checking the exact QKNorm source SHA256. It
+does not replace the pinned vLLM call path, provider, kernel body, shapes,
+dtypes, arguments, QKV arithmetic, or persisted operation identity.
 
 ## Top-Level Graph
 

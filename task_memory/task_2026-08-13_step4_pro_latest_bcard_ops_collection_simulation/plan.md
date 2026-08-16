@@ -18,6 +18,43 @@
 | 2026-08-15 | Completed the MTP-off Latest model/op graph gate and advanced the active work to Collector implementation. |
 | 2026-08-15 | Split Collector work into provider-data vertical slices, beginning with runtime profile and grouped `wo_a`. |
 | 2026-08-15 | Completed grouped `wo_a` and FP32 router slices; advanced the active slice to QKV norm/RoPE. |
+| 2026-08-15 | Completed QKV norm/RoPE and advanced the active slice to provider context/generation attention. |
+| 2026-08-15 | Completed provider Attention static/consumer support and advanced the active gate to B300 runtime validation. |
+| 2026-08-15 | Resumed the external 6E lane, completed the two-node environment-persistence RED→GREEN fix, and advanced to live DP16/EP16 validation. |
+| 2026-08-15 | Passed the 16-rank full-RDMA NCCL preflight and narrowed the external 6E blocker to shared-host-SHM/NVSHMEM DeepEP Buffer bootstrap. |
+| 2026-08-15 | Passed the replacement Optimus MoE B300 smoke on both pinned custom-op branches; advanced to the 174-case full collection. |
+| 2026-08-15 | Completed the replacement Optimus MoE 174-case B300 dataset and exact consumer validation; advanced to DeepEP HT. |
+| 2026-08-15 | Completed the DeepEP HT runtime Buffer-call RED→GREEN slice; advanced to distributed runner validation. |
+| 2026-08-15 | Completed the DeepEP HT distributed-driver and EP16/EP32 wrapper static gate; advanced to EP16 live smoke. |
+| 2026-08-15 | Reached the AIC DeepEP full-RDMA gate after repairing CUDA Error 803; made the Q16 NCCL preflight the next required action. |
+| 2026-08-15 | Completed the EP16 full-RDMA NCCL preflight with exact 16-rank numeric validation; advanced to EP16 DeepEP HT smoke. |
+| 2026-08-15 | Completed the local DeepEP discriminator and blocked further collection on the unavailable cross-node shared-host-SHM/NVSHMEM contract. |
+| 2026-08-15 | Resumed with a canonical-dataset and consumer-key audit before attempting MTP-off prefill/decode E2E. |
+| 2026-08-15 | Used the supplied RJob guidance to test the legacy launcher; explicit NVSHMEM passed but DeepEP Buffer exposed a PE-count/runtime integration mismatch. |
+| 2026-08-15 | Deferred further DeepEP measurement by owner direction and kept remaining provider-core collection active. |
+| 2026-08-15 | Confirmed the next-op SWA QKV blocker as an image-native postponed-annotation/Cutlass contract defect; runtime-overlay approval is the active gate. |
+| 2026-08-15 | Canonicalized the complete 199-row B300 Attention dataset and passed 199/199 exact canonical consumer queries. |
+| 2026-08-15 | Completed and canonicalized the 74+74 grouped `wo_a`/FP32 router B300 slice with 148/148 exact canonical consumer matches. |
+| 2026-08-15 | Reconciled the phase table after continuation: only QKV remains measurable in provider-core, while DeepEP is explicitly deferred. |
+| 2026-08-15 | Reconfirmed DeepEP `0/116` as deferred and moved the active gate to missing 65K provider coverage. |
+| 2026-08-15 | Reopened the exact DeepEP/NVSHMEM launch lane under owner authorization to apply and test direct-child commit `9bfd9a610e`. |
+| 2026-08-15 | Closed the grouped/router 65K B300 gap with 75+75 measured rows and restored the checkout to the authoritative pinned commit. |
+| 2026-08-15 | Closed the final DeepEP retry as deferred at 0/116 and advanced AIC execution to the exact SILICON coverage validator and scheduler-aware MTP-off simulation driver. |
+| 2026-08-15 | Closed the 65K Attention gap, corrected scheduler-aware coverage to six real missing contracts, and made the MTP-off requirements driver the active phase. |
+| 2026-08-15 | Canonicalized the corrected 225-row Attention dataset and completed the smoke/full MTP-off requirements matrix with explicit QKV/DeepEP blockers. |
+| 2026-08-15 | Measured and canonicalized 75/75 Full-MFA QKV rows, reran coverage/simulation, and reduced the remaining gap to SWA QKV plus DeepEP. |
+| 2026-08-15 | Completed Phase 8 for the current blocked checkpoint after fail-fast post-format verification; SWA QKV, DeepEP, and MTP1 remain explicitly open or deferred. |
+| 2026-08-15 | Opened the SWA QKV continuation gate with two expected RED contracts; runtime implementation remains pending explicit overlay approval. |
+| 2026-08-15 | Marked Phase 9 blocked after three consecutive continuation turns reached the same unapproved runtime-overlay gate. |
+| 2026-08-16 | Received explicit SWA annotation-overlay approval and resumed Phase 9 at the GREEN implementation gate. |
+| 2026-08-16 | Completed SWA QKV measurement, canonicalized all 150 QKV rows, and refreshed coverage plus the full MTP-off matrix. |
+| 2026-08-16 | Completed Phase 8 after independent re-review, final fail-fast verification, report synchronization, and archive refresh. |
+| 2026-08-16 | Opened Phase 10 after owner approval of an explicit B300 NCCL alltoall proxy for DeepEP simulation. |
+| 2026-08-16 | Added the scheduler-derived eight-row Attention closure gate discovered by the full proxy matrix. |
+| 2026-08-16 | Completed Phase 10 after Attention endpoint closure, full proxy simulation, artifact validation, and final local audit. |
+| 2026-08-16 | Opened Phase 11 for a requirement-by-requirement simulation review, three-repeat audit, normalized test record, and task-scoped publication. |
+| 2026-08-16 | Completed the Phase 11 requirement audit and final local publication gate; Git commit/push evidence is recorded by the branch and final handoff. |
+| 2026-08-16 | Refreshed the final publication evidence with the user-requested requirement audit and pre-commit regression. |
 
 # Plan: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -33,15 +70,35 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 2. Latest vLLM source/image identity confirmation | Completed | Pinned checkout, commit, source files, and B300 path are recorded; later image is reference-only. |
 | 3. Grill-me clarification gate | Completed | Source/runtime, model identity, manifest reconstruction, operation boundaries, profiling provenance, and branch/checkpoint handling are explicitly resolved. |
 | 4. Latest op inventory and AIC design | Completed | MTP-off prefill/decode inventory and the pinned-vLLM implementation matrix are finalized; MTP1 structure work is explicitly deferred. |
-| 5. AIC model/op and Collector implementation | In progress | Latest RED tests are written first, then the MTP-off definition and case population pass identity/deduplication checks. |
-| 6. AIC B-card operation collection | In progress | AIC Collector cases and exact vLLM operation providers are measured on B300; source/provider acceptance remains traceable. |
-| 6E. External pinned-vLLM smoke/runtime trace | External handoff | Another session follows `pinned_vllm_b300_smoke_runtime_trace_execution.md`; its report is ingested later and is not executed here. |
-| 7. Correctness and simulation | Pending | MTP-off correctness passes before requirements prefill/decode E2E simulation; MTP1 simulation remains deferred. |
-| 8. Final review and archive | Pending | Reports, hashes, differences, issues, and final inventory are complete. |
+| 5. AIC model/op and Collector implementation | Completed for the MTP-off graph | The MTP-off model graph, provider identities, case population, loaders, exact-key consumers, and isolated Full-MFA collection slice pass focused tests. |
+| 6. AIC B-card operation collection | Completed for every owner-approved measurable family; DeepEP deferred | Attention `235/235`, Optimus MoE `174/174`, grouped `75/75`, FP32 router `75/75`, and QKV `150/150` are measured and canonicalized. DeepEP remains `0/116` and must not be retried in this phase. |
+| 6E. External pinned-vLLM smoke/runtime trace | Blocked after applying exact later launch-script fix | Checkout and static validation of `9bfd9a610e` passed, but both installed brainctl launch paths reject `--share-host-shm`; the standalone `rjob` client required by the commit is absent. |
+| 7. Correctness and simulation | Completed for the approved MTP-off scope | The exact path remains reproducibly blocked only by missing DeepEP data. The explicitly selected B300 NCCL proxy completed all `72` prefill and `84` decode rows with `result_fidelity=PROXY`; MTP1 remains deferred. |
+| 8. Final review and archive | Completed for the approved MTP-off scope | Reports, hashes, issue records, independent review, and final fail-fast verification are synchronized; DeepEP and MTP1 remain explicit deferred items. |
+| 9. SWA QKV completion and simulation refresh | Completed | The bounded overlay, correctness smoke, `75/75` SWA collection, `150/150` QKV canonicalization, exact consumer validation, and unchanged simulation refresh all passed. |
+| 10. Temporary DeepEP proxy and simulation completion | Completed | The explicit opt-in maps DeepEP dispatch/combine to B300 NCCL `alltoall`, labels all affected results `PROXY`, preserves the exact path by default, and completed the full prefill/decode matrix without creating fake DeepEP data. |
+| 11. Requirement-completeness audit and publication | Completed | The simulator exposes KV allocation, required component breakdown, normalized unavailable metrics, and three-repeat evidence; the manual-review packet is synchronized; fresh verification passes; only task-owned files enter the single publication commit. |
+
+The bounded SWA annotation compatibility overlay was explicitly authorized and
+completed on 2026-08-16. It passed the source-hash, annotation-scope,
+shape/dtype/finite-value, B300 smoke, and `75/75` full-collection gates. The
+canonical QKV table now contains `150/150` unique keys and passes `150/150`
+exact silicon queries with `0.0 ms` maximum error.
+
+The exact `9bfd9a610e` DeepEP checkout and two-script static gate passed, but
+the installed launcher cannot submit its shared-host-SHM contract. Per owner
+direction, DeepEP measurement is deferred at `0/116` and must not be retried
+in this phase. The checkout remains restored to authoritative commit
+`607d1641ee`. Corrected scheduler-aware coverage now has only four missing
+physical contracts: DeepEP dispatch/combine for EP16 and EP32. The smoke and
+full exact-path MTP-off matrices completed all `72/72` prefill and `84/84`
+decode rows with formal latency and `B_max` null only because DeepEP is
+missing. The owner-approved proxy path subsequently completed the same matrix
+with explicit `PROXY` fidelity and no missing/error records.
 
 ## Current Execution Gate
 
-The user selected the pinned local checkout and requirements contract:
+The base model/source and shape contract remains:
 
 ```text
 source: /data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/vllm-step4-pro
@@ -49,6 +106,13 @@ commit: 607d1641ee3fec43653fca510d717725828890c2
 shape: requirements document's 78-layer synthetic Step4-Pro shape
 runtime/image: pinned contract; later branch/image is reference-only
 ```
+
+For the DeepEP lane only, the owner explicitly authorized direct-child commit
+`9bfd9a610ea4f2890010702ee7a207cf25edf8de`. It changes no Python/CUDA model
+code; it adds explicit NVSHMEM bootstrap, NIC-to-PE mapping, and the
+`--share-host-shm=True` launch contract in two shell scripts. Record this as a
+bounded launch-script deviation rather than silently redefining the whole
+model source.
 
 The existing `Step4-Pro-V4` entry is materially different and must remain
 unchanged. Continue with source-to-AIC mapping before production edits.
@@ -84,10 +148,63 @@ reconstruction status.
   sha256: c7a869263afd16b8694259ecafbe7df29e5a3a02320298a01e9e6009d5b68154
   ```
 
-- The active AIC gate is the QKV norm/RoPE provider-data vertical slice.
-  Runtime profile, Latest SM103 model plan, grouped `wo_a`, and FP32 router
-  collector/consumer paths are complete. QKV RED tests must fail before its
-  production implementation.
+- The scheduler-aware MTP-off requirements driver is complete for the current
+  blocked checkpoint.
+  Provider context/generation Attention is complete:
+  `68` context and `167` generation rows, with `235/235` exact `silicon`
+  consumer queries. The context table contains `34` Optimus FA4 and `34`
+  native SWA rows, including the exact `65,536`-token points at
+  `196.56292724609375 ms` and `3.164181391398112 ms`. Runtime profile,
+  Latest SM103 model plan, grouped `wo_a`,
+  FP32 router, QKV norm/RoPE, and Attention static/consumer paths are complete.
+  QKV measurement is complete: Full MFA `75/75`, SWA `75/75`, and combined
+  canonical `150/150` exact `silicon` queries with `0.0 ms` maximum error.
+  The SWA runtime used only the explicitly authorized source-hash-bounded
+  annotation compatibility overlay.
+  The earlier `174`-row Optimus artifact is rejected because `150` rows used a
+  silent graph-to-eager fallback. Its replacement is complete: `174/174` B300
+  rows, zero errors, strict masked/CUDA-graph and contiguous/eager agreement,
+  and `174/174` exact `silicon` consumer queries. Distributed DeepEP HT now has
+  a locally verified exact Buffer API runtime path. Its torchrun driver,
+  pinned-source remote runner, and parameterized 2-node EP16 / 4-node EP32
+  host wrapper pass static tests. Two EP16 attempts verified source identity
+  and repaired CUDA Error 803, then exposed `NCCL_IB_HCA=''` under an
+  incomplete launch contract. The standalone two-node full-RDMA NCCL preflight
+  passes with `16/16` rank markers, rank sum `136`, participant sum `16`,
+  non-empty platform HCA, and exact cleanup. The replacement EP16 smoke still
+  fails during cross-node `deep_ep.Buffer.runtime.sync`. A one-node,
+  eight-rank `num_rdma_bytes=0` discriminator completed Buffer construction on
+  `8/8` ranks, then failed explicit destroy on `8/8` ranks at
+  `runtime.cu:29`. The exact `9bfd9a610e` retry is complete and failed because
+  the available launcher cannot submit its required shared-host-SHM contract.
+  Per owner direction, DeepEP is frozen at `0/116`; do not retry it in this
+  phase. Formal simulation remains blocked wherever its exact dispatch/combine
+  rows are required.
+- Corrected EP16+EP32 scheduler-aware coverage queried `36,420` records:
+  `18,220` exact silicon, `15,160` analytic/non-silicon, `3,040` missing,
+  and `0` unexpected errors. Attention, Optimus MoE, grouped GEMM, FP32
+  router, and QKV have complete exact-silicon coverage. QKV contributes
+  `1,560/1,560` exact-silicon records. The four missing physical contracts
+  are DeepEP dispatch/combine at EP16 and EP32.
+- The exact-path requirements matrix executed all `72` prefill and `84` decode
+  records. All are explicitly `BLOCKED` only by DeepEP. Prefill peak HBM
+  ranges from `142.00439453125` to `776.97998046875 GiB`, with `48/72`
+  workloads over the `241.734375 GiB` utilization limit. Decode batch-1 HBM
+  ranges from `138.58154296875` to `294.77685546875 GiB`, with `16/84`
+  records over the same limit. Known prefill first-chunk partial latency is
+  `99.18793976790863–8158.937195512976 ms`; known decode batch-1 partial
+  latency is `38.4266577068447–250.7935116231927 ms`. These values are not
+  formal latency or TPOT.
+- The explicit `b300_nccl_alltoall` proxy coverage queried `36,420` records:
+  `18,220` exact silicon, `15,160` analytic/non-silicon, `3,040` proxy,
+  `0` missing, and `0` errors. The final proxy matrix completed all `72`
+  prefill and `84` decode rows. Prefill latency is
+  `129.22378441076575–782420.0031436655 ms`; per-replica input throughput is
+  `1340.1293369125042–69183.9264811136 token/s`; aggregate input throughput is
+  `1340.1293369125042–103512.27987036602 token/s`. Decode batch-1 TPOT is
+  `56.955545921130614–268.6990437660492 ms`; all `84` decode combinations
+  have `B_max=0` and `first_failed_batch=1`. Every such value carries
+  `result_fidelity=PROXY`.
 - MTP1 structure tests, measurement, and simulation are deferred by explicit
   user decision. They remain visible as deferred scope and must not be
   substituted with `Step3p5MTP`.
@@ -96,3 +213,102 @@ reconstruction status.
   Collector development, operation measurement, tests, and simulation
   continue; final provider/source sign-off will ingest the external report
   supplied by the task owner.
+
+## Phase 10 Implementation Plan
+
+### Task 10.1 — Proxy contract module
+
+**Files:**
+
+- Create `tests/performance/step4_pro_latest/deepep_proxy.py`.
+- Create `tests/unit/performance/test_step4_pro_latest_deepep_proxy.py`.
+
+**Interface:**
+
+```python
+query_deepep_proxy(
+    operation,
+    database,
+    *,
+    tokens_per_dp_rank: int,
+    proxy_name: str,
+) -> DeepEPProxyResult
+```
+
+The result carries scaled latency/energy plus complete proxy metadata. Tests
+must first fail because the module is absent, then prove:
+
+1. dispatch uses NCCL `alltoall` with `CommQuantMode.int8`;
+2. combine uses NCCL `alltoall` with `CommQuantMode.half`;
+3. message elements equal
+   `ceil(tokens_per_dp_rank * hidden_size * topk / ep_size)`;
+4. EP16 and EP32 are passed unchanged to the NCCL consumer and disclose the
+   8-GPU measured-curve correction;
+5. operation `_scale_factor` applies to latency and energy;
+6. unknown proxy names and non-Step4 DeepEP operations fail fast.
+
+### Task 10.2 — Coverage and simulation opt-in
+
+**Files:**
+
+- Modify
+  `tests/performance/step4_pro_latest/validate_aic_silicon_coverage.py`.
+- Modify
+  `tests/performance/step4_pro_latest/run_mtp_off_requirements.py`.
+- Modify
+  `tests/unit/performance/test_step4_pro_latest_silicon_coverage.py`.
+- Modify
+  `tests/unit/performance/test_step4_pro_latest_mtp_off_requirements.py`.
+
+Both CLIs add:
+
+```text
+--deepep-proxy b300_nccl_alltoall
+```
+
+The default is `None`. Tests must first prove that the default still reports
+missing DeepEP data. With explicit opt-in, operation records use
+`status=proxy`, summaries use `PASS_WITH_PROXY`, and exact-silicon,
+non-silicon, missing, error, and proxy counts remain separate.
+
+### Task 10.3 — Verification and full matrix
+
+1. Run the focused proxy/unit tests.
+2. Run the existing focused Step4-Pro-Latest tests and Collector tests.
+3. Run coverage once without the proxy to preserve fail-fast evidence.
+4. Run coverage with the proxy and verify zero missing/error records.
+5. Run proxy smoke simulation.
+6. Run the full `72` prefill and `84` decode matrix.
+7. Record prefill latency/throughput/HBM and decode TPOT/`B_max` numeric
+   ranges, always with `result_fidelity=PROXY`.
+8. Verify that no `step4_deepep_ht_perf.parquet` was created.
+9. Update the test report, issue resolution, review, summary, and deliverable
+   inventory.
+
+## Phase 11 Implementation Plan
+
+1. Add failing unit contracts for KV requested/resolved dtype, logical and
+   allocated/peak-allocated KV bytes, required component latency breakdown,
+   throughput-per-GPU, explicit unavailable online-runtime metrics, and
+   repeat auditing.
+2. Extend only the task-local MTP-off requirements driver; do not alter
+   measured operation data or the approved DeepEP proxy mapping.
+3. Run the complete `72` prefill plus `84` decode proxy matrix three times
+   and save a compact repeat-audit artifact with per-case equality and numeric
+   spread.
+4. Update the existing simulation report with a requirement-status matrix,
+   commands, environment, per-topology/per-workload numeric tables, component
+   and KV ranges, and explicit deferred/external items.
+5. Run fresh focused tests, Collector tests, Ruff, shell syntax, artifact
+   validation, DeepEP-Parquet absence, and `git diff --check`.
+6. Stage only task-owned implementation, B300 data, test, and task-document
+   files; exclude local caches, unrelated historical tasks, H800 data, and
+   the `vllm-step4-pro` checkout. Commit once and push
+   `task/step4-pro-latest-b300`.
+
+**Completion evidence:** The final artifact audit passed with `52/52`
+inventory hashes; a fresh complete proxy matrix was byte-identical to the
+archived result; `343/343` focused and `401/401` Collector tests passed; Ruff
+passed on `45/45` Python files; shell syntax passed on `14/14` scripts. Remote
+publication is represented by the Git branch state rather than a
+self-referential commit hash in this file.

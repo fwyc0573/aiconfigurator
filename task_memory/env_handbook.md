@@ -12,6 +12,8 @@
 | 2026-07-19 | Extended the AIC Rust recipe with a verified locked/offline current-worktree in-place build and source/binary isolation checks. |
 | 2026-08-13 | Added the verified Git LFS installation and post-checkout hook recovery recipe. |
 | 2026-08-15 | Added the verified unprivileged `systemd-run --user --scope` memory-limit recipe. |
+| 2026-08-15 | Added the verified B300 full-RDMA NCCL recipe and recorded the unresolved shared-host-SHM requirement for DeepEP. |
+| 2026-08-15 | Verified the supplied brainctl identity and legacy launcher; explicit NVSHMEM passed but DeepEP runtime PE attachment failed. |
 
 # Environment Handbook
 
@@ -457,3 +459,97 @@ post-checkout hook exit code: 0
 Do not remove the repository hook or set `GIT_LFS_SKIP_SMUDGE` as an implicit
 repair. Diagnose registry/authentication separately if a later LFS fetch
 fails.
+
+## B300 two-node full-RDMA NCCL preflight
+
+### Root Cause
+
+- `rdma/mlnx_shared=8` alone left `NCCL_IB_HCA` empty.
+- Adding host networking and `mellanox.com/mlnx_rdma=1` made worker-init
+  expose eight bond HCAs, but it also prepended
+  `/usr/local/cuda-12.8/compat`.
+- That stale compat path makes torch `2.10.0+cu129` fail CUDA initialization
+  with error `803`.
+
+### Verified Recipe
+
+Use both RDMA resources and host networking:
+
+```bash
+--host-network=true \
+--custom-resources=rdma/mlnx_shared=8 \
+--custom-resources=mellanox.com/mlnx_rdma=1 \
+--topo-group=yes
+```
+
+After worker-init, keep the injected NCCL/NVSHMEM variables but restore the
+pinned B300 CUDA path:
+
+```bash
+export LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:/usr/local/nvidia/lib64
+```
+
+Do not hardcode `NCCL_IB_HCA`; require the platform value to be non-empty.
+
+### Verification Evidence
+
+Observed on 2026-08-15:
+
+```text
+NCCL_IB_HCA==mlx5_bond100,...,mlx5_bond107
+NCCL_IB_GID_INDEX=3
+NCCL_SOCKET_IFNAME=bond0
+world_size=16
+all_reduce actual=136.0 expected=136.0
+```
+
+Evidence:
+
+```text
+/data/ycfeng/tmp/b300_step4_smoke_20260814/
+  nccl_preflight_s4p-nccl2-0815-195936/
+```
+
+### DeepEP Limitation
+
+This recipe validates NCCL only. `deep_ep.Buffer.runtime.sync` still fails
+without the later B300 branch's shared-host-SHM/explicit NVSHMEM bootstrap.
+The available `brainctl`/`rlaunch` client has no shared-host-SHM option. Do not
+replace this requirement with privileged mode, an invented host volume,
+socket fallback, or another all-to-all backend.
+
+### Supplied brainctl and legacy launcher result
+
+The user-supplied brainctl and installed `/kubebrain/brainctl` are
+byte-identical:
+
+```text
+sha256:
+06d5fffb00e67633e10e4a6d96752517eda7559230466a63ac86e6a424c839ad
+```
+
+The supplemental RJob guide documents the legacy launcher:
+
+```bash
+brainctl launch --i-know-i-am-using-legacy-rlaunch
+```
+
+This path does not expose `--share-host-shm`, but it was tested with two B300
+nodes and full RDMA:
+
+```text
+NCCL:                  16/16 PASS
+explicit nvshmem.init: 16/16 PASS
+deep_ep.Buffer:         0/16 PASS
+```
+
+DeepEP failed:
+
+```text
+runtime.cu:136 'nvshmem_n_pes() == num_ranks'
+```
+
+The `/dev/shm` mounts were large tmpfs filesystems and memlock was unlimited.
+Therefore shared-memory capacity is not the cause, and shared-host-SHM itself
+remains unproven. The active blocker is the integration between the
+externally initialized NVSHMEM runtime and the DeepEP-linked runtime/package.

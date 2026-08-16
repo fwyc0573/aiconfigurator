@@ -1,0 +1,34 @@
+{
+  "status": "PASS",
+  "canonical_parquet": "src/aiconfigurator/systems/data/b300_sxm/vllm/0.19.0/step4_qkv_norm_rope_perf.parquet",
+  "canonical_parquet_bytes": 5329,
+  "canonical_parquet_sha256": "cc14553d8e0d619ac5fc21b15a9dd78633e168114da270e55edec2c6e7afd579",
+  "rows": 150,
+  "provider_rows": {
+    "vllm_step4pro_k_norm_rope": 75,
+    "vllm_step4pro_qkv_norm_rope": 75
+  },
+  "unique_physical_keys": 150,
+  "duplicate_physical_keys": 0,
+  "exact_consumer_matches": 150,
+  "silicon_source_rows": 150,
+  "maximum_absolute_error_ms": 0.0,
+  "maximum_relative_error": 0.0,
+  "minimum_latency_ms": 0.006319999694824219,
+  "median_latency_ms": 0.05014933149019877,
+  "maximum_latency_ms": 6.715685526529948,
+  "provider_latency": {
+    "vllm_step4pro_k_norm_rope": {
+      "rows": 75,
+      "minimum_latency_ms": 0.029557332396507263,
+      "median_latency_ms": 0.08086400230725606,
+      "maximum_latency_ms": 6.715685526529948
+    },
+    "vllm_step4pro_qkv_norm_rope": {
+      "rows": 75,
+      "minimum_latency_ms": 0.006319999694824219,
+      "median_latency_ms": 0.011157333850860596,
+      "maximum_latency_ms": 1.3165173530578613
+    }
+  }
+}

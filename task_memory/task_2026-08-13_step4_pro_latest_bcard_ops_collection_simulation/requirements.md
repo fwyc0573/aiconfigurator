@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-16 | Added the final simulation-completeness review, normalized test record, commit, and push request. |
 | 2026-08-13 | Created the raw requirements record for the Step4-Pro-latest B-card task. |
 | 2026-08-13 | Recorded user choice A: the pinned local vLLM checkout and requirements shape are authoritative. |
 | 2026-08-13 | Recorded user choice A for the canonical AIC model path. |
@@ -21,6 +22,21 @@
 | 2026-08-14 | Confirmed pinned-vLLM MTP1 boundary: Step4Pro main graph has no native MTP1 path; opened an explicit scope gate. |
 | 2026-08-14 | Deferred MTP1 structure tests and simulation; authorized MTP-off Latest execution and parallel B300 smoke. |
 | 2026-08-14 | Moved the pinned-vLLM B300 smoke/runtime-provider trace to an external session and limited the current session to AIC-side implementation, measurement, tests, execution, and simulation. |
+| 2026-08-14 | Recorded the new external-session request to execute the standalone pinned-vLLM B300 smoke/runtime trace handoff to completion. |
+| 2026-08-14 | Reduced the controller memory scope to 3 GiB and required low-memory I/O after a host OOM. |
+| 2026-08-15 | Confirmed that random/dummy weights, rather than a real checkpoint, are the required B300 test path. |
+| 2026-08-15 | Authorized the single Optimus JIT activation-quant overlay for B300 SM103. |
+| 2026-08-15 | Authorized continued execution after evaluating the required `ep_gather` block fix and documenting its safety. |
+| 2026-08-15 | Clarified that the approved runtime fixes are limited to the pinned B300 performance/provider test and do not establish model-quality or training equivalence. |
+| 2026-08-15 | Explicitly authorized reopening the fourth B300 two-node live run after the three-attempt stop gate. |
+| 2026-08-15 | Authorized aligning the launch with the full B300 RDMA contract and running a minimal NCCL preflight before another model launch. |
+| 2026-08-15 | Supplied a brainctl binary and supplemental RJob documentation, and requested a retry using the documented legacy launcher path. |
+| 2026-08-15 | Authorized deferring further DeepEP measurement after the current attempt and continuing all remaining operation families. |
+| 2026-08-15 | Requested an inventory of DeepEP launch examples and cases in the pinned image and local vLLM checkout. |
+| 2026-08-15 | Authorized applying direct-child commit `9bfd9a610e` and reopening the exact DeepEP/NVSHMEM probe without retaining the earlier pinned-script restriction. |
+| 2026-08-15 | Reconfirmed that a failed DeepEP attempt must be recorded and skipped so remaining operation families continue. |
+| 2026-08-16 | Authorized the bounded SWA QKV runtime annotation compatibility overlay and continuation. |
+| 2026-08-16 | Authorized an explicitly temporary B300 NCCL alltoall substitute for DeepEP so MTP-off simulation can complete before later DeepEP remeasurement. |
 
 # Requirements: Step4-Pro-Latest B-Card Ops, Collection, and Simulation
 
@@ -42,6 +58,10 @@
 14. [Original Request] Follow the `stepfun-env-handbook` instructions for Docker and GPU use.
 15. [Original Request] Create a new task directory under `task_memory/` so this work is distinguishable from similar work by other agents.
 16. [Original Request] Use the user-provided vLLM checkout at `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/vllm-step4-pro` as an available source checkout for the Step4-Pro implementation.
+17. [Original Request] After the current DeepEP attempt finishes, if DeepEP still fails, stop measuring that operation, record the missing result, and continue with the next operation.
+18. [Original Request] Temporarily allow another operation to substitute for
+    DeepEP in simulation; after the DeepEP environment is restored, remeasure
+    the real DeepEP operation and replace the temporary result.
 
 ## Pending Q&A Follow-ups
 
@@ -350,3 +370,223 @@ or an invented AIC-only implementation.
 - Final provider/source sign-off will ingest the external session's report
   when the task owner supplies it; missing external evidence must remain
   visible rather than being inferred.
+
+### Q10 — Execute the external pinned-vLLM B300 sub-task
+
+1. [Original Request] This is a new sub-task.
+2. [Original Request] Fully understand
+   `pinned_vllm_b300_smoke_runtime_trace_execution.md`.
+3. [Original Request] Complete the task defined by that document.
+
+**Status:** Active in the external execution session on 2026-08-14.
+
+### Q11 — Reduce host memory scope and avoid I/O-driven OOM
+
+1. [Original Request] A host OOM just occurred and may have been caused by the
+   current 5 GiB memory setting.
+2. [Original Request] Reduce the controller memory setting to 3 GiB.
+3. [Original Request] Make I/O operations avoid possible OOM as much as
+   practical.
+
+**Status:** Active and mandatory for all remaining external B300 execution.
+
+### Q12 — Use random weights instead of requiring the qy1-pt checkpoint
+
+1. [Original Request] Re-read
+   `task_memory/step4pro_v4_external_simulator_requirements.md` and determine
+   whether it already provides a solution to the unavailable model mount.
+2. [Original Request] Model weights may use random initialization.
+3. [Original Request] Combine the parent requirements and the standalone
+   pinned-vLLM execution guide to complete the Step4-Pro B300 test.
+
+**Status:** Resolved on 2026-08-15. The authoritative parent requirement
+explicitly requires synthetic `config.json` plus vLLM `--load-format dummy`;
+real checkpoint availability must not block the MTP-off performance and
+provider tests.
+
+### Q13 — Authorize the Optimus JIT activation-quant overlay
+
+1. [Original Request] Authorize the single-point Optimus JIT quant overlay.
+2. [Original Request] Record the authorized overlay in the task documents.
+3. [Original Request] Continue the B300 pinned-vLLM Step4-Pro test.
+
+**Status:** Resolved and authorized on 2026-08-15.
+
+### Q14 — Evaluate and document the `ep_gather` correction
+
+1. [Original Request] Re-evaluate whether the proposed fix is required.
+2. [Original Request] Evaluate whether it changes the original design or
+   training behavior.
+3. [Original Request] If the evaluation passes, record all extra changes in
+   the task documents for later review.
+4. [Original Request] Continue execution.
+
+**Status:** Evaluation passed on 2026-08-15 for the pinned B300
+performance/provider test. The `ep_gather` change is an inference-only tiling
+correction that preserves tensor values. The Optimus JIT quant overlay remains
+a runtime implementation change and is not evidence of bitwise output,
+generation-quality, or training-convergence equivalence.
+
+### Q15 — Reopen the fourth two-node B300 live run
+
+1. [Original Request] Confirm the proposed next action.
+2. [Original Request] Continue execution after the three-attempt stop gate.
+
+**Status:** Explicitly authorized and executed on 2026-08-15. The
+`--headless --api-server-count 0` role split passed its startup gate, but NCCL
+initialization failed before DeepEP HT execution because the worker environment
+contained an empty `NCCL_IB_HCA`.
+
+### Q16 — Authorize full-RDMA launch alignment and NCCL preflight
+
+1. [Original Request] Confirm the proposed launch configuration adjustment.
+2. [Original Request] Continue with a minimal two-node NCCL preflight before
+   another complete model run.
+
+**Status:** Explicitly authorized and executed on 2026-08-15. The corrected
+16-rank NCCL preflight passed with eight injected bond HCAs and all-reduce
+result `136.0`. The subsequent model run selected
+`DeepEPHTAll2AllManager`, then failed inside `deep_ep.Buffer.runtime.sync`.
+The remaining gap is the unavailable shared-host-SHM/explicit NVSHMEM
+bootstrap contract, not NCCL connectivity.
+
+### Q17 — Inspect supplied brainctl/RJob docs and retry
+
+1. [Original Request] Inspect
+   `/data/ycfeng/stepfun-env-handbook/brainctl`.
+2. [Original Request] Inspect
+   `/data/ycfeng/stepfun-env-handbook/brainctl-rjob.md`.
+3. [Original Request] Verify whether the supplied brainctl differs from the
+   installed binary.
+4. [Original Request] Retry based on the new launcher guidance.
+
+**Status:** Executed on 2026-08-15. The supplied and installed brainctl files
+are byte-identical. The documented legacy launcher passed predict-only and
+started two nodes. NCCL and explicit NVSHMEM initialization passed on all
+`16/16` ranks, but `deep_ep.Buffer` rejected the runtime with:
+
+```text
+nvshmem_n_pes() == num_ranks
+```
+
+No complete-model retry was run because the minimal Buffer gate failed.
+
+### Q18 — Stop retrying DeepEP and continue remaining operations
+
+1. [Original Request] If the current execution is still focused on DeepEP,
+   finish the current attempt.
+2. [Original Request] If DeepEP still fails, temporarily skip DeepEP operation
+   measurement, record the failure, and continue with the next operation.
+
+**Status:** Resolved by explicit owner direction on 2026-08-15.
+
+**Execution consequence:**
+
+- The current active failure is SWA QKV norm/RoPE, not DeepEP.
+- Existing DeepEP evidence is sufficient to record the family as deferred and
+  blocked; do not launch another DeepEP measurement in this task phase.
+- Continue grouped `wo_a`, FP32 router, QKV norm/RoPE, canonical dataset
+  archival, and MTP-off simulation work.
+- Missing DeepEP exact keys must remain visible. Do not use H800 data,
+  generic communication rows, synthetic latency, or another transport as a
+  substitute.
+
+### Q19 — Inspect DeepEP launch examples and cases
+
+1. [Original Request] Inspect the image referenced by
+   `task_memory/step4pro_v4_external_simulator_requirements.md` for example or
+   case scripts that launch DeepEP.
+2. [Original Request] Inspect
+   `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/vllm-step4-pro`
+   for example or case scripts that launch DeepEP.
+
+**Status:** Completed by read-only inspection on 2026-08-15.
+
+### Q20 — Apply the later DeepEP/NVSHMEM launch fix and retry
+
+1. [Original Request] Treat commit `9bfd9a610e` as an intended DeepEP/NVSHMEM
+   fix based on its title and inspected content.
+2. [Original Request] Relax the earlier insistence on remaining at pinned
+   commit `607d1641ee`.
+3. [Original Request] Apply commit `9bfd9a610e`.
+4. [Original Request] Retry according to the launch modules and bootstrap
+   behavior changed by that commit.
+
+**Status:** Applied and statically verified on 2026-08-15; live validation is
+blocked because every installed launcher rejects the required
+`--share-host-shm` flag and no standalone `rjob` client is installed.
+
+**Scope clarification:** Commit `9bfd9a610e` is the direct child of
+`607d1641ee` and changes only `rjob-step4pro-2node.sh` plus the new
+`rjob-step4pro-deepep-probe.sh`. This authorization reopens only the exact
+DeepEP/NVSHMEM launch-contract probe. It does not authorize unrelated model,
+backend, shape, precision, or simulator changes.
+
+### Q21 — Authorize the bounded SWA QKV annotation compatibility overlay
+
+1. [Original Request] Approve the proposed SWA QKV runtime annotation
+   compatibility overlay.
+2. [Original Request] Continue AIC-side implementation, B300 measurement,
+   validation, and simulation refresh.
+
+**Status:** Explicitly authorized on 2026-08-16.
+
+**Scope clarification:** The approved overlay is process-local and limited to
+resolving `FusedQKNormRope.kernel` annotations `reload_from` and
+`delay_w_load` from postponed strings to the installed `cutlass.Constexpr`
+object after verifying the exact image-native QKNorm source SHA256. It must
+not rewrite installed source files, replace the pinned vLLM provider, change
+kernel code, shape, dtype, argument values, QKV math, or persisted operation
+identity. A representative B300 smoke remains mandatory before the `75`-case
+SWA collection.
+
+### Q22 — Select the temporary DeepEP simulation proxy
+
+**Question:** Which measured operation may temporarily supply dispatch/combine
+latency while the real B300 DeepEP environment is unavailable?
+
+**Recommended choice A:** Use the existing B300 NCCL `alltoall` dataset as an
+explicit simulation-only proxy. Preserve the Step4 DeepEP dispatch/combine
+operation identities, derive their communication volume from the existing
+Step4 MoE contract, label every affected result as proxy rather than exact
+DeepEP silicon, and do not write a fake `step4_deepep_ht_perf.parquet`.
+
+**Alternative B:** Use another operation or dataset selected by the task
+owner. The exact operation, dtype, volume mapping, and EP16/EP32 topology must
+be supplied before implementation.
+
+**Status:** **Resolved — user selected A on 2026-08-16.**
+
+**Decision:**
+
+- [Original Request] Use B300 NCCL `alltoall` as the temporary,
+  simulation-only DeepEP proxy.
+- [Original Request] Model dispatch with an FP8 communication payload and
+  combine with a BF16 communication payload.
+- [Original Request] Mark affected simulation results explicitly as `PROXY`;
+  do not represent them as measured DeepEP silicon.
+- [Original Request] Do not create a substitute
+  `step4_deepep_ht_perf.parquet`.
+- [Original Request] Restore real DeepEP measurement and replace the proxy
+  results after the DeepEP environment becomes available.
+
+### Q23 — Final simulation review, test-record normalization, and publication
+
+1. [Original Request] Re-review whether the simulation requirements in
+   `task_memory/step4pro_v4_external_simulator_requirements.md` are complete
+   for the currently approved scope, temporarily excluding real DeepEP.
+2. [Original Request] Fix or supplement any missing simulation requirement.
+3. [Original Request] Normalize and organize the test results and test records
+   for manual review.
+4. [Original Request] Create one task-scoped commit containing the relevant
+   documentation and code modules, then push it to the remote repository.
+
+**Scope carried forward from prior decisions:**
+
+- The reviewed simulation variant is `mtp_off`; native Step4Pro MTP1 remains
+  explicitly deferred.
+- DeepEP dispatch/combine may use only the explicitly selected B300 NCCL
+  `alltoall` simulation proxy and every affected result must remain labeled
+  `PROXY`.
+- Whole-model pinned-vLLM B300 execution remains externally owned and its
+  missing comparison data must not be invented.

@@ -55,6 +55,13 @@ REGISTRY: list[OpEntry] = [
         perf_filename=PerfFile.STEP4_GENERATION_ATTENTION,
     ),
     OpEntry(
+        op="step4_optimus_moe",
+        module="collector.vllm.collect_step4_provider",
+        get_func="get_step4_optimus_moe_test_cases",
+        run_func="run_step4_optimus_moe",
+        perf_filename=PerfFile.STEP4_OPTIMUS_MOE,
+    ),
+    OpEntry(
         op="compute_scale",
         module="collector.vllm.collect_computescale",
         get_func="get_computescale_test_cases",

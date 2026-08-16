@@ -1394,6 +1394,44 @@ def get_step4_model_gemm_case_specs(model_path: str, *, backend: str = "vllm") -
     ]
 
 
+def get_step4_provider_token_counts(
+    model_path: str,
+    op_name: str,
+    *,
+    backend: str = "vllm",
+) -> tuple[int, ...]:
+    """Return the model-scoped token sweep for one Step4 provider operation."""
+    supported_ops = {
+        "step4_grouped_gemm",
+        "step4_fp32_output_gemm",
+        "step4_qkv_norm_rope",
+    }
+    if op_name not in supported_ops:
+        raise ValueError(f"Unsupported Step4 provider operation: {op_name!r}")
+
+    matching = [
+        value
+        for value in _model_case_values(op_name, apply_model_filter=False)
+        if _model_case_matches_path(value, model_path)
+    ]
+    if len(matching) != 1:
+        raise RuntimeError(f"Expected one {op_name} workload config for {model_path!r}, got {len(matching)}")
+
+    base_token_counts = {case.x for case in get_step4_model_gemm_case_specs(model_path, backend=backend)}
+    additional_token_counts = set(
+        _as_int_list(
+            matching[0].get("additional_token_counts"),
+            field_name=(f"model_case_values.{op_name}.additional_token_counts"),
+        )
+    )
+    if not additional_token_counts or min(additional_token_counts) < 1:
+        raise ValueError(f"{op_name} additional token counts must be positive")
+    overlap = base_token_counts & additional_token_counts
+    if overlap:
+        raise ValueError(f"{op_name} additional token counts duplicate the shared sweep: {sorted(overlap)}")
+    return tuple(sorted(base_token_counts | additional_token_counts, reverse=True))
+
+
 def get_attention_kv_cache_dtype_options(model_path: str | None, *, sm_version: int) -> list[bool]:
     """Return the targeted attention KV-cache precision policy."""
     if model_path in {"stepfun-ai/Step4-Pro-V3", "stepfun-ai/Step4-Pro-V4"}:
@@ -1486,6 +1524,44 @@ def get_step4_attention_workload_config(model_path: str) -> dict[str, object]:
     if len(context_workloads) != len(set(context_workloads)):
         raise ValueError("Step4 context workloads contain duplicate physical points")
 
+    raw_provider_workloads = value.get("context_workloads_by_provider", {})
+    if not isinstance(raw_provider_workloads, dict):
+        raise TypeError("model_case_values.step4_attention.context_workloads_by_provider must be a mapping")
+    context_workloads_by_provider: dict[str, tuple[tuple[int, int, int], ...]] = {}
+    for provider, raw_workloads in raw_provider_workloads.items():
+        if not isinstance(provider, str) or not provider:
+            raise TypeError("Step4 provider-specific context workload keys must be non-empty strings")
+        if not isinstance(raw_workloads, list) or not raw_workloads:
+            raise TypeError(
+                "model_case_values.step4_attention.context_workloads_by_provider"
+                f"[{provider!r}] must be a non-empty list"
+            )
+        provider_workloads: list[tuple[int, int, int]] = []
+        for index, raw_workload in enumerate(raw_workloads):
+            if not isinstance(raw_workload, dict):
+                raise TypeError(
+                    "model_case_values.step4_attention.context_workloads_by_provider"
+                    f"[{provider!r}][{index}] must be a mapping"
+                )
+            workload = (
+                int(raw_workload["batch_size"]),
+                int(raw_workload["query_tokens"]),
+                int(raw_workload["total_context_tokens"]),
+            )
+            if min(workload) < 1:
+                raise ValueError(f"Step4 provider-specific context workload values must be positive: {workload!r}")
+            if workload[1] > workload[2]:
+                raise ValueError(f"Step4 provider-specific query tokens cannot exceed total context: {workload!r}")
+            if workload in context_workloads:
+                raise ValueError(
+                    "Step4 provider-specific context workload duplicates the shared workload: "
+                    f"provider={provider!r}, workload={workload!r}"
+                )
+            provider_workloads.append(workload)
+        if len(provider_workloads) != len(set(provider_workloads)):
+            raise ValueError(f"Step4 provider-specific context workloads contain duplicates: provider={provider!r}")
+        context_workloads_by_provider[provider] = tuple(provider_workloads)
+
     generation_batch_sizes = tuple(
         _as_int_list(
             value.get("generation_batch_sizes"),
@@ -1513,10 +1589,130 @@ def get_step4_attention_workload_config(model_path: str) -> dict[str, object]:
 
     return {
         "context_workloads": tuple(context_workloads),
+        "context_workloads_by_provider": context_workloads_by_provider,
         "generation_batch_sizes": generation_batch_sizes,
         "generation_context_tokens": generation_context_tokens,
         "max_kv_cache_bytes": max_kv_cache_bytes,
     }
+
+
+def get_step4_optimus_moe_workload_config(model_path: str) -> dict[str, object]:
+    """Return the exact Step4 Optimus MoE workload policy."""
+    matching = [
+        value
+        for value in _model_case_values("step4_optimus_moe", apply_model_filter=False)
+        if _model_case_matches_path(value, model_path)
+    ]
+    if len(matching) != 1:
+        raise RuntimeError(f"Expected one Step4 Optimus MoE workload config for {model_path!r}, got {len(matching)}")
+    value = matching[0]
+    token_counts = tuple(
+        _as_int_list(
+            value.get("token_counts"),
+            field_name="model_case_values.step4_optimus_moe.token_counts",
+        )
+    )
+    ep_sizes = tuple(
+        _as_int_list(
+            value.get("expert_parallel_sizes"),
+            field_name=("model_case_values.step4_optimus_moe.expert_parallel_sizes"),
+        )
+    )
+    if not token_counts or min(token_counts) < 1:
+        raise ValueError("Step4 Optimus MoE token counts must be positive")
+    if not ep_sizes or min(ep_sizes) < 1:
+        raise ValueError("Step4 Optimus MoE EP sizes must be positive")
+    if len(token_counts) != len(set(token_counts)):
+        raise ValueError("Step4 Optimus MoE token counts contain duplicates")
+    if len(ep_sizes) != len(set(ep_sizes)):
+        raise ValueError("Step4 Optimus MoE EP sizes contain duplicates")
+
+    raw_distributions = value.get("routing_distributions")
+    if not isinstance(raw_distributions, list) or not raw_distributions:
+        raise TypeError("model_case_values.step4_optimus_moe.routing_distributions must be a non-empty list")
+    distributions: list[tuple[str, float]] = []
+    for index, raw_distribution in enumerate(raw_distributions):
+        if not isinstance(raw_distribution, dict):
+            raise TypeError(f"model_case_values.step4_optimus_moe.routing_distributions[{index}] must be a mapping")
+        name = str(raw_distribution["name"])
+        alpha = float(raw_distribution["power_law_alpha"])
+        if name not in {"balanced", "power_law"}:
+            raise ValueError(f"Unsupported Step4 Optimus MoE routing distribution: {name!r}")
+        if name == "balanced" and alpha != 0.0:
+            raise ValueError("Balanced Step4 Optimus MoE routing requires alpha=0")
+        if name == "power_law" and alpha <= 0:
+            raise ValueError("Power-law Step4 Optimus MoE routing requires alpha>0")
+        distributions.append((name, alpha))
+    if len(distributions) != len(set(distributions)):
+        raise ValueError("Step4 Optimus MoE routing distributions contain duplicates")
+
+    return {
+        "token_counts": token_counts,
+        "expert_parallel_sizes": ep_sizes,
+        "routing_distributions": tuple(distributions),
+    }
+
+
+def get_step4_deepep_ht_workload_config(model_path: str) -> dict[str, object]:
+    """Return the exact pinned Step4 DeepEP HT workload policy."""
+    matching = [
+        value
+        for value in _model_case_values("step4_deepep_ht", apply_model_filter=False)
+        if _model_case_matches_path(value, model_path)
+    ]
+    if len(matching) != 1:
+        raise RuntimeError(f"Expected one Step4 DeepEP HT workload config for {model_path!r}, got {len(matching)}")
+    value = matching[0]
+    tokens_per_dp_rank = tuple(
+        _as_int_list(
+            value.get("tokens_per_dp_rank"),
+            field_name=("model_case_values.step4_deepep_ht.tokens_per_dp_rank"),
+        )
+    )
+    ep_sizes = tuple(
+        _as_int_list(
+            value.get("expert_parallel_sizes"),
+            field_name=("model_case_values.step4_deepep_ht.expert_parallel_sizes"),
+        )
+    )
+    if not tokens_per_dp_rank or min(tokens_per_dp_rank) < 1:
+        raise ValueError("Step4 DeepEP HT token counts must be positive")
+    if not ep_sizes or min(ep_sizes) < 1:
+        raise ValueError("Step4 DeepEP HT EP sizes must be positive")
+    if len(tokens_per_dp_rank) != len(set(tokens_per_dp_rank)):
+        raise ValueError("Step4 DeepEP HT token counts contain duplicates")
+    if len(ep_sizes) != len(set(ep_sizes)):
+        raise ValueError("Step4 DeepEP HT EP sizes contain duplicates")
+
+    config = {
+        "tokens_per_dp_rank": tokens_per_dp_rank,
+        "expert_parallel_sizes": ep_sizes,
+        "ep_ranks_per_node": int(value["ep_ranks_per_node"]),
+        "hidden_size": int(value["hidden_size"]),
+        "num_experts": int(value["num_experts"]),
+        "topk": int(value["topk"]),
+        "dispatch_format": str(value["dispatch_format"]),
+        "num_sms": int(value["num_sms"]),
+        "max_tokens_per_rank": int(value["max_tokens_per_rank"]),
+    }
+    if (
+        min(
+            config["ep_ranks_per_node"],
+            config["hidden_size"],
+            config["num_experts"],
+            config["topk"],
+            config["num_sms"],
+        )
+        < 1
+    ):
+        raise ValueError("Step4 DeepEP HT structural dimensions must be positive")
+    if config["max_tokens_per_rank"] != 0:
+        raise ValueError(
+            "Step4 DeepEP HT requires max_tokens_per_rank=0 because the pinned HT API has no varying token bound"
+        )
+    if config["dispatch_format"] != "fp8_e4m3_block128":
+        raise ValueError("Step4 DeepEP HT requires dispatch_format='fp8_e4m3_block128'")
+    return config
 
 
 @dataclasses.dataclass

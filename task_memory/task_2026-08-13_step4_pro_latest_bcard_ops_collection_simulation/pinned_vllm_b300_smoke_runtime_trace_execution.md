@@ -3,6 +3,14 @@
 | Date       | Summary of Changes |
 |------------|--------------------|
 | 2026-08-14 | Created the standalone execution guide for the externally owned B300 pinned-vLLM smoke and runtime/provider trace task. |
+| 2026-08-14 | Reduced controller scopes to 3 GiB and added exact-query, disk-streaming, and cleanup ordering rules after a host OOM. |
+| 2026-08-15 | Reconciled the guide with the parent requirement: synthetic config and vLLM dummy weights replace real checkpoint mounts. |
+| 2026-08-15 | Authorized and documented the single Optimus JIT activation-quant overlay required on B300 SM103. |
+| 2026-08-15 | Re-evaluated and bounded every runtime deviation; separated exact tiling fixes from the non-bitwise quant implementation change. |
+| 2026-08-15 | Added the verified holder-env readiness and coordinated-DP headless worker contract after three bounded two-node attempts. |
+| 2026-08-15 | Added the verified full-RDMA NCCL preflight and documented the remaining shared-host-SHM/NVSHMEM DeepEP Buffer gate. |
+| 2026-08-15 | Recorded the legacy launcher retry: explicit NVSHMEM initialized, but DeepEP Buffer observed a mismatched PE count. |
+| 2026-08-15 | Authorized the exact `9bfd9a610e` DeepEP launch-script fix as a bounded exception and required its standalone Buffer probe before any full-model retry. |
 
 # B300 Pinned-vLLM Smoke and Runtime/Provider Trace Execution Guide
 
@@ -38,7 +46,8 @@ implementation.
 | Item | Required value |
 |---|---|
 | Repository | `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/vllm-step4-pro` |
-| Git commit | `607d1641ee3fec43653fca510d717725828890c2` |
+| Base model/source commit | `607d1641ee3fec43653fca510d717725828890c2` |
+| Authorized DeepEP launch commit | `9bfd9a610ea4f2890010702ee7a207cf25edf8de` |
 | Branch name for reference | `xwx/step4pro-fa3-optimus` |
 | Runtime image | `hub.stepfun-inc.com/stepcast/stepcast:2026-08-06-server-vllm-test-0.19.0.post20.dev26.gc820e5ae1.precompiled` |
 | Image digest already inspected | `sha256:70492b0c79e2286b6ee56973f5f3322b53d293fc9332c4f792e56209a34d182b` |
@@ -49,6 +58,11 @@ implementation.
 | Full-MFA provider | Optimus CuTe FA4, head dimension 512, page/block size 128 |
 | Distributed MoE provider | Optimus FP8 MoE / DeepGEMM with DeepEP high-throughput |
 
+The base model implementation remains the pinned `607d1641ee` contract. For
+the DeepEP launch lane only, the owner authorized direct-child commit
+`9bfd9a610ea4f2890010702ee7a207cf25edf8de`. It modifies no model Python/CUDA
+code and must be recorded as a two-script launch overlay.
+
 Before launching anything, verify:
 
 ```bash
@@ -57,11 +71,16 @@ git -C \
   rev-parse HEAD
 ```
 
-The output must be exactly:
+For the authorized DeepEP lane, the output must be exactly:
 
 ```text
-607d1641ee3fec43653fca510d717725828890c2
+9bfd9a610ea4f2890010702ee7a207cf25edf8de
 ```
+
+Also verify that its parent is exact
+`607d1641ee3fec43653fca510d717725828890c2` and that the commit changes only
+`rjob-step4pro-2node.sh` plus `rjob-step4pro-deepep-probe.sh`. One-GPU evidence
+continues to use the unchanged base model code.
 
 Setting an environment variable named `VLLM_PULL_COMMIT` is not proof that the
 runtime imported that source. The final evidence must include both the actual
@@ -139,7 +158,15 @@ bbfa147d0d2e08b4c7f602b9ff6609503b9f79ef4262dddb389047b9ad37dd0c  vllm/model_exe
 6fb061268a63235a8ab6ae408096beefed7f53c68f4442e81deccdeb70b8276b  vllm/model_executor/layers/fused_moe/optimus_fp8_moe.py
 ```
 
-Recompute and compare these hashes before reusing the artifacts.
+The old two-node hash above is the base-commit copy. Under the authorized
+DeepEP launch commit, the exact script hashes are:
+
+```text
+b9e7fb070aa654c6341518cf9962c7d46a5c40d96650c016f8f04afd5e604bf5  rjob-step4pro-2node.sh
+2d823b17ff0d216ac291d92d9053cd86b2d40917aafc758bd7cfedad2b29888f  rjob-step4pro-deepep-probe.sh
+```
+
+Recompute and compare the applicable hashes before reusing the artifacts.
 
 ## 5. Environment and Safety Rules
 
@@ -167,13 +194,23 @@ forbidden workspace NFS `--volume` mount.
 - Wrap every `brainctl`/`rlaunch` inventory or diagnostic query with:
 
   ```bash
-  sudo -n systemd-run --scope -p MemoryMax=2G \
+  sudo -n systemd-run --scope -p MemoryMax=3G \
     timeout --signal=TERM --kill-after=5s 60s \
     <command>
   ```
 
 - Put `timeout` **inside** `systemd-run --scope`. Placing it outside can leave
   an orphaned process in the transient scope.
+- Use exact-name RJob queries and
+  `rjob.brainpp.cn/rjob-name=<exact-job-name>` Replica selectors. Do not run a
+  namespace-wide Replica inventory.
+- Keep large I/O disk-backed and streamed under `/data/ycfeng/tmp`; do not
+  load Git packs, bundles, tar archives, or large logs into shell variables,
+  command substitutions, or whole-file Python reads.
+- For live launch, use direct `setsid sudo -n systemd-run` rather than an
+  additional `bash -c` wrapper.
+- During cleanup, explicitly delete and poll the RJob/Replica first, then
+  terminate and wait for the local launcher process group.
 - Give each live smoke an overall hard timeout.
 - Report status at least every 10 minutes.
 - Never wait indefinitely for an agent, RJob, health endpoint, or request.
@@ -281,15 +318,28 @@ If these paths or hashes do not match the pinned source, stop and report the
 source-delivery root cause. Do not call the smoke valid based only on the image
 tag or `VLLM_PULL_COMMIT` environment variable.
 
-### Stage 2 — One-GPU 14-layer smoke
+### Stage 2 — One-GPU 14-layer synthetic smoke
 
-Base the execution on:
+Base the provider and serving arguments on:
 
 ```text
 vllm-step4-pro/rjob-step4pro-optimus-single.sh
 ```
 
-Required environment overrides:
+The real checkpoint is not required. Create a reduced 14-layer Step4Pro
+synthetic `config.json` that contains Full MFA head-dim 512, native SWA GQA,
+Dense layers, Latent MoE layers, and FP8 block quantization. Start it with:
+
+```bash
+vllm serve <SYNTHETIC_CONFIG_DIR> \
+  --load-format dummy \
+  --skip-tokenizer-init
+```
+
+Submit token-ID requests. Do not require meaningful generated text from random
+weights.
+
+Required source/runtime overrides:
 
 ```bash
 VLLM_PULL_COMMIT=607d1641ee3fec43653fca510d717725828890c2
@@ -300,13 +350,14 @@ POSITIVE_TAGS=B300
 
 Retain the recipe's:
 
-- model and tokenizer paths;
 - `step-optimus==3.23.24` overlay and checksum;
 - `VLLM_KV_CACHE_LAYOUT=NHD`;
 - `OPTIMUS_MUST_LOAD_LIB=1`;
 - block size `128`;
 - `--enable-expert-parallel`;
 - `--enforce-eager` for smoke;
+
+Do not mount `qy1-pt` or `step2-alignment-jfs` for the synthetic path.
 - `/health` polling;
 - completion, chat, and four-concurrent-request checks.
 
@@ -347,6 +398,61 @@ For the successful one-GPU request, capture a provider matrix containing:
 | Routed MoE | `optimus_fp8_moe.py` import path and selected Optimus/DeepGEMM execution path |
 | Router/projections | actual dtype/shape evidence when emitted by the runtime trace |
 
+On B300 SM103, apply the owner-authorized runtime overlay only after the
+`2103/2103` pinned-source check:
+
+```text
+torch.ops.Optimus.per_token_group_quant_fp8
+    -> optimus_cutedsl.group_quant_fp8.per_token_group_quant_fp8
+```
+
+The overlay emits `sm100_1d1d` packed UE8M0 scales and sets
+`VLLM_USE_DEEP_GEMM_E8M0=1`, because the fixed DeepGEMM 2.4.2 Blackwell
+runtime rejects FP32 activation scales. It is required for this pinned
+B300/image combination, not for the Step4Pro architecture in general.
+
+The quant overlay preserves shapes, routing, experts, attention, and
+DeepGEMM provider identity, but it changes the activation-quant implementation
+and scale representation. It is therefore valid evidence for execution and
+performance, not for bitwise output, generation quality, loss, or training
+convergence. The normal long-term repair is a matching SM103 Optimus native
+build for the image's torch/CUDA ABI.
+
+After the pinned-source check, also apply the reviewed inference-only
+`ep_gather` block correction:
+
+```text
+min(hidden_size, 1024)
+    -> min(1024, hidden_size & -hidden_size)
+```
+
+This preserves exact dimension coverage and top-k accumulation order.
+Previously legal dimensions keep their original block; 896 and 3584 become
+legal. The function is guarded by `torch.no_grad()` and is not part of a
+training graph, so it does not affect weights, routing training, gradients, or
+optimizer behavior. Preserve its unified diff and before/after hashes as
+separate evidence.
+
+Apply the same reviewed selector correction to an isolated copy of
+`optimus_triton/deep_gemm_ep_gather_masked.py`; do not edit the installed
+system package. Preserve a separate package-overlay diff and hashes.
+
+Set `OPTIMUS_TRITON_DRIVER_STRICT_SIGNATURE=1` for changing batch shapes. The
+default weak signature omits tensor shape and can reuse an invalid driver-cache
+entry between batch 1 and batch 4.
+
+Also record these non-model changes:
+
+- the two CuTe pointer-API edits inherited from the pinned smoke recipes;
+- the `flash_attn.__spec__` import-metadata repair;
+- the isolated masked-gather overlay rather than an installed-package edit;
+- the Full-MFA-only provider assertion, which leaves legal SWA provider
+  selection unchanged.
+
+The report must preserve the exact overlay diff and must still prove that the
+expert GEMMs use `OptimusFp8Experts` and the pinned DeepGEMM kernels. This is
+not permission to change any other provider or operation.
+
 Backend-selection logs plus runtime module paths are mandatory. If a profiler
 is used, also preserve the raw trace and list the provider-relevant kernel
 names. A generic kernel with the same tensor shape is not acceptable evidence.
@@ -369,6 +475,77 @@ DATA_PARALLEL_SIZE_LOCAL = 8
 tensor parallel size = 1
 VLLM_ALL2ALL_BACKEND = deepep_high_throughput
 ```
+
+`brainctl exec` does not inherit the holder shell's distributed environment.
+The holder must first write a quoted mode-0600 environment file under `/home`;
+the host must poll that file with a bounded readiness deadline before starting
+the remote smoke.
+
+Use this role split:
+
+```text
+DATA_PARALLEL_START_RANK = 0:
+    normal serving head
+
+DATA_PARALLEL_START_RANK > 0:
+    --headless --api-server-count 0
+```
+
+The headless node must not run health or HTTP request checks. It must remain
+attached to the coordinated DP group and prove DeepEP HT manager,
+dispatch/combine, and real-batch markers before being accepted.
+
+Before the full model, require a 16-rank NCCL preflight with:
+
+```text
+host network
+rdma/mlnx_shared=8
+mellanox.com/mlnx_rdma=1
+non-empty platform NCCL_IB_HCA
+all-reduce sum 1..16 = 136
+```
+
+Reset `LD_LIBRARY_PATH` to the pinned CUDA 13 compatibility path after
+worker-init; its CUDA 12.8 compat path produces CUDA error 803 with torch
+cu129.
+
+NCCL PASS does not replace the DeepEP gate. The available launcher currently
+lacks the later branch's `--share-host-shm=True` option. A complete result
+still requires the standalone DeepEP Buffer probe and then the full model to
+pass; do not infer DeepEP dispatch/combine from NCCL alone.
+
+The supplemental RJob guide also permits the legacy process launcher:
+
+```text
+brainctl launch --i-know-i-am-using-legacy-rlaunch
+```
+
+That path has now been tested. It completed NCCL and explicit NVSHMEM
+initialization on all 16 ranks, but `deep_ep.Buffer` failed the assertion
+`nvshmem_n_pes() == num_ranks`. Therefore neither the legacy launcher nor
+explicit NVSHMEM initialization alone is sufficient, and shared-host-SHM must
+remain a hypothesis rather than a claimed root cause.
+
+The owner has now authorized testing the complete later-commit contract. Apply
+`9bfd9a610e`, verify a launcher that genuinely accepts
+`--share-host-shm=True`, run matching predict-only, and then run
+`rjob-step4pro-deepep-probe.sh` before the complete model. The committed probe
+writes worker artifacts under `/tmp`; the execution copy must use a verified
+writable disk-backed path instead. This path-only safety change does not relax
+the required NVSHMEM, RDMA, host-network, or DeepEP settings.
+
+Current controller result:
+
+```text
+exact checkout/static scope: PASS
+rjob-mode shared-host-SHM parse: FAIL, exit 1
+legacy-mode shared-host-SHM parse: FAIL, exit 1
+standalone rjob client: absent
+```
+
+Both installed modes report `unknown flag: --share-host-shm`. Stop before
+predict-only or live allocation until the standalone client used by the commit
+or a documented equivalent API is provided.
 
 The two-node smoke is PASS only if:
 

@@ -984,6 +984,8 @@ from aiconfigurator.sdk.operations.mla import (  # noqa: F401
 )
 from aiconfigurator.sdk.operations.moe import (  # noqa: F401
     load_moe_data,
+    load_step4_deepep_ht_data,
+    load_step4_optimus_moe_data,
     load_trtllm_alltoall_data,
     load_wideep_context_moe_data,
     load_wideep_deepep_ll_data,

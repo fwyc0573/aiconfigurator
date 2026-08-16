@@ -48,6 +48,7 @@ class _TestBackend(BaseBackend):
         num_tokens=0,
         prefix=0,
         encoder_memory=None,
+        kv_in_flight_tokens=1,
     ) -> dict[str, float]:
         return {"total": 1.0}
 
@@ -145,6 +146,8 @@ def test_run_static_capacity_context_uses_peak_physical_kv(
     database,
     runtime_config: RuntimeConfig,
 ) -> None:
+    runtime_config.batch_size = 1
+    runtime_config.max_num_batched_tokens = 8_192
     model.get_kvcache_peak_allocated_bytes_per_sequence.return_value = 12_345.0
     model.get_kvcache_bytes_per_sequence.side_effect = AssertionError(
         "Logical KV bytes must not drive memory-capacity reporting."
@@ -155,14 +158,20 @@ def test_run_static_capacity_context_uses_peak_physical_kv(
         model,
         database,
         runtime_config,
-        mode="static",
+        mode="static_ctx",
         stride=2,
     )
 
     assert summary.get_kv_per_seq() == (12_345.0, runtime_config.isl + runtime_config.osl)
+    model.get_kvcache_peak_allocated_bytes_per_sequence.assert_called_once_with(
+        runtime_config.isl + runtime_config.osl,
+        in_flight_tokens=8_192,
+    )
 
 
 def test_memory_usage_uses_peak_physical_kv_allocation() -> None:
+    peak_calls = []
+
     class _WeightlessOp:
         @staticmethod
         def get_weights() -> float:
@@ -191,8 +200,13 @@ def test_memory_usage_uses_peak_physical_kv_allocation() -> None:
             raise AssertionError("Point-in-time residency must not drive OOM checks.")
 
         @staticmethod
-        def get_kvcache_peak_allocated_bytes_per_sequence(seq_len: int) -> float:
+        def get_kvcache_peak_allocated_bytes_per_sequence(
+            seq_len: int,
+            *,
+            in_flight_tokens: int = 1,
+        ) -> float:
             assert seq_len == 10
+            peak_calls.append(in_flight_tokens)
             return 1_024.0
 
         @staticmethod
@@ -215,9 +229,37 @@ def test_memory_usage_uses_peak_physical_kv_allocation() -> None:
         beam_width=1,
         isl=8,
         osl=2,
+        kv_in_flight_tokens=8_192,
     )
 
     assert memory["kvcache"] == pytest.approx(2_048.0 / (1 << 30))
+    assert peak_calls == [8_192]
+
+
+def test_static_context_rejects_global_chunk_budget_for_multi_sequence_batch(
+    backend: BaseBackend,
+    model,
+    database,
+) -> None:
+    """A global vLLM token budget is not a per-sequence chunk when batch > 1."""
+    runtime_config = RuntimeConfig(
+        batch_size=2,
+        beam_width=1,
+        isl=32_768,
+        osl=1,
+        max_num_batched_tokens=8_192,
+    )
+
+    with pytest.raises(
+        NotImplementedError,
+        match=r"global scheduler budget.*batch_size=2",
+    ):
+        backend.run_static(
+            model,
+            database,
+            runtime_config,
+            mode="static_ctx",
+        )
 
 
 def test_run_static_can_route_to_rust_engine_step_backend(

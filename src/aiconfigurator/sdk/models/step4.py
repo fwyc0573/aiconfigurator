@@ -395,14 +395,23 @@ class Step4Model(BaseModel):
             bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
         )
 
-    def get_kvcache_peak_allocated_bytes_per_sequence(self, seq_len: int) -> float:
-        """Return peak page allocation while decoding through ``seq_len``."""
+    def get_kvcache_peak_allocated_bytes_per_sequence(
+        self,
+        seq_len: int,
+        *,
+        in_flight_tokens: int = 1,
+    ) -> float:
+        """Return peak page allocation while growing through ``seq_len``."""
         cfg = self.extra_params
         if not isinstance(cfg, common.Step4ProLatestConfig):
-            return super().get_kvcache_peak_allocated_bytes_per_sequence(seq_len)
+            return super().get_kvcache_peak_allocated_bytes_per_sequence(
+                seq_len,
+                in_flight_tokens=in_flight_tokens,
+            )
         return cfg.compute_peak_allocated_kv_cache_bytes(
             seq_len,
             bytes_per_element=common.GEMMQuantMode.bfloat16.value.memory,
+            in_flight_tokens=in_flight_tokens,
         )
 
     def get_kvcache_max_tokens(self, kv_budget_bytes: float) -> int:
@@ -1288,6 +1297,7 @@ class Step4Model(BaseModel):
             is_context=is_context,
             is_gated=True,
             provider="optimus_fp8_moe",
+            activation="situ_glu",
         )
 
         dispatch_args = (
@@ -1312,6 +1322,10 @@ class Step4Model(BaseModel):
                 is_context=is_context,
                 provider="vllm_deepep_high_throughput",
                 operation="dispatch",
+                ep_ranks_per_node=8,
+                dispatch_format="fp8_e4m3_block128",
+                sms=20,
+                max_tokens_per_rank=0,
             ),
             experts,
             ops.MoEDispatch(
@@ -1323,6 +1337,10 @@ class Step4Model(BaseModel):
                 is_context=is_context,
                 provider="vllm_deepep_high_throughput",
                 operation="combine",
+                ep_ranks_per_node=8,
+                dispatch_format="fp8_e4m3_block128",
+                sms=20,
+                max_tokens_per_rank=0,
             ),
             ops.GEMM(
                 f"{prefix}_shared_gate_up_gemm",

@@ -217,6 +217,63 @@ def test_latest_kv_capacity_uses_peak_physical_allocation():
     assert model.get_kvcache_peak_allocated_bytes_per_sequence(641) > budget
 
 
+@pytest.mark.parametrize(
+    ("seq_len", "in_flight_tokens", "expected_swa_blocks"),
+    [
+        (32_768, 8_192, 68),
+        (32_768, 32_768, 256),
+        (32_768, 65_536, 256),
+        (131_072, 8_192, 68),
+        (131_072, 32_768, 260),
+        (131_072, 65_536, 516),
+        (1_048_544, 8_192, 68),
+        (1_048_544, 32_768, 260),
+        (1_048_544, 65_536, 516),
+    ],
+)
+def test_latest_chunked_prefill_peak_matches_pinned_vllm_allocator(
+    seq_len: int,
+    in_flight_tokens: int,
+    expected_swa_blocks: int,
+) -> None:
+    """Chunk peaks follow pinned vLLM release-before-allocation block order."""
+    model = _build_latest_model()
+    block_size = model.extra_params.full_page_size
+    page_bytes = model.extra_params.full_physical_page_bytes
+    full_blocks = (seq_len + block_size - 1) // block_size
+    expected_pages = 20 * full_blocks + 58 * expected_swa_blocks
+
+    actual_bytes = model.get_kvcache_peak_allocated_bytes_per_sequence(
+        seq_len,
+        in_flight_tokens=in_flight_tokens,
+    )
+
+    assert actual_bytes == expected_pages * page_bytes
+
+
+def test_latest_peak_kv_defaults_to_one_in_flight_decode_token() -> None:
+    """Existing capacity and decode callers retain the one-token peak contract."""
+    model = _build_latest_model()
+
+    assert model.get_kvcache_peak_allocated_bytes_per_sequence(
+        640
+    ) == model.get_kvcache_peak_allocated_bytes_per_sequence(
+        640,
+        in_flight_tokens=1,
+    )
+
+
+def test_latest_peak_kv_rejects_non_positive_in_flight_tokens() -> None:
+    """An invalid chunk must fail instead of silently falling back to decode."""
+    model = _build_latest_model()
+
+    with pytest.raises(ValueError, match="in_flight_tokens must be a positive integer"):
+        model.get_kvcache_peak_allocated_bytes_per_sequence(
+            32_768,
+            in_flight_tokens=0,
+        )
+
+
 @pytest.mark.parametrize("phase", ["context", "generation"])
 def test_latest_full_mfa_key_order_and_dimensions(phase, manifest):
     """Full layers expose the pinned low-rank shared-KV and grouped-output path."""

@@ -135,6 +135,7 @@ class MoE(Operation):
     _low_latency_data_cache: ClassVar[dict] = {}
     _wideep_context_data_cache: ClassVar[dict] = {}
     _wideep_generation_data_cache: ClassVar[dict] = {}
+    _step4_optimus_data_cache: ClassVar[dict] = {}
 
     def __init__(
         self,
@@ -168,6 +169,9 @@ class MoE(Operation):
         self._moe_backend = kwargs.get("moe_backend")
         self._enable_eplb = kwargs.get("enable_eplb", False)
         self._provider = kwargs.get("provider")
+        self._activation = kwargs.get("activation")
+        if self._provider == "optimus_fp8_moe" and self._activation != "situ_glu":
+            raise ValueError("Step4 Optimus FP8 MoE requires activation='situ_glu'.")
         # 3 GEMMs for gated (gate, up, down), 2 GEMMs for non-gated (up, down)
         num_gemms = 3 if is_gated else 2
         self._weights = (
@@ -264,6 +268,44 @@ class MoE(Operation):
         cls._low_latency_data_cache.clear()
         cls._wideep_context_data_cache.clear()
         cls._wideep_generation_data_cache.clear()
+        cls._step4_optimus_data_cache.clear()
+
+    @classmethod
+    def load_step4_optimus_data(cls, database: PerfDatabase) -> None:
+        """Load the exact pinned Step4 Optimus FP8 MoE table."""
+        import os
+
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._step4_optimus_data_cache:
+            system_data_root = os.path.join(
+                database.systems_root,
+                database.system_spec["data_dir"],
+            )
+            data_dir = os.path.join(
+                system_data_root,
+                database.backend,
+                database.version,
+            )
+            primary_path = os.path.join(
+                data_dir,
+                PerfDataFilename.step4_optimus_moe.value,
+            )
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_optimus_moe,
+                primary_path,
+                system_data_root,
+            )
+            cls._step4_optimus_data_cache[key] = LoadedOpData(
+                load_step4_optimus_moe_data(sources),
+                PerfDataFilename.step4_optimus_moe,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_optimus_moe_data" not in database.__dict__:
+            database._step4_optimus_moe_data = cls._step4_optimus_data_cache[key]
 
     # ------------------------------------------------------------------
     # Query table (formerly PerfDatabase.query_moe)
@@ -955,10 +997,80 @@ class MoE(Operation):
     # Op contract
     # ------------------------------------------------------------------
 
+    def _step4_optimus_persisted_key(self) -> tuple:
+        """Return the physical identity required by the Optimus dataset."""
+        return (
+            self._provider,
+            self._hidden_size,
+            self._inter_size,
+            self._topk,
+            self._num_experts,
+            self._moe_tp_size,
+            self._moe_ep_size,
+            self._quant_mode.name,
+            self._workload_distribution,
+            self._activation,
+        )
+
+    def _query_step4_optimus(
+        self,
+        database: PerfDatabase,
+        *,
+        num_tokens: int,
+    ) -> PerformanceResult:
+        """Query an exact Optimus structure and interpolate only token count."""
+        if not isinstance(num_tokens, int) or isinstance(num_tokens, bool) or num_tokens <= 0:
+            raise ValueError("Step4 Optimus MoE requires a positive num_tokens integer.")
+
+        if not hasattr(database, "_step4_optimus_moe_data"):
+            self.load_step4_optimus_data(database)
+        data = database._step4_optimus_moe_data
+        if hasattr(data, "raise_if_not_loaded"):
+            data.raise_if_not_loaded()
+
+        structural_key = self._step4_optimus_persisted_key()
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                f"Step4 Optimus MoE perf data is unavailable for exact provider/structure key {structural_key!r}."
+            )
+
+        token_data = data[structural_key]
+        if num_tokens in token_data:
+            result = token_data[num_tokens]
+        else:
+            token_points = sorted(token_data)
+            try:
+                left, right = interpolation.nearest_1d_point_helper(
+                    num_tokens,
+                    token_points,
+                )
+                result = interpolation.interp_1d(
+                    [left, right],
+                    [token_data[left], token_data[right]],
+                    num_tokens,
+                )
+            except interpolation.InterpolationDataNotAvailableError as exc:
+                raise PerfDataNotAvailableError(
+                    "Step4 Optimus MoE data does not bracket the requested "
+                    f"token count: structural_key={structural_key!r}, "
+                    f"num_tokens={num_tokens}, available_tokens={token_points}."
+                ) from exc
+
+        return PerformanceResult(
+            latency=float(result["latency"]) * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * self._scale_factor,
+            source="silicon",
+        )
+
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         """Query MoE latency with energy data."""
         if self._provider is not None:
-            raise NotImplementedError(f"MoE provider-specific dataset is required for provider={self._provider!r}.")
+            if self._provider != "optimus_fp8_moe":
+                raise NotImplementedError(f"MoE provider-specific dataset is required for provider={self._provider!r}.")
+            return self._query_step4_optimus(
+                database,
+                num_tokens=kwargs.get("x") * self._attention_dp_size,
+            )
         # attention dp size will scale up the total input tokens.
         x = kwargs.get("x") * self._attention_dp_size
         overwrite_quant_mode = kwargs.get("quant_mode")
@@ -1008,6 +1120,7 @@ class MoEDispatch(Operation):
 
     _normal_data_cache: ClassVar[dict] = {}
     _ll_data_cache: ClassVar[dict] = {}
+    _step4_deepep_ht_data_cache: ClassVar[dict] = {}
 
     def __init__(
         self,
@@ -1046,6 +1159,9 @@ class MoEDispatch(Operation):
         self._operation = kwargs.get("operation")
         if self._operation not in (None, "dispatch", "combine"):
             raise ValueError("MoEDispatch operation must be 'dispatch' or 'combine'.")
+        self._ep_ranks_per_node = kwargs.get("ep_ranks_per_node")
+        self._dispatch_format = kwargs.get("dispatch_format")
+        self._max_tokens_per_rank = kwargs.get("max_tokens_per_rank")
 
     # ------------------------------------------------------------------
     # Data ownership
@@ -1102,6 +1218,44 @@ class MoEDispatch(Operation):
     def clear_cache(cls) -> None:
         cls._normal_data_cache.clear()
         cls._ll_data_cache.clear()
+        cls._step4_deepep_ht_data_cache.clear()
+
+    @classmethod
+    def load_step4_deepep_ht_data(cls, database: PerfDatabase) -> None:
+        """Load the pinned vLLM Step4 DeepEP HT dispatch/combine table."""
+        import os
+
+        from aiconfigurator.sdk.perf_database import LoadedOpData, PerfDataFilename
+
+        key = cls._cache_key(database)
+        if key not in cls._step4_deepep_ht_data_cache:
+            system_data_root = os.path.join(
+                database.systems_root,
+                database.system_spec["data_dir"],
+            )
+            data_dir = os.path.join(
+                system_data_root,
+                database.backend,
+                database.version,
+            )
+            primary_path = os.path.join(
+                data_dir,
+                PerfDataFilename.step4_deepep_ht.value,
+            )
+            sources = database._build_op_sources(
+                PerfDataFilename.step4_deepep_ht,
+                primary_path,
+                system_data_root,
+            )
+            cls._step4_deepep_ht_data_cache[key] = LoadedOpData(
+                load_step4_deepep_ht_data(sources),
+                PerfDataFilename.step4_deepep_ht,
+                primary_path,
+            )
+            cls._record_load()
+
+        if "_step4_deepep_ht_data" not in database.__dict__:
+            database._step4_deepep_ht_data = cls._step4_deepep_ht_data_cache[key]
 
     # ------------------------------------------------------------------
     # Query tables (formerly PerfDatabase.query_wideep_deepep_normal /
@@ -1204,9 +1358,14 @@ class MoEDispatch(Operation):
 
     def query(self, database: PerfDatabase, **kwargs) -> PerformanceResult:
         if self._provider is not None:
-            raise NotImplementedError(
-                f"MoEDispatch provider-specific dataset is required for provider={self._provider!r}, "
-                f"operation={self._operation!r}."
+            if self._provider != "vllm_deepep_high_throughput":
+                raise NotImplementedError(
+                    "MoEDispatch provider-specific dataset is required for "
+                    f"provider={self._provider!r}, operation={self._operation!r}."
+                )
+            return self._query_step4_deepep_ht(
+                database,
+                tokens_per_dp_rank=kwargs.get("x"),
             )
         num_tokens = kwargs.get("x")
         volume = num_tokens * self._hidden_size
@@ -1502,6 +1661,85 @@ class MoEDispatch(Operation):
             self._attention_dp_size,
             self._sms,
             self._is_context,
+        )
+
+    def _step4_deepep_ht_persisted_key(
+        self,
+        database: PerfDatabase,
+    ) -> tuple:
+        """Return the exact pinned DeepEP HT structure and topology key."""
+        ep_ranks_per_node = self._ep_ranks_per_node
+        if ep_ranks_per_node is None:
+            ep_ranks_per_node = min(
+                self._moe_ep_size,
+                int(database.system_spec["node"]["num_gpus_per_node"]),
+            )
+        return (
+            self._provider,
+            self._operation,
+            self._moe_ep_size,
+            int(ep_ranks_per_node),
+            self._hidden_size,
+            self._num_experts,
+            self._topk,
+            self._dispatch_format,
+            self._sms,
+            self._max_tokens_per_rank,
+        )
+
+    def _query_step4_deepep_ht(
+        self,
+        database: PerfDatabase,
+        *,
+        tokens_per_dp_rank: int,
+    ) -> PerformanceResult:
+        """Query exact DeepEP HT structure and interpolate local tokens only."""
+        if not isinstance(tokens_per_dp_rank, int) or isinstance(tokens_per_dp_rank, bool) or tokens_per_dp_rank <= 0:
+            raise ValueError("Step4 DeepEP HT requires a positive tokens_per_dp_rank integer.")
+        if self._moe_tp_size != 1 or self._attention_dp_size != self._moe_ep_size:
+            raise ValueError("Step4 DeepEP HT requires moe_tp_size=1 and attention_dp_size=moe_ep_size.")
+        if self._quant_mode != common.MoEQuantMode.fp8_block:
+            raise ValueError("Step4 DeepEP HT requires fp8_block MoE quantization.")
+        if self._max_tokens_per_rank != 0:
+            raise ValueError("Step4 DeepEP HT requires max_tokens_per_rank=0.")
+
+        if not hasattr(database, "_step4_deepep_ht_data"):
+            self.load_step4_deepep_ht_data(database)
+        data = database._step4_deepep_ht_data
+        if hasattr(data, "raise_if_not_loaded"):
+            data.raise_if_not_loaded()
+
+        structural_key = self._step4_deepep_ht_persisted_key(database)
+        if structural_key not in data:
+            raise PerfDataNotAvailableError(
+                f"Step4 DeepEP HT perf data is unavailable for exact provider/structure key {structural_key!r}."
+            )
+        token_data = data[structural_key]
+        if tokens_per_dp_rank in token_data:
+            result = token_data[tokens_per_dp_rank]
+        else:
+            token_points = sorted(token_data)
+            try:
+                left, right = interpolation.nearest_1d_point_helper(
+                    tokens_per_dp_rank,
+                    token_points,
+                )
+                result = interpolation.interp_1d(
+                    [left, right],
+                    [token_data[left], token_data[right]],
+                    tokens_per_dp_rank,
+                )
+            except interpolation.InterpolationDataNotAvailableError as exc:
+                raise PerfDataNotAvailableError(
+                    "Step4 DeepEP HT data does not bracket the requested "
+                    f"tokens_per_dp_rank={tokens_per_dp_rank}; "
+                    f"available_tokens={token_points}."
+                ) from exc
+
+        return PerformanceResult(
+            latency=float(result["latency"]) * self._scale_factor,
+            energy=float(result.get("energy", 0.0)) * self._scale_factor,
+            source="silicon",
         )
 
     def query_ideal(self, database: PerfDatabase, **kwargs):
@@ -2522,6 +2760,131 @@ class TrtLLMWideEPMoEDispatch(Operation):
 # ─────────────────────────────────────────────────────────
 # CSV loaders (moved here from perf_database.py so each op family owns its data + parser)
 # ─────────────────────────────────────────────────────────
+
+
+def load_step4_optimus_moe_data(perf_file):
+    """Load exact Step4 Optimus rows keyed by structure then token count."""
+    import os
+
+    if isinstance(perf_file, os.PathLike):
+        perf_file = os.fspath(perf_file)
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    data: dict[tuple, dict[int, dict[str, float]]] = {}
+    for row in rows:
+        provider = str(row["provider"])
+        kernel_source = str(row["kernel_source"])
+        op_name = str(row["op_name"])
+        if op_name != "step4_optimus_moe":
+            raise ValueError(f"unexpected op_name in Step4 Optimus MoE data: {op_name!r}")
+        if provider != "optimus_fp8_moe" or kernel_source != provider:
+            raise ValueError(
+                "Step4 Optimus MoE provider does not match the pinned kernel: "
+                f"provider={provider!r}, kernel_source={kernel_source!r}"
+            )
+
+        structural_key = (
+            provider,
+            int(row["hidden_size"]),
+            int(row["inter_size"]),
+            int(row["topk"]),
+            int(row["num_experts"]),
+            int(row["moe_tp_size"]),
+            int(row["moe_ep_size"]),
+            str(row["moe_dtype"]),
+            str(row["distribution"]),
+            str(row["activation"]),
+        )
+        num_tokens = int(row["num_tokens"])
+        if min(num_tokens, *structural_key[1:7]) < 1:
+            raise ValueError("Step4 Optimus MoE dimensions must be positive")
+        if structural_key[7] != "fp8_block":
+            raise ValueError(f"Step4 Optimus MoE requires moe_dtype='fp8_block', got {structural_key[7]!r}")
+        if structural_key[9] != "situ_glu":
+            raise ValueError(f"Step4 Optimus MoE requires activation='situ_glu', got {structural_key[9]!r}")
+
+        latency = float(row["latency"])
+        power = float(row.get("power", 0.0) or 0.0)
+        if latency < 0.0 or power < 0.0:
+            raise ValueError("Step4 Optimus MoE latency and power must be non-negative")
+        value = {
+            "latency": latency,
+            "energy": power * latency,
+        }
+        token_data = data.setdefault(structural_key, {})
+        existing = token_data.get(num_tokens)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting Step4 Optimus MoE row for physical key "
+                f"{(*structural_key, num_tokens)!r}: {existing!r} != {value!r}"
+            )
+        token_data[num_tokens] = value
+
+    return data
+
+
+def load_step4_deepep_ht_data(perf_file):
+    """Load exact Step4 DeepEP HT rows keyed by structure then local tokens."""
+    import os
+
+    if isinstance(perf_file, os.PathLike):
+        perf_file = os.fspath(perf_file)
+    rows = _read_filtered_rows(perf_file)
+    if rows is None:
+        return None
+
+    data: dict[tuple, dict[int, dict[str, float]]] = {}
+    for row in rows:
+        provider = str(row["provider"])
+        if str(row["op_name"]) != "step4_deepep_ht":
+            raise ValueError(f"unexpected op_name in Step4 DeepEP HT data: {row['op_name']!r}")
+        if provider != "vllm_deepep_high_throughput":
+            raise ValueError(f"unexpected Step4 DeepEP HT provider: {provider!r}")
+        if str(row["kernel_source"]) != "deepep_ht":
+            raise ValueError("Step4 DeepEP HT kernel_source must be 'deepep_ht'")
+        if str(row["deepep_mode"]) != "ht":
+            raise ValueError("Step4 DeepEP HT mode must be 'ht'")
+        operation = str(row["operation"])
+        if operation not in {"dispatch", "combine"}:
+            raise ValueError(f"unexpected Step4 DeepEP HT operation: {operation!r}")
+
+        structural_key = (
+            provider,
+            operation,
+            int(row["ep_size"]),
+            int(row["ep_ranks_per_node"]),
+            int(row["hidden_size"]),
+            int(row["num_experts"]),
+            int(row["topk"]),
+            str(row["dispatch_format"]),
+            int(row["num_sms"]),
+            int(row["max_tokens_per_rank"]),
+        )
+        tokens_per_dp_rank = int(row["tokens_per_dp_rank"])
+        if min(tokens_per_dp_rank, *structural_key[2:7], structural_key[8]) < 1:
+            raise ValueError("Step4 DeepEP HT dimensions must be positive")
+        if structural_key[7] != "fp8_e4m3_block128":
+            raise ValueError("Step4 DeepEP HT dispatch format must be 'fp8_e4m3_block128'")
+        if structural_key[9] != 0:
+            raise ValueError("Step4 DeepEP HT max_tokens_per_rank must be 0")
+
+        latency = float(row["latency"])
+        power = float(row.get("power", 0.0) or 0.0)
+        if latency < 0.0 or power < 0.0:
+            raise ValueError("Step4 DeepEP HT latency and power must be non-negative")
+        value = {"latency": latency, "energy": power * latency}
+        token_data = data.setdefault(structural_key, {})
+        existing = token_data.get(tokens_per_dp_rank)
+        if existing is not None and existing != value:
+            raise ValueError(
+                "conflicting Step4 DeepEP HT row for physical key "
+                f"{(*structural_key, tokens_per_dp_rank)!r}: "
+                f"{existing!r} != {value!r}"
+            )
+        token_data[tokens_per_dp_rank] = value
+    return data
 
 
 def load_moe_data(moe_file):

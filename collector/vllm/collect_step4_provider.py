@@ -33,6 +33,8 @@ FULL_K_NORM_ROPE_PROVIDER = "vllm_step4pro_k_norm_rope"
 SWA_QKV_NORM_ROPE_PROVIDER = "vllm_step4pro_qkv_norm_rope"
 FULL_ATTENTION_PROVIDER = "optimus_fa4"
 SWA_ATTENTION_PROVIDER = "vllm_native_sliding_gqa"
+OPTIMUS_MOE_PROVIDER = "optimus_fp8_moe"
+OPTIMUS_MOE_ACTIVATION = "situ_glu"
 STEP4_ATTENTION_MAX_KV_CACHE_BYTES = 128 * 1024**3
 
 
@@ -131,6 +133,183 @@ def _qkv_norm_rope_structural_keys() -> list[tuple[str, str, int, int, int]]:
             f"expected={sorted(expected_keys)}, actual={sorted(keys)}"
         )
     return sorted(keys)
+
+
+def _step4_optimus_moe_structural_keys() -> list[tuple[str, int, int, int, int, int, str, str, str]]:
+    """Return the pinned expert-compute identity emitted by the AIC graph."""
+    from aiconfigurator.sdk.operations import MoE
+
+    keys = {
+        (
+            operation._provider,
+            operation._hidden_size,
+            operation._inter_size,
+            operation._topk,
+            operation._num_experts,
+            operation._moe_tp_size,
+            operation._quant_mode.name,
+            operation._workload_distribution,
+            operation._activation,
+        )
+        for operation in _walk_operations(_latest_model_operations())
+        if isinstance(operation, MoE) and operation._provider is not None
+    }
+    expected_keys = {
+        (
+            OPTIMUS_MOE_PROVIDER,
+            3584,
+            3584,
+            16,
+            896,
+            1,
+            "fp8_block",
+            "power_law_1.2",
+            OPTIMUS_MOE_ACTIVATION,
+        )
+    }
+    if keys != expected_keys:
+        raise RuntimeError(
+            f"Built {LATEST_MODEL!r} graph emitted unexpected Optimus MoE "
+            f"structures: expected={sorted(expected_keys)}, actual={sorted(keys)}"
+        )
+    return sorted(keys)
+
+
+def _step4_optimus_moe_scale_shapes(
+    *,
+    num_experts: int,
+    moe_ep_size: int,
+    hidden_size: int,
+    inter_size: int,
+) -> tuple[tuple[int, int, int], tuple[int, int, int]]:
+    """Return rank-local 128x128 block-scale shapes for w13 and w2."""
+    if min(num_experts, moe_ep_size, hidden_size, inter_size) < 1:
+        raise ValueError("Step4 Optimus MoE dimensions must be positive")
+    if num_experts % moe_ep_size:
+        raise ValueError("Step4 Optimus MoE requires num_experts divisible by moe_ep_size")
+    if hidden_size % 128 or inter_size % 128:
+        raise ValueError("Step4 Optimus MoE requires hidden/inter dimensions divisible by 128")
+
+    local_num_experts = num_experts // moe_ep_size
+    hidden_blocks = hidden_size // 128
+    inter_blocks = inter_size // 128
+    return (
+        (local_num_experts, 2 * inter_blocks, hidden_blocks),
+        (local_num_experts, hidden_blocks, inter_blocks),
+    )
+
+
+def _step4_optimus_rank0_workload(
+    topk_weights,
+    topk_ids,
+    *,
+    local_num_experts: int,
+    num_experts: int,
+):
+    """Keep rank-0 work while preserving Optimus global expert IDs."""
+    import torch
+
+    if topk_weights.ndim != 2 or topk_ids.ndim != 2:
+        raise ValueError("Step4 Optimus routing tensors must be rank 2")
+    if topk_weights.shape != topk_ids.shape:
+        raise ValueError("Step4 Optimus routing weights and IDs must have equal shapes")
+    if not 0 < local_num_experts < num_experts:
+        raise ValueError("Step4 Optimus rank-0 workload requires a strict local expert shard")
+
+    local_mask = (topk_ids >= 0) & (topk_ids < local_num_experts)
+    rank0_token_mask = local_mask.any(dim=1)
+    if not torch.any(rank0_token_mask):
+        raise RuntimeError("Step4 Optimus routing produced no rank-0 expert work")
+
+    local_mask = local_mask[rank0_token_mask]
+    local_weights = topk_weights[rank0_token_mask].to(torch.float32).clone()
+    global_ids = topk_ids[rank0_token_mask].to(torch.int64).clone()
+    local_weights[~local_mask] = 0.0
+    global_ids[~local_mask] = num_experts - 1
+    return local_weights.contiguous(), global_ids.to(torch.int32).contiguous()
+
+
+def _step4_optimus_provider_path(
+    *,
+    local_num_tokens: int,
+    contiguous_threshold: int,
+) -> tuple[str, bool]:
+    """Match the pinned Fp8MoEMethod branch and its supported execution mode."""
+    if local_num_tokens < 1 or contiguous_threshold < 1:
+        raise ValueError("Step4 Optimus provider-path dimensions must be positive")
+    if local_num_tokens < contiguous_threshold:
+        return "deepgemm_optimus_moe_masked_fp8", True
+    return "deepgemm_optimus_moe_fp8", False
+
+
+def _step4_optimus_hidden_states(
+    shape: tuple[int, int],
+    *,
+    device,
+):
+    """Create deterministic BF16 inputs without using the default RNG."""
+    import torch
+
+    generator = torch.Generator(device=device)
+    generator.manual_seed(42)
+    return torch.randn(
+        shape,
+        dtype=torch.bfloat16,
+        device=device,
+        generator=generator,
+    )
+
+
+def _step4_optimus_reserve_pinned_workspaces(
+    optimus_module,
+    *,
+    torch_module,
+    device,
+    max_num_tokens: int,
+    hidden_size: int,
+    inter_size: int,
+    topk: int,
+    max_local_num_experts: int,
+) -> None:
+    """Initialize and validate the pinned provider's process-global workspaces."""
+    if min(max_num_tokens, hidden_size, inter_size, topk, max_local_num_experts) < 1:
+        raise ValueError("Step4 Optimus workspace reservation dimensions must be positive")
+
+    hidden_base = torch_module.empty((1,), dtype=torch_module.bfloat16, device=device)
+    w1_base = torch_module.empty((1,), dtype=torch_module.float8_e4m3fn, device=device)
+    topk_base = torch_module.empty((1,), dtype=torch_module.int32, device=device)
+    reservation_hidden = torch_module.as_strided(
+        hidden_base,
+        (max_num_tokens, hidden_size),
+        (0, 0),
+    )
+    reservation_w1 = torch_module.as_strided(
+        w1_base,
+        (max_local_num_experts, 2 * inter_size, hidden_size),
+        (0, 0, 0),
+    )
+    reservation_topk = torch_module.as_strided(
+        topk_base,
+        (max_num_tokens, topk),
+        (0, 0),
+    )
+
+    expected_sizes = optimus_module._get_ws_size(
+        reservation_hidden,
+        reservation_w1,
+        reservation_topk,
+    )
+    workspaces = optimus_module._get_workspaces(
+        reservation_hidden,
+        reservation_w1,
+        reservation_topk,
+    )
+    actual_sizes = tuple(workspace.buffer.numel() * workspace.buffer.element_size() for workspace in workspaces)
+    if any(actual < expected for actual, expected in zip(actual_sizes, expected_sizes, strict=True)):
+        raise RuntimeError(
+            "Pinned Step4 Optimus workspaces were initialized below the full "
+            f"collection requirement: expected={expected_sizes}, actual={actual_sizes}"
+        )
 
 
 def _step4_attention_structural_keys(
@@ -295,13 +474,39 @@ def _qkv_norm_rope_expected_output_shapes(
     raise ValueError(f"Unsupported Step4 QKV norm/RoPE provider: {provider!r}")
 
 
+def _validate_qkv_norm_rope_probe(
+    probe,
+    *,
+    expected_shapes: tuple[tuple[int, ...], ...],
+    expected_dtype,
+):
+    """Fail fast when the pinned QKV provider returns invalid outputs."""
+    probe_outputs = probe if isinstance(probe, tuple) else (probe,)
+    actual_shapes = tuple(tuple(output.shape) for output in probe_outputs)
+    if actual_shapes != expected_shapes:
+        raise RuntimeError(
+            "Pinned vLLM QKV norm/RoPE path returned unexpected shapes: "
+            f"expected={expected_shapes}, actual={actual_shapes}"
+        )
+    if any(output.dtype != expected_dtype for output in probe_outputs):
+        raise RuntimeError(
+            "Pinned vLLM QKV norm/RoPE path returned an unexpected dtype: "
+            f"expected={expected_dtype}, "
+            f"actual={tuple(output.dtype for output in probe_outputs)}"
+        )
+    if any(not bool(output.isfinite().all()) for output in probe_outputs):
+        raise RuntimeError("Pinned vLLM QKV norm/RoPE path returned non-finite values")
+    return probe_outputs
+
+
 def get_step4_grouped_gemm_test_cases() -> list[list[object]]:
     """Return token sweeps for grouped identities extracted from the AIC graph."""
-    from collector.case_generator import get_step4_model_gemm_case_specs
+    from collector.case_generator import get_step4_provider_token_counts
 
-    token_counts = sorted(
-        {case.x for case in get_step4_model_gemm_case_specs(LATEST_MODEL, backend="vllm")},
-        reverse=True,
+    token_counts = get_step4_provider_token_counts(
+        LATEST_MODEL,
+        "step4_grouped_gemm",
+        backend="vllm",
     )
     return [
         [provider, groups, num_tokens, n, k, quant_mode]
@@ -312,11 +517,12 @@ def get_step4_grouped_gemm_test_cases() -> list[list[object]]:
 
 def get_step4_fp32_output_gemm_test_cases() -> list[list[object]]:
     """Return token sweeps for FP32 router identities from the AIC graph."""
-    from collector.case_generator import get_step4_model_gemm_case_specs
+    from collector.case_generator import get_step4_provider_token_counts
 
-    token_counts = sorted(
-        {case.x for case in get_step4_model_gemm_case_specs(LATEST_MODEL, backend="vllm")},
-        reverse=True,
+    token_counts = get_step4_provider_token_counts(
+        LATEST_MODEL,
+        "step4_fp32_output_gemm",
+        backend="vllm",
     )
     return [
         [provider, num_tokens, n, k, weight_dtype, output_dtype]
@@ -327,11 +533,12 @@ def get_step4_fp32_output_gemm_test_cases() -> list[list[object]]:
 
 def get_step4_qkv_norm_rope_test_cases() -> list[list[object]]:
     """Return token sweeps for both pinned QKV preprocessing paths."""
-    from collector.case_generator import get_step4_model_gemm_case_specs
+    from collector.case_generator import get_step4_provider_token_counts
 
-    token_counts = sorted(
-        {case.x for case in get_step4_model_gemm_case_specs(LATEST_MODEL, backend="vllm")},
-        reverse=True,
+    token_counts = get_step4_provider_token_counts(
+        LATEST_MODEL,
+        "step4_qkv_norm_rope",
+        backend="vllm",
     )
     return [
         [provider, num_tokens, normalized_tensors, q_heads, kv_heads, head_dim]
@@ -340,46 +547,106 @@ def get_step4_qkv_norm_rope_test_cases() -> list[list[object]]:
     ]
 
 
+def get_step4_optimus_moe_test_cases() -> list[list[object]]:
+    """Return exact pinned Optimus expert-compute workloads."""
+    from collector.case_generator import get_step4_optimus_moe_workload_config
+
+    config = get_step4_optimus_moe_workload_config(LATEST_MODEL)
+    test_cases = []
+    for (
+        provider,
+        hidden_size,
+        inter_size,
+        topk,
+        num_experts,
+        moe_tp_size,
+        moe_dtype,
+        _graph_distribution,
+        activation,
+    ) in _step4_optimus_moe_structural_keys():
+        for moe_ep_size in config["expert_parallel_sizes"]:
+            _step4_optimus_moe_scale_shapes(
+                num_experts=num_experts,
+                moe_ep_size=moe_ep_size,
+                hidden_size=hidden_size,
+                inter_size=inter_size,
+            )
+            for distribution_name, power_law_alpha in config["routing_distributions"]:
+                distribution = distribution_name if distribution_name == "balanced" else f"power_law_{power_law_alpha}"
+                for num_tokens in config["token_counts"]:
+                    test_cases.append(
+                        [
+                            provider,
+                            num_tokens,
+                            hidden_size,
+                            inter_size,
+                            topk,
+                            num_experts,
+                            moe_tp_size,
+                            moe_ep_size,
+                            moe_dtype,
+                            distribution,
+                            activation,
+                        ]
+                    )
+    return test_cases
+
+
 def get_step4_context_attention_test_cases() -> list[list[object]]:
     """Return exact requirements prefill/chunk workloads for both providers."""
     from collector.case_generator import get_step4_attention_workload_config
 
     config = get_step4_attention_workload_config(LATEST_MODEL)
-    workloads = config["context_workloads"]
-    return [
-        [
-            provider,
-            batch_size,
-            query_tokens,
-            total_context_tokens,
-            num_heads,
-            num_kv_heads,
-            head_dim,
-            window_size,
-            kv_cache_dtype,
-            attn_dtype,
-            kv_storage_alias,
-            page_size,
-            physical_page_bytes,
-            kv_block_stride_bytes,
-            kv_cache_layout,
-        ]
-        for (
-            provider,
-            num_heads,
-            num_kv_heads,
-            head_dim,
-            window_size,
-            kv_cache_dtype,
-            attn_dtype,
-            kv_storage_alias,
-            page_size,
-            physical_page_bytes,
-            kv_block_stride_bytes,
-            kv_cache_layout,
-        ) in _step4_attention_structural_keys("context")
-        for batch_size, query_tokens, total_context_tokens in workloads
-    ]
+    shared_workloads = config["context_workloads"]
+    workloads_by_provider = config["context_workloads_by_provider"]
+    structural_keys = _step4_attention_structural_keys("context")
+    known_providers = {key[0] for key in structural_keys}
+    unknown_providers = set(workloads_by_provider) - known_providers
+    if unknown_providers:
+        raise ValueError(
+            f"Step4 provider-specific context workloads reference unknown providers: {sorted(unknown_providers)}"
+        )
+
+    test_cases: list[list[object]] = []
+    for (
+        provider,
+        num_heads,
+        num_kv_heads,
+        head_dim,
+        window_size,
+        kv_cache_dtype,
+        attn_dtype,
+        kv_storage_alias,
+        page_size,
+        physical_page_bytes,
+        kv_block_stride_bytes,
+        kv_cache_layout,
+    ) in structural_keys:
+        workloads = (
+            *shared_workloads,
+            *workloads_by_provider.get(provider, ()),
+        )
+        for batch_size, query_tokens, total_context_tokens in workloads:
+            test_cases.append(
+                [
+                    provider,
+                    batch_size,
+                    query_tokens,
+                    total_context_tokens,
+                    num_heads,
+                    num_kv_heads,
+                    head_dim,
+                    window_size,
+                    kv_cache_dtype,
+                    attn_dtype,
+                    kv_storage_alias,
+                    page_size,
+                    physical_page_bytes,
+                    kv_block_stride_bytes,
+                    kv_cache_layout,
+                ]
+            )
+    return test_cases
 
 
 def get_step4_generation_attention_test_cases() -> list[list[object]]:
@@ -906,6 +1173,248 @@ def run_step4_generation_attention(
     )
 
 
+def run_step4_optimus_moe(
+    provider: str,
+    num_tokens: int,
+    hidden_size: int,
+    inter_size: int,
+    topk: int,
+    num_experts: int,
+    moe_tp_size: int,
+    moe_ep_size: int,
+    moe_dtype: str,
+    distribution: str,
+    activation: str,
+    *,
+    perf_filename: str,
+    device="cuda:0",
+) -> None:
+    """Measure the exact pinned vLLM Optimus custom-op implementation."""
+    import torch
+    import torch.nn.functional as F
+    import vllm.envs as envs
+    from vllm.model_executor.layers.fused_moe import optimus_fp8_moe as optimus_module
+    from vllm.model_executor.layers.fused_moe.activation import MoEActivation
+    from vllm.model_executor.layers.fused_moe.layer import determine_expert_map
+    from vllm.version import __version__ as vllm_version
+
+    from collector.case_generator import get_step4_optimus_moe_workload_config
+    from collector.helper import (
+        balanced_logits,
+        benchmark_with_power,
+        log_perf,
+        power_law_logits_v3,
+    )
+
+    structural_key = (
+        provider,
+        hidden_size,
+        inter_size,
+        topk,
+        num_experts,
+        moe_tp_size,
+        moe_dtype,
+        "power_law_1.2",
+        activation,
+    )
+    if structural_key not in _step4_optimus_moe_structural_keys():
+        raise ValueError(f"Unexpected Step4 Optimus MoE structure: {structural_key!r}")
+    workload_config = get_step4_optimus_moe_workload_config(LATEST_MODEL)
+    if num_tokens not in workload_config["token_counts"]:
+        raise ValueError(f"Unexpected Step4 Optimus MoE token count: {num_tokens}")
+    if moe_ep_size not in workload_config["expert_parallel_sizes"]:
+        raise ValueError(f"Unexpected Step4 Optimus MoE EP size: {moe_ep_size}")
+    allowed_distributions = {
+        name if name == "balanced" else f"power_law_{alpha}" for name, alpha in workload_config["routing_distributions"]
+    }
+    if distribution not in allowed_distributions:
+        raise ValueError(f"Unexpected Step4 Optimus MoE distribution: {distribution!r}")
+    if provider != OPTIMUS_MOE_PROVIDER:
+        raise ValueError(f"Unsupported Step4 Optimus MoE provider: {provider!r}")
+    if activation != OPTIMUS_MOE_ACTIVATION:
+        raise ValueError(f"Unsupported Step4 Optimus MoE activation: {activation!r}")
+    if moe_dtype != "fp8_block":
+        raise ValueError(f"Unsupported Step4 Optimus MoE dtype: {moe_dtype!r}")
+
+    torch.cuda.set_device(device)
+    torch_device = torch.device(device)
+    capability = torch.cuda.get_device_capability(torch_device)
+    if capability != (10, 3):
+        raise RuntimeError(f"Pinned Step4 Optimus MoE collection requires B300 SM103, got {capability}")
+    if not envs.VLLM_USE_OPTIMUS_MOE:
+        raise RuntimeError("Pinned Step4 Optimus MoE requires VLLM_USE_OPTIMUS_MOE=1")
+    contiguous_threshold = int(envs.VLLM_OPTIMUS_MOE_MIN_CONTG_SIZE)
+    if contiguous_threshold != 6144:
+        raise RuntimeError(
+            f"Pinned Step4 Optimus MoE requires VLLM_OPTIMUS_MOE_MIN_CONTG_SIZE=6144, got {contiguous_threshold}"
+        )
+
+    local_num_experts, expert_map, _ = determine_expert_map(
+        moe_ep_size,
+        0,
+        num_experts,
+    )
+    if expert_map is None:
+        raise RuntimeError("Step4 Optimus MoE requires an EP expert map")
+    expert_map = expert_map.to(device=torch_device)
+
+    w13_scale_shape, w2_scale_shape = _step4_optimus_moe_scale_shapes(
+        num_experts=num_experts,
+        moe_ep_size=moe_ep_size,
+        hidden_size=hidden_size,
+        inter_size=inter_size,
+    )
+    fp8_dtype = torch.float8_e4m3fn
+    w1 = torch.full(
+        (local_num_experts, 2 * inter_size, hidden_size),
+        0.03125,
+        dtype=fp8_dtype,
+        device=torch_device,
+    )
+    w2 = torch.full(
+        (local_num_experts, hidden_size, inter_size),
+        0.03125,
+        dtype=fp8_dtype,
+        device=torch_device,
+    )
+    w1_scale = torch.ones(
+        w13_scale_shape,
+        dtype=torch.float32,
+        device=torch_device,
+    )
+    w2_scale = torch.ones(
+        w2_scale_shape,
+        dtype=torch.float32,
+        device=torch_device,
+    )
+
+    max_ep_size = min(workload_config["expert_parallel_sizes"])
+    if num_experts % max_ep_size:
+        raise RuntimeError(
+            "Step4 Optimus full-workspace reservation requires an integral "
+            f"expert shard: num_experts={num_experts}, ep_size={max_ep_size}"
+        )
+    _step4_optimus_reserve_pinned_workspaces(
+        optimus_module,
+        torch_module=torch,
+        device=torch_device,
+        max_num_tokens=max(workload_config["token_counts"]),
+        hidden_size=hidden_size,
+        inter_size=inter_size,
+        topk=topk,
+        max_local_num_experts=num_experts // max_ep_size,
+    )
+
+    if distribution == "balanced":
+        router_logits = balanced_logits(num_tokens, num_experts, topk).to(device=torch_device)
+    else:
+        power_law_alpha = float(distribution.removeprefix("power_law_"))
+        router_logits = power_law_logits_v3(
+            num_tokens,
+            num_experts,
+            topk,
+            moe_ep_size,
+            power_law_alpha,
+        ).to(device=torch_device)
+    routed_weights, routed_ids = torch.topk(router_logits, topk, dim=-1)
+    routed_weights = F.softmax(routed_weights.float(), dim=-1)
+    topk_weights, topk_ids = _step4_optimus_rank0_workload(
+        routed_weights,
+        routed_ids,
+        local_num_experts=local_num_experts,
+        num_experts=num_experts,
+    )
+    local_num_tokens = int(topk_ids.shape[0])
+    hidden_states = _step4_optimus_hidden_states(
+        (local_num_tokens, hidden_size),
+        device=torch_device,
+    )
+    output_shape = (local_num_tokens, hidden_size)
+    kernel_variant, use_cuda_graph = _step4_optimus_provider_path(
+        local_num_tokens=local_num_tokens,
+        contiguous_threshold=contiguous_threshold,
+    )
+    if not hasattr(torch.ops.vllm, kernel_variant):
+        raise RuntimeError(f"Pinned vLLM Optimus op is not registered: torch.ops.vllm.{kernel_variant}")
+    optimus_op = getattr(torch.ops.vllm, kernel_variant)
+
+    def kernel_func():
+        return optimus_op(
+            a1=hidden_states,
+            w1=w1,
+            w2=w2,
+            topk_weights=topk_weights,
+            topk_ids=topk_ids,
+            activation=MoEActivation.SITU_GLU.value,
+            local_num_experts=local_num_experts,
+            global_num_experts=num_experts,
+            expert_map=expert_map,
+            apply_router_weight_on_input=False,
+            w1_scale=w1_scale,
+            w2_scale=w2_scale,
+            swigluoai_step_limit=0.0,
+            inplace=False,
+        )
+
+    probe = kernel_func()
+    if tuple(probe.shape) != output_shape or probe.dtype != torch.bfloat16:
+        raise RuntimeError(
+            "Pinned Step4 Optimus MoE returned an unexpected output: "
+            f"expected_shape={output_shape}, actual_shape={tuple(probe.shape)}, "
+            f"expected_dtype={torch.bfloat16}, actual_dtype={probe.dtype}"
+        )
+    if not torch.isfinite(probe).all():
+        raise RuntimeError("Pinned Step4 Optimus MoE returned non-finite values")
+
+    with benchmark_with_power(
+        device=torch_device,
+        kernel_func=kernel_func,
+        num_warmups=3,
+        num_runs=6,
+        repeat_n=1,
+        allow_graph_fail=False,
+        use_cuda_graph=use_cuda_graph,
+    ) as results:
+        pass
+    if bool(results["used_cuda_graph"]) is not use_cuda_graph:
+        raise RuntimeError(
+            "Pinned Step4 Optimus execution mode mismatch: "
+            f"kernel_variant={kernel_variant}, expected_cuda_graph={use_cuda_graph}, "
+            f"actual_cuda_graph={results['used_cuda_graph']}"
+        )
+    execution_mode = "cuda_graph" if use_cuda_graph else "eager"
+
+    log_perf(
+        item_list=[
+            {
+                "provider": provider,
+                "num_tokens": num_tokens,
+                "local_num_tokens": local_num_tokens,
+                "hidden_size": hidden_size,
+                "inter_size": inter_size,
+                "topk": topk,
+                "num_experts": num_experts,
+                "moe_tp_size": moe_tp_size,
+                "moe_ep_size": moe_ep_size,
+                "moe_dtype": moe_dtype,
+                "distribution": distribution,
+                "activation": activation,
+                "kernel_variant": kernel_variant,
+                "execution_mode": execution_mode,
+                "used_cuda_graph": results["used_cuda_graph"],
+                "latency": results["latency_ms"],
+            }
+        ],
+        framework="VLLM",
+        version=vllm_version,
+        device_name=torch.cuda.get_device_name(torch_device),
+        op_name="step4_optimus_moe",
+        kernel_source=provider,
+        perf_filename=perf_filename,
+        power_stats=results["power_stats"],
+    )
+
+
 def run_step4_grouped_gemm(
     provider: str,
     groups: int,
@@ -981,6 +1490,33 @@ def run_step4_qkv_norm_rope(
     device="cuda:0",
 ) -> None:
     """Measure one exact pinned Step4-Pro QKV preprocessing path."""
+    from vllm.config import VllmConfig, set_current_vllm_config
+
+    with set_current_vllm_config(VllmConfig()):
+        _run_step4_qkv_norm_rope_in_context(
+            provider,
+            num_tokens,
+            normalized_tensors,
+            q_heads,
+            kv_heads,
+            head_dim,
+            perf_filename=perf_filename,
+            device=device,
+        )
+
+
+def _run_step4_qkv_norm_rope_in_context(
+    provider: str,
+    num_tokens: int,
+    normalized_tensors: str,
+    q_heads: int,
+    kv_heads: int,
+    head_dim: int,
+    *,
+    perf_filename: str,
+    device="cuda:0",
+) -> None:
+    """Execute the QKV benchmark while the pinned vLLM config is active."""
     import torch
     from vllm.model_executor.layers.layernorm import OptimusRMSNorm
     from vllm.model_executor.layers.rotary_embedding import get_rope
@@ -1119,18 +1655,11 @@ def run_step4_qkv_norm_rope(
         head_dim=head_dim,
     )
     probe = kernel_func()
-    probe_outputs = probe if isinstance(probe, tuple) else (probe,)
-    actual_shapes = tuple(tuple(output.shape) for output in probe_outputs)
-    if actual_shapes != expected_shapes:
-        raise RuntimeError(
-            "Pinned vLLM QKV norm/RoPE path returned unexpected shapes: "
-            f"expected={expected_shapes}, actual={actual_shapes}"
-        )
-    if any(output.dtype != torch.bfloat16 for output in probe_outputs):
-        raise RuntimeError(
-            "Pinned vLLM QKV norm/RoPE path returned a non-BF16 output: "
-            f"{tuple(output.dtype for output in probe_outputs)}"
-        )
+    probe_outputs = _validate_qkv_norm_rope_probe(
+        probe,
+        expected_shapes=expected_shapes,
+        expected_dtype=torch.bfloat16,
+    )
     del probe, probe_outputs
 
     with benchmark_with_power(

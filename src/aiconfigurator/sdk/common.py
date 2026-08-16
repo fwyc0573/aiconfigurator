@@ -994,27 +994,68 @@ class Step4ProLatestConfig:
             * self.swa_physical_page_bytes
         )
 
-    def compute_peak_allocated_kv_cache_bytes(self, seq_len: int, *, bytes_per_element: float) -> float:
-        """Return peak resident physical KV bytes while decoding through ``seq_len``."""
+    def compute_peak_allocated_kv_cache_bytes(
+        self,
+        seq_len: int,
+        *,
+        bytes_per_element: float,
+        in_flight_tokens: int = 1,
+    ) -> float:
+        """Return peak resident physical KV bytes while growing through ``seq_len``."""
         if type(seq_len) is not int or seq_len < 0:
             raise ValueError(f"seq_len must be a non-negative integer, got {seq_len!r}")
+        if type(in_flight_tokens) is not int or in_flight_tokens <= 0:
+            raise ValueError(f"in_flight_tokens must be a positive integer, got {in_flight_tokens!r}")
         if seq_len == 0:
             return self.compute_allocated_kv_cache_bytes(
                 0,
                 bytes_per_element=bytes_per_element,
             )
+        if bytes_per_element != 2:
+            raise ValueError(
+                f"Pinned Step4-Pro-Latest physical pages are defined for BF16 (2 bytes), got {bytes_per_element!r}."
+            )
 
-        block_size = self.full_page_size
-        latest_block_start = ((seq_len - 1) // block_size) * block_size + 1
-        return max(
-            self.compute_allocated_kv_cache_bytes(
-                seq_len,
-                bytes_per_element=bytes_per_element,
-            ),
-            self.compute_allocated_kv_cache_bytes(
-                latest_block_start,
-                bytes_per_element=bytes_per_element,
-            ),
+        # Pinned vLLM releases SWA blocks from the previously computed prefix,
+        # then allocates slots through the end of the current chunk.
+        full_blocks = (seq_len + self.full_page_size - 1) // self.full_page_size
+        total_steps = (seq_len + in_flight_tokens - 1) // in_flight_tokens
+        # Once the sliding window has moved, full-chunk block counts repeat
+        # with the chunk/page alignment period. The final partial chunk is the
+        # only non-periodic step and is checked separately.
+        period = self.swa_page_size // math.gcd(
+            self.swa_page_size,
+            in_flight_tokens,
+        )
+        transition_step = (self.swa_window_size + in_flight_tokens - 1) // in_flight_tokens
+        last_step = total_steps - 1
+        regular_end = min(last_step, transition_step + period)
+        candidate_steps = list(range(regular_end + 1))
+        if last_step > regular_end:
+            candidate_steps.append(last_step)
+
+        peak_swa_blocks = 0
+        for step in candidate_steps:
+            previous_tokens = step * in_flight_tokens
+            current_tokens = min(previous_tokens + in_flight_tokens, seq_len)
+            required_blocks = (current_tokens + self.swa_page_size - 1) // self.swa_page_size
+            skipped_blocks = (
+                max(
+                    0,
+                    previous_tokens - self.swa_window_size + 1,
+                )
+                // self.swa_page_size
+            )
+            peak_swa_blocks = max(
+                peak_swa_blocks,
+                required_blocks - skipped_blocks,
+            )
+
+        return float(
+            sum(layer.attention_type == "full" for layer in self.layers) * full_blocks * self.full_physical_page_bytes
+            + sum(layer.attention_type == "swa" for layer in self.layers)
+            * peak_swa_blocks
+            * self.swa_physical_page_bytes
         )
 
 
@@ -1756,6 +1797,8 @@ class PerfDataFilename(Enum):
     step4_qkv_norm_rope = "step4_qkv_norm_rope_perf.parquet"
     step4_context_attention = "step4_context_attention_perf.parquet"
     step4_generation_attention = "step4_generation_attention_perf.parquet"
+    step4_optimus_moe = "step4_optimus_moe_perf.parquet"
+    step4_deepep_ht = "step4_deepep_ht_perf.parquet"
     nccl = "nccl_perf.parquet"
     oneccl = "oneccl_perf.parquet"
     generation_attention = "generation_attention_perf.parquet"

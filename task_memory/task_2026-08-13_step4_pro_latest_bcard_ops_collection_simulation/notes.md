@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Replaced the obsolete shutdown-arm protocol with live evidence pull plus one RJob delete; recorded strict cleanup, quota, timeout, and model-forward completion constraints. |
 | 2026-08-17 | Recorded that `predict-only` ignores total replica count, direct quota reads are RBAC-blocked, and remaining controller commands use `MemoryMax=2G`. |
 | 2026-08-17 | Recorded the distributed AgRs marker scope, coordinated shutdown ordering, and the current 16-GPU request versus 6-GPU quota blocker. |
 | 2026-08-17 | Recorded the active AgRs/NCCL runtime settings, fail-fast checks, and the distinction from the AIC NCCL `alltoall` proxy. |
@@ -51,11 +52,31 @@
   copy of that line. Validate the explicit backend marker and a real-batch
   forward on each replica, then require at least one AgRs manager marker
   across the complete job.
-- Two-node teardown uses a two-stage barrier: both replicas first write
-  `remote_validation_ready`; the host arms both; both write
-  `remote_shutdown_armed`; only then does the host send the final shutdown
-  requests concurrently. This keeps rank 0's TCPStore alive until rank 1 is
-  ready to exit.
+- Two-node teardown no longer uses shutdown-arm or release marker files. Both
+  replicas write `remote_validation_ready` and then keep vLLM/TCPStore alive.
+  The host pulls and validates both evidence trees while the RJob is live, then
+  calls `brainctl delete rjob` exactly once.
+- Cleanup is not accepted merely because a query output lacks the RJob name.
+  Both exact RJob and exact-label Replica queries must exit `0`, both output
+  files must exist, and neither may contain the target name.
+- Predict-only and live launch use the same `launch_args` array. Predict-only
+  must return at least one `Node:` candidate, its output and SHA256 are
+  archived, and exact resource queries must prove that it created no RJob or
+  Replica.
+- The live wrapper additionally requires an explicit disk-backed quota
+  evidence file for B300, charged group `b300_train_infra`, and at least `16`
+  available GPUs. This is separate from predict-only's per-worker fit result.
+- Distributed validation now requires
+  `MODEL_FORWARD_COMPLETE.*batch=real`. The source-hash-bounded overlay calls
+  `current_platform.synchronize()` after `_model_forward` before logging the
+  marker, so asynchronous CUDA/communication failures cannot be mistaken for a
+  completed forward. That synchronize can perturb request latency; the
+  resulting timings are runtime-smoke evidence, not an undisturbed performance
+  benchmark.
+- Remote exec and holder timeouts must cover the validation window and two
+  evidence pulls. With defaults, the minimum is
+  `2400 + 2 * 300 + 60 = 3060s`; both live and remote exec defaults are
+  `3600s`.
 - The corrected final two-node payload has not received a live runtime result.
   RJob `s4p-agrs2b-0817-175947` created no replicas because the platform
   requested `16` B300 GPUs while queue `b300-train-infra-default` had `6`

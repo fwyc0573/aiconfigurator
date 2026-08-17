@@ -10,6 +10,8 @@ def _script() -> str:
 
 def test_legacy_probe_uses_documented_process_launcher_and_full_rdma() -> None:
     script = _script()
+    assert "HISTORICAL/INACTIVE" in script
+    assert "not used by the active AgRs runtime path" in script
     for marker in (
         "--i-know-i-am-using-legacy-rlaunch",
         "--replica 2",

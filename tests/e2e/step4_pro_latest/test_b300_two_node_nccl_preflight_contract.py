@@ -11,7 +11,7 @@ def _script() -> str:
 def test_preflight_requests_full_b300_rdma_launch_contract() -> None:
     script = _script()
     for marker in (
-        'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-3G}"',
+        'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-2G}"',
         "--replica 2",
         "--gpu 8",
         "--host-network=true",

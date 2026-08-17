@@ -8,7 +8,7 @@ REMOTE_SCRIPT = (ROOT / "remote_b300_single_smoke.sh").read_text()
 
 def test_two_node_wrapper_pins_topology_and_dummy_model() -> None:
     for marker in (
-        'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-3G}"',
+        'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-2G}"',
         "b300_train_infra",
         'POSITIVE_TAGS="${POSITIVE_TAGS:-B300}"',
         "--replica 2",
@@ -30,6 +30,18 @@ def test_two_node_wrapper_pins_topology_and_dummy_model() -> None:
         "step4pro_smoke_14l_dummy",
         "OPTIMUS_WHEEL_URL",
         "OPTIMUS_WHEEL_SHA256",
+        "REQUIRED_B300_GPUS=16",
+        "B300_QUOTA_EVIDENCE",
+        "require_b300_quota_evidence",
+        "b300_quota_evidence.txt",
+        "b300_quota_evidence.sha256",
+        'EVIDENCE_PULL_TIMEOUT_SECONDS="${EVIDENCE_PULL_TIMEOUT_SECONDS:-300}"',
+        'REMOTE_EXEC_TIMEOUT_SECONDS="${REMOTE_EXEC_TIMEOUT_SECONDS:-${LIVE_TIMEOUT_SECONDS}}"',
+        "MIN_REMOTE_EXEC_TIMEOUT_SECONDS=",
+        "Remote execution timeout is too short for validation and evidence pulls",
+        "--predict-only",
+        "predict_only.log",
+        "predict_candidate_count",
     ):
         assert marker in SCRIPT
     assert "--gang-start" not in SCRIPT
@@ -58,12 +70,20 @@ def test_two_node_holder_persists_platform_distributed_environment() -> None:
     assert "NVSHMEM_*" not in SCRIPT
 
 
+def test_two_node_wrapper_transfers_runtime_contract_to_each_replica() -> None:
+    assert 'cp "${CONTRACT_LIB}" "${PAYLOAD_ROOT}/b300_runtime_contract.sh"' in SCRIPT
+    assert ("export RUNTIME_CONTRACT_LIB='${REMOTE_BOOTSTRAP_ROOT}/b300_runtime_contract.sh'") in SCRIPT
+
+
 def test_two_node_wrapper_streams_payload_and_cleans_exact_resources() -> None:
     assert 'RJOB_LABEL="rjob.brainpp.cn/rjob-name=${RJOB_NAME}"' in SCRIPT
     assert '-l "${RJOB_LABEL}"' in SCRIPT
     assert 'tar cf - -C "${PAYLOAD_ROOT}" .' in SCRIPT
     assert '/kubebrain/brainctl -n "${NAMESPACE}" exec -i' in SCRIPT
     assert "brainctl delete rjob" in SCRIPT
+    assert SCRIPT.count("brainctl delete rjob") == 1
+    assert "cleanup_inventory_is_empty" in SCRIPT
+    assert "assert_runtime_log_clean" in SCRIPT
     assert "cleanup_replicas_final.log" in SCRIPT
     assert "TWO_NODE_HOST_WRAPPER=PASS" in SCRIPT
     assert "Using AgRsAll2AllManager all2all manager" in SCRIPT
@@ -71,63 +91,41 @@ def test_two_node_wrapper_streams_payload_and_cleans_exact_resources() -> None:
     assert "Unexpected Step MoE automatic backend selection" in SCRIPT
 
 
-def test_two_node_runner_coordinates_validation_before_teardown() -> None:
+def test_two_node_runner_collects_all_evidence_before_single_job_delete() -> None:
     validation_probe = 'test -f "${evidence_root}/remote_validation_ready"'
-    shutdown_arm_request = 'touch "${evidence_root}/coordinated_shutdown_armed"'
-    shutdown_arm_probe = 'test -f "${evidence_root}/remote_shutdown_armed"'
-    shutdown_request = 'touch "${evidence_root}/coordinated_shutdown"'
-    parallel_shutdown_wait = 'for pid in "${shutdown_request_pids[@]}"; do'
 
     assert validation_probe in SCRIPT
-    assert shutdown_arm_request in SCRIPT
-    assert shutdown_arm_probe in SCRIPT
-    assert shutdown_request in SCRIPT
-    assert "shutdown_request_pids=()" in SCRIPT
-    assert 'shutdown_request_pids+=("$!")' in SCRIPT
-    assert parallel_shutdown_wait in SCRIPT
-    assert 'if ! wait "$pid"; then' in SCRIPT
-    assert (
-        SCRIPT.index(validation_probe)
-        < SCRIPT.index(shutdown_arm_request)
-        < SCRIPT.index(shutdown_arm_probe)
-        < SCRIPT.index(shutdown_request)
-    )
+    evidence_pull = 'tar cf - -C /home "$(basename "${evidence_root}")"'
+    result_validation = "DISTRIBUTED_RUNTIME_VALIDATION=PASS"
+    cleanup_call = "\ncleanup\ncleanup_exit=$?"
+    assert evidence_pull in SCRIPT
+    assert result_validation in SCRIPT
+    assert cleanup_call in SCRIPT
+    assert SCRIPT.index(validation_probe) < SCRIPT.index(evidence_pull)
+    assert SCRIPT.index(evidence_pull) < SCRIPT.index(result_validation)
+    assert SCRIPT.index(result_validation) < SCRIPT.index(cleanup_call)
 
     assert 'REMOTE_VALIDATION_READY_FILE="${EVIDENCE_ROOT}/remote_validation_ready"' in REMOTE_SCRIPT
-    assert "COORDINATED_SHUTDOWN_ARM_FILE=" in REMOTE_SCRIPT
-    assert "REMOTE_SHUTDOWN_ARMED_FILE=" in REMOTE_SCRIPT
-    coordinated_paths = re.findall(
+    validation_paths = re.findall(
         r'touch "\$\{REMOTE_VALIDATION_READY_FILE\}"\n'
-        r"\s*await_coordinated_shutdown",
+        r"\s*hold_distributed_runtime_for_host_cleanup",
         REMOTE_SCRIPT,
     )
-    assert len(coordinated_paths) == 2
-    shutdown_function = REMOTE_SCRIPT[
-        REMOTE_SCRIPT.index("await_coordinated_shutdown() {") : REMOTE_SCRIPT.index("\nfinish() {")
-    ]
-    assert shutdown_function.count('if ! kill -0 "${SERVER_PID}"') == 2
-    assert "vLLM stopped before coordinated shutdown release" in shutdown_function
-    release_loop = shutdown_function[
-        shutdown_function.rindex("deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))") :
-    ]
-    assert release_loop.index('if ! kill -0 "${SERVER_PID}"') < release_loop.index(
-        'if test -f "${COORDINATED_SHUTDOWN_FILE}"'
-    )
+    assert len(validation_paths) == 2
+    assert "coordinated_shutdown" not in SCRIPT
+    assert "COORDINATED_SHUTDOWN" not in REMOTE_SCRIPT
+    assert "remote_shutdown_armed" not in SCRIPT
+    assert "REMOTE_SHUTDOWN_ARMED" not in REMOTE_SCRIPT
+    assert "remote_result_ready" not in SCRIPT
     assert 'stop_server\nSERVER_PID=""\nprintf \'ONE_GPU_REMOTE_EXECUTION=PASS' not in REMOTE_SCRIPT
 
 
-def test_two_node_wrapper_dispatches_shutdown_requests_concurrently() -> None:
-    shutdown_request = 'touch "${evidence_root}/coordinated_shutdown"'
-    assert shutdown_request in SCRIPT
-    assert "shutdown_request_pids=()" in SCRIPT
-    assert 'shutdown_request_pids+=("$!")' in SCRIPT
-    assert 'for pid in "${shutdown_request_pids[@]}"; do' in SCRIPT
-    assert 'if ! wait "$pid"; then' in SCRIPT
-    assert (
-        SCRIPT.index("shutdown_request_pids=()")
-        < SCRIPT.index(shutdown_request)
-        < SCRIPT.index('for pid in "${shutdown_request_pids[@]}"; do')
-    )
+def test_two_node_wrapper_runs_predict_only_before_live_launch() -> None:
+    predict = "/kubebrain/brainctl rjob launch --predict-only"
+    live = "/kubebrain/brainctl rjob launch --detach"
+    assert predict in SCRIPT
+    assert live in SCRIPT
+    assert SCRIPT.index(predict) < SCRIPT.index(live)
 
 
 def test_headless_validation_uses_node_local_backend_evidence() -> None:

@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Added Phase 14 follow-up hardening: live evidence pull before one RJob delete, strict cleanup/query validation, same-argument predict-only, quota evidence, timeout margin, and completion-marker contracts. |
 | 2026-08-17 | Completed the Phase 13 review and report normalization; final hash/staged-diff verification, commit, push, and remote SHA confirmation remain. |
 | 2026-08-17 | Added the owner-requested final code/docs review and checkpoint commit/push phase without converting the quota-blocked two-node run to PASS. |
 | 2026-08-17 | Corrected the final live admission gate after proving `predict-only` ignores total replica count and direct quota reads are RBAC-blocked. |
@@ -85,8 +86,9 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 9. SWA QKV completion and simulation refresh | Completed | The bounded overlay, correctness smoke, `75/75` SWA collection, `150/150` QKV canonicalization, exact consumer validation, and unchanged simulation refresh all passed. |
 | 10. Temporary DeepEP proxy and simulation completion | Completed | The explicit opt-in maps DeepEP dispatch/combine to B300 NCCL `alltoall`, labels all affected results `PROXY`, preserves the exact path by default, and completed the full prefill/decode matrix without creating fake DeepEP data. |
 | 11. Requirement-completeness audit and publication | Completed | The simulator exposes KV allocation, required component breakdown, normalized unavailable metrics, and three-repeat evidence; the manual-review packet is synchronized; fresh verification passes; only task-owned files enter the single publication commit. |
-| 12. Non-DeepEP vLLM runtime configuration | In progress: local coordinator complete; final two-node live rerun blocked by B300 quota visibility and availability | Active wrappers pin `allgather_reducescatter`, disable sequence parallelism, reject DeepEP selection, and pass `14/14` focused contracts. Final live acceptance still requires direct confirmation of 16 available B300 GPUs, both nodes validated, coordinated teardown, and zero communication/runtime errors. |
-| 13. Final code/docs review and checkpoint publication | Ready for exact staging | Fresh focused and Collector regressions pass, the current runtime diff has no unresolved local blocker, and stale publication records are being normalized. Commit/push publishes this audited checkpoint only; Phase 12 live acceptance remains open. |
+| 12. Non-DeepEP vLLM runtime configuration | In progress: locally hardened; final two-node live rerun blocked by B300 quota visibility and availability | Active wrappers pin `allgather_reducescatter`, disable sequence parallelism, reject DeepEP selection, and pass `26/26` focused contracts. Final live acceptance still requires direct confirmation of 16 available B300 GPUs, both nodes validated while the RJob remains live, and strict single-delete cleanup. |
+| 13. Final code/docs review and checkpoint publication | Completed | Commit `0b8d651c` was pushed to `origin/task/step4-pro-latest-b300`; this publication did not convert the quota-blocked two-node runtime to PASS. |
+| 14. Runtime lifecycle and evidence hardening | In progress: implementation, task records, fresh local contracts, and `76/76` inventory audit complete; staged-diff audit, commit, and push remain | The obsolete shutdown-arm protocol is removed. Both replicas remain live after validation, the host pulls and validates both evidence sets, and one exact RJob delete performs teardown. Same-argument predict-only, explicit quota evidence, strict query-aware cleanup, timeout margin, and CUDA-complete forward evidence are locally verified. |
 
 The bounded SWA annotation compatibility overlay was explicitly authorized and
 completed on 2026-08-16. It passed the source-hash, annotation-scope,
@@ -374,25 +376,31 @@ stopped rank 0 and its TCPStore before the headless rank group completed.
 Cleanup found `0` RJobs and `0` Replicas. The owner then authorized the
 coordinated lifecycle root fix.
 
-**Authorized lifecycle root-fix plan:**
+**Superseded lifecycle design:** The first root fix used validation-ready,
+shutdown-arm, armed-acknowledgement, and concurrent release markers. It passed
+local contracts but still required several remote control-plane writes during
+distributed teardown. Phase 14 replaces that protocol.
 
-1. The remote runner will treat `DATA_PARALLEL_SIZE > 1` as one coordinated
-   distributed execution, rather than as two independent one-node runs.
-2. Rank 0 writes its local validation marker only after requests, real-batch
-   evidence, and AgRs validation pass. The headless rank group writes its
-   marker only after it observes the same manager and real-batch evidence.
-3. The host wrapper waits for the marker from both replicas before issuing a
-   controlled shutdown request to either one. Only then may either runner stop
-   its local vLLM process and write `remote_result_ready`.
-4. The focused test must first fail on the absence of this ordering. The B300
-   retry occurs only after local contracts, shell syntax, and static ordering
-   checks pass under the `2G` controller limit.
+**Current lifecycle design:**
 
-**Lifecycle implementation evidence:** The validation-ready, shutdown-arm,
-armed-acknowledgement, and concurrent final-shutdown ordering is implemented.
-The lifecycle RED was `3 passed, 1 failed`; an additional path-identity RED
-was `2 failed`; the final focused contracts pass `14/14`. Active shell syntax
-passes `3/3`, Ruff check/format pass, and `git diff --check` passes.
+1. The remote runner treats `DATA_PARALLEL_SIZE > 1` as one distributed
+   execution and writes `remote_validation_ready` only after local validation.
+2. Both remote runners keep vLLM and TCPStore alive after readiness; they do
+   not wait for or create shutdown-arm/release marker files.
+3. The host waits for both readiness markers, pulls both evidence trees while
+   the RJob is still live, and validates
+   `DISTRIBUTED_RUNTIME_VALIDATION=PASS`, a completed real-batch forward,
+   backend markers, and a clean runtime log.
+4. After all evidence is accepted, the host calls
+   `brainctl delete rjob` exactly once. Cleanup passes only when both exact
+   RJob and Replica queries succeed and contain no matching resource.
+
+**Lifecycle implementation evidence:** The new two-node contract first failed
+`4/6`, the runtime-contract transfer contract failed `1/1`, and the timeout
+margin contract failed `1/1`. The final two-node contract passes `7/7`; all
+related runtime contracts pass `26/26`; shell syntax passes `6/6`; Ruff
+check/format and `git diff --check` pass. No live RJob was submitted because
+current independent quota evidence for `16` B300 GPUs is unavailable.
 
 The first post-coordinator live run
 `s4p-agrs2-0817-174506` reached `2/2` Running in `78s`. Rank 0 completed real
@@ -436,9 +444,25 @@ node fit but is not sufficient for admission.
 the owner's explicit request. It does not close the Phase 12 two-node live
 acceptance gate or convert `BLOCKED_BY_QUOTA` to `PASS`.
 
-**Current Phase 13 evidence:** The complete current code/doc diff has been
-reviewed with blocking findings `0`; stale report state was normalized;
-`347/347` focused tests, `401/401` Collector tests, Ruff `45/45`, and shell
-syntax `14/14` passed. The remaining ordered steps are the final inventory
-hash audit, exact staged-diff review, commit, push, and remote SHA
-confirmation.
+**Phase 13 completion evidence:** The complete code/doc diff was reviewed with
+blocking findings `0`; `347/347` focused tests, `401/401` Collector tests,
+Ruff `45/45`, and shell syntax `14/14` passed. Commit `0b8d651c` is present
+locally and on `origin/task/step4-pro-latest-b300`.
+
+## Phase 14 Follow-up Hardening Plan
+
+1. Replace the multi-marker shutdown protocol with live evidence pull followed
+   by one exact RJob delete.
+2. Share quota, cleanup, and runtime-log validation through
+   `b300_runtime_contract.sh`; fail if inventory queries fail.
+3. Run predict-only with the exact live launch argument array, require at least
+   one candidate node, archive its SHA256, and prove it created no resources.
+4. Require independent `>=16` B300 quota evidence before any live submission.
+5. Add a source-hash-bounded `MODEL_FORWARD_COMPLETE` diagnostic after the
+   model forward and a CUDA synchronize. Treat it as smoke evidence only
+   because the synchronize perturbs request timing.
+6. Keep remote execution alive for at least
+   `2400 + 2 * 300 + 60 = 3060s`; the default remains `3600s`.
+7. Update the existing task records and test report, rerun focused/static/hash
+   gates, stage only task-owned files, then create and push one follow-up
+   commit. The live result remains `BLOCKED_BY_QUOTA`.

@@ -20,6 +20,7 @@
 | 2026-08-17 | Corrected the final admission rule after proving predict-only is per-worker only and direct quota reads are RBAC-blocked. |
 | 2026-08-17 | Revalidated the stable post-concurrency runtime files, refreshed stale hashes, and corrected the Phase 12 inventory count to `16/16`. |
 | 2026-08-17 | Completed the Phase 13 code/docs review, normalized the current and historical runtime reports, refreshed `347/347` and `401/401` evidence, and expanded the publication inventory to `70/70`. |
+| 2026-08-17 | Finalized the Phase 14 follow-up candidate with live evidence pull, one-delete teardown, strict cleanup/quota contracts, synchronized forward evidence, fresh `26/26` verification, and a `76`-file inventory. |
 
 # Summary
 
@@ -57,27 +58,38 @@ simulation proxy.
 Both exact resource shapes passed the initial B300 predict-only checks. The
 single-B300 smoke passed with scheduling `16s`, model load `8.819692s`, first
 request `13.737685s`, and four-request wall time `0.474799647s`. The original
-two-node run exposed an independent EXIT-handler teardown defect; the approved
-root fix now uses validation-ready, shutdown-arm, armed-acknowledgement, and
-concurrent final-shutdown stages. Its local contracts pass `14/14`. The first
-coordinator live run reached `2/2` Running, recorded rank-0 AgRs/DeepEP/auto
-markers `1/0/0`, completed real requests, and showed no `Broken pipe`; its
-rank-1 gate was then corrected because the manager line is logged once with
-`scope="global"`. The final corrected payload created `0/2` replicas because
-it requested `16` B300 GPUs while the queue had only `6` remaining. Cleanup
-left `0` RJobs and `0` Replicas. The missing final two-node PASS is therefore
-an external admission blocker, not a known DeepEP, NVSHMEM, AgRs, or
-communication-runtime failure. A fresh diagnostic returned the same seven
-per-worker candidates for replica counts `2` and `8`, proving predict-only
-does not validate total replica quota. Direct quota reads are RBAC-forbidden,
-so no new live run was submitted.
+two-node run exposed an independent EXIT-handler teardown defect. An
+intermediate four-marker shutdown protocol repaired the first race and reached
+`2/2` Running with rank-0 AgRs/DeepEP/automatic markers `1/0/0`, real
+requests, and no `Broken pipe`, but that protocol is now historical.
 
-The post-concurrency stability check found that the remote runner and its
-two-node contract were written after the preceding summary inventory. Their
-current contents remain within the approved coordinator design and pass the
-combined runtime contracts `14/14` in `0.04s`. The refreshed active-runtime
-inventory now matches `16/16`; the earlier `17/17` statement was a count
-error, not an additional missing deliverable.
+The current Phase 14 lifecycle keeps both replicas and rank 0's shared
+TCPStore alive after `remote_validation_ready`. The host pulls and validates
+both evidence trees, requires
+`DISTRIBUTED_RUNTIME_VALIDATION=PASS`, synchronized
+`MODEL_FORWARD_COMPLETE.*batch=real` evidence on both replicas, clean logs,
+DeepEP/automatic markers `0/0`, and at least one job-level
+`AgRsAll2AllManager` marker. Only then does one exact
+`brainctl delete rjob` own teardown. Cleanup fails unless both exact RJob and
+Replica queries succeed and are empty.
+
+Predict-only and live launch now reuse one argument array. Predict-only output
+is archived and hashed, but it remains a per-worker fit check: replica counts
+`2` and `8` returned the same seven candidate nodes. Live submission therefore
+also requires independent disk-backed evidence of at least `16` available
+B300 GPUs for `b300_train_infra`. Direct quota reads are RBAC-forbidden, and
+the last trusted event reported only `6`, so Phase 14 submitted no live RJob.
+The missing final two-node PASS remains an external admission blocker, not a
+known DeepEP, NVSHMEM, AgRs, or communication-runtime failure.
+
+The source-hash-bounded completion overlay calls
+`current_platform.synchronize()` after model forward before logging
+`MODEL_FORWARD_COMPLETE`. It proves CUDA completion and catches deferred
+runtime failures without changing weights, communication selection, or the
+training graph. The synchronize perturbs timing, so this smoke cannot be
+reported as an uninstrumented performance benchmark. Fresh local verification
+passes runtime contracts `26/26` in `0.21s`, shell syntax `6/6`, and Ruff
+check/format on `5/5` Python files.
 
 The final requirement audit passed for the approved AIC scope. It checked all
 `156` required cases, the LF-only `156 × 87` manual-review table, `468` repeated case
@@ -162,8 +174,8 @@ a separate independent sub-agent review.
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_deepep_local_ipc.md` | `cfb88a6a8d51234717954937dba9f5a1471b2a383a488c85bdbcb4957399702b` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_mtp_off_simulation.md` | `0bca3b9075d884912d7faf4251a65e41d558d08730265be760fd1d14d68fec2e` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-14_b300_pinned_vllm_smoke_runtime_trace.md` | `c22115b87481eaa9ae41131bb0f01772ea2c98d6b16a3eb4e5755af54270afb6` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_final_review_publication.md` | `5825e4f5b759891975f1d0761dc60797aa660730eaef331f129bbe898df24691` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `4d5926380ab15b549f454c23ebf0445b9de207bdecaafc06707e0b3919474e69` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_final_review_publication.md` | `fbe635748a2adc394edd6dc604a035ca18b66de6af0200fb79d2153dac0ac3e6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `b98b1c06467adb9c05080a6f42e340b79a3ec3e273f13d7758bef21c5c2ce264` |
 
 ### Active Runtime Backend Requirement and Validation
 
@@ -171,20 +183,26 @@ a separate independent sub-agent review.
 |---|---|
 | `task_memory/step4pro_v4_external_simulator_requirements.md` | `356b47c624e2ef8bced3ad4db82c4cf1fa1e160b053c25b78ab5c89be9ac0c35` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/requirements.md` | `ff609b06dea91fee0552b2a624fdb372277d47c340224fd1469cab73ee6e2e6b` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/plan.md` | `9e61dfcbd74df769de150770ce41e2931946057f087a13ed4e918ae385197fa6` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/harness.md` | `00cb24d06509d0d2d74cd0db6ebc12ca9e3c1504167e110b96da8f634586894a` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/design.md` | `5d403f1888cd5ad10cb38039acd35214d392ec3d8ed1c79bcd54706cba51d8f5` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/notes.md` | `4c2b37d0d38b63ea94d15f80eab1b9cd9f552ce39a10298db07a82f5e391c716` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/progress.md` | `6f58014719b91e300a1cdc0b9a17076ee175cfac3791cf1dd69d80c4a4ed8607` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/issues.md` | `b09c6af6f8d25bb31bc483eef2eaedb22cd364e39f9933341de56ad2cfc0be55` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/lessons.md` | `1bf4e07c6f9cdad73a95e37a5fe56e3a52124c8b9492ee70ac63d21c34759bf5` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/future.md` | `ffd019fccf78c700ca9830f9e8c1a63cb7ffdb8518a4fe9f907161edf40d36bb` |
-| `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh` | `47bc6cf8507281ade56f0d1e96913f75386e6b7d30f8212a7e8f9f5012375e1d` |
-| `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh` | `22ab5eb03cba75f589b36d73e95af9bfcd6617af86128ebefdc9121a59115cd5` |
-| `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh` | `7cc139aab85d3db29e53e2b750fd1d302d82d00a84a706368524e041d5d13e15` |
-| `tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py` | `390c1c74517e921099f85d776e6346473ccc3ad573aff80eda9a4c0695f093f5` |
-| `tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py` | `9b749a806fb5f60e78dd7b4a32967bfaaee14d25b39452ba776579f112f166c6` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_non_deepep_runtime_backend.md` | `638484ff7720994cb077f49be07c9a42de37582d4e7e2439e6ac33ed480960b6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/plan.md` | `7f0b30525785672ac2ff29643b550df986808c1d6bdd95875255990bb93b75f6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/harness.md` | `713ab5d647aa4bdf0a0abdc0dc33de140f79eb27a066834aff942df22762b9ff` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/design.md` | `27213c6df41a029b28c10587ba1d447c7c3e75a6ae9e5708cf4c0201fe97f92f` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/notes.md` | `87291a836ece28cbc219fe6bcdfb642aee64f0aefe090edb622ff6dc2c57298c` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/progress.md` | `f7b380eef167c66fa71fa5e244f0fe410045c8004b38b7a90aaffb477a30bb0c` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/issues.md` | `406673362a3ecb04f83e68557a21ece7682e1ee7547fd6e136647e309892570a` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/lessons.md` | `5bfa11bef7017d3545771be0e76d8e130d98fab6cc0266c75e34518727b6ee73` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/future.md` | `b2ee181def9dd6eef0574f537dad6ddfe3ccc18afc0657ab41fc44c1354287c9` |
+| `tests/e2e/step4_pro_latest/b300_runtime_contract.sh` | `1a7ea63ac8bfc234719063ef0f92aae22bfbe5a89baa9ee2259268fa19000148` |
+| `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh` | `e761f317875168da99275f0a637774ba5901a9e74c406b53097a34dbc9bbc2f2` |
+| `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh` | `7a251a7878c4124403b901f779fdc22379077786a9fca2ac00397091f1f6a5b2` |
+| `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh` | `c83422f93283b87f25beb6a21f8c4402c186e5ee013bc8a3e08b93291aeeca5d` |
+| `tests/e2e/step4_pro_latest/run_b300_two_node_nccl_preflight.sh` | `775bea31ae418846260442d19051876c7139611f7bf323d41219a2e73b78ec54` |
+| `tests/e2e/step4_pro_latest/run_b300_two_node_deepep_legacy_probe.sh` | `fe5a5a9e4a974914e4b250c025be96460bb16011eae057aba10dbee03c946963` |
+| `tests/e2e/step4_pro_latest/test_b300_runtime_contract.py` | `d83c3048ded8590183b752c302457db4e952a58b031a87e5e8f702da3f3981f9` |
+| `tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py` | `4604ebf968b4c619030ed50f939eb8c995cdbbb87caadddafb3cbf6d415a8867` |
+| `tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py` | `cf25fa0437649933cb6e8903f0460de030dc4cc411767318c150654e4cf41d52` |
+| `tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py` | `cf027fbb4cbbcb0ef46cb221e75c1d6ac206f10ce534c1e4f320e6460223d9d2` |
+| `tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py` | `8d018029612dd421b26ccc17e6155610831f1e1a3a5ec49ca7c510b27f9dac96` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_non_deepep_runtime_backend.md` | `1fad67857ed73c3b8d9bd5f51980795ac9b78324f73707b8518b349ce624ae7e` |
 
 ## Validation Status
 
@@ -197,21 +215,21 @@ a separate independent sub-agent review.
 | Combined QKV dataset | PASS | `150/150`, providers `75+75`, max error `0.0 ms` |
 | DeepEP HT dataset | DEFERRED | `0/116`; no substitute or historical data |
 | Canonical B300 dataset | PASS | `709` rows across six Parquet files |
-| Active AgRs runtime configuration | PASS | `3/3` scripts; backend `allgather_reducescatter`; sequence parallel `0` |
-| Active runtime contracts | PASS | `14/14` in `0.04s`; DeepEP/NVSHMEM/package dependencies `0/0/0` |
+| Active AgRs runtime configuration | PASS | backend `allgather_reducescatter`; sequence parallel `0`; DeepEP/NVSHMEM package dependencies `0/0/0` |
+| Active runtime contracts | PASS | `26/26` in `0.21s` |
 | Active runtime source audit | PASS | manager `AgRsAll2AllManager`; dispatch/combine `all_gatherv`/`reduce_scatterv`; automatic backend selection allowed `0` |
 | B300 predict-only | PASS_PER_WORKER_ONLY | initial single-node `4` candidates; latest two-node shape `7`; replica-8 control returned the same `7`; residual RJobs/Replicas `0/0` |
 | B300 total-quota visibility | BLOCKED | direct quota read `Forbidden`; last trusted remainder `6`, required `16` |
-| Phase 12 inventory hash audit | PASS | `16/16` current files match the recorded SHA256 values |
-| Phase 13 publication inventory | PASS | `70/70` recorded paths and SHA256 values match |
+| Phase 14 publication inventory | PASS | `76/76` recorded paths and SHA256 values match |
 | Single-B300 live smoke | PASS | scheduling `16s`; load `8.819692s`; request `13.737685s`; concurrent wall `0.474799647s` |
-| Two-node AgRs live smoke | BLOCKED_BY_QUOTA | First coordinator run: `2/2` Running, rank-0 AgRs/DeepEP/automatic `1/0/0`, no `Broken pipe`; final corrected run: `0/2` replicas, request `16`, quota remainder `6` |
-| Two-node cleanup | PASS | final exact-name RJobs/Replicas `0/0` |
-| Final focused tests | PASS | `347/347` in `8.21s` |
-| Full Collector tests | PASS | `401/401` in `31.60s` |
+| Two-node AgRs live smoke | BLOCKED_BY_QUOTA | Historical coordinator run: `2/2` Running, rank-0 AgRs/DeepEP/automatic `1/0/0`, no `Broken pipe`; last live attempt: `0/2` replicas, request `16`, quota remainder `6`; Phase 14 live submissions `0` |
+| Two-node cleanup | PASS (contract and prior evidence) | exactly one delete required; failed queries reject PASS; prior residual RJobs/Replicas `0/0` |
+| Phase 14 focused runtime tests | PASS | `26/26` in `0.21s` |
+| Published Phase 13 focused tests | PASS | `347/347` in `8.21s` |
+| Published Phase 13 Collector tests | PASS | `401/401` in `31.60s` |
 | Post-format reviewer contracts | PASS | `48/48` in `6.40s` |
-| Ruff check/format | PASS | `45/45` task-owned Python files |
-| Shell syntax | PASS | `14/14` scripts |
+| Phase 14 Ruff check/format | PASS | `5/5` Python files; findings `0` |
+| Phase 14 shell syntax | PASS | `6/6` shell files |
 | Structured inputs | PASS | YAML `2/2`; JSON `3/3` |
 | Whitespace | PASS | `git diff --check` exit `0` |
 | Independent provider-core review | APPROVE | `0` remaining Blocking/Important findings |
@@ -236,10 +254,11 @@ a separate independent sub-agent review.
 1. Obtain direct platform or quota-owner evidence that the B300 queue can
    admit at least `16` GPUs. Then rerun the same-shape predict-only check for
    per-worker fit and exactly one corrected two-node live wrapper. Acceptance
-   requires both validation-ready markers, both shutdown-arm acknowledgements,
-   at least one job-level AgRs manager marker, a real-batch marker on each
-   replica, DeepEP/automatic markers `0/0`, no `Broken pipe`, and cleanup
-   `0/0`.
+   requires both validation-ready markers, both evidence trees pulled while
+   the RJob remains live, synchronized real-batch completion on each replica,
+   at least one job-level AgRs manager marker, DeepEP/automatic markers `0/0`,
+   no `Traceback`, `ERROR`, or `Broken pipe`, exactly one RJob delete, and
+   successful empty exact-name cleanup queries.
 2. Add or calibrate an AgRs-specific AIC communication model before reporting
    a same-backend vLLM-versus-simulator communication error. The existing
    NCCL `alltoall` result remains `PROXY`.
@@ -250,5 +269,6 @@ a separate independent sub-agent review.
 4. MTP1 structure, measurement, and simulation remain deferred until an
    authoritative Step4Pro implementation is provided.
 5. Preserve the failed and quota-blocked two-node evidence. Do not restore the
-   independent one-node EXIT lifecycle, require a globally scoped manager line
-   from every replica, or add sleeps/blind retries.
+   superseded shutdown-marker lifecycle, require a globally scoped manager
+   line from every replica, treat predict-only as total-quota proof, or add
+   sleeps/blind retries.

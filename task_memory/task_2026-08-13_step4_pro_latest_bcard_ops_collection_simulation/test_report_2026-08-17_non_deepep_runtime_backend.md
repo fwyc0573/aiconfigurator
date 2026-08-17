@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes |
 | ---------- | ------------------ |
+| 2026-08-17 | Added Phase 14 evidence: one-delete teardown, strict query-aware cleanup, same-argument predict-only, quota evidence, timeout margin, and CUDA-complete forward validation. |
 | 2026-08-17 | Created the configuration and static-validation report for replacing active DeepEP runtime settings with AgRs/NCCL communication. |
 | 2026-08-17 | Added generic DeepEP-manager rejection, automatic-backend-selection rejection, runtime evidence fields, and final audit details. |
 | 2026-08-17 | Added B300 live-validation evidence: one-node PASS and the two-node coordinated-lifecycle blocker with verified cleanup. |
@@ -16,10 +17,10 @@
 **Date:** 2026-08-17
 **Environment:** conda `aic-step-design`, Python `3.11.15`, pytest `8.4.2`
 **Controller limit:** `systemd-run --user --scope -p MemoryMax=2G`
-**GPU execution:** One-node B300 smoke PASS. The two-node lifecycle and
-global-marker-scope fixes pass local contracts; the final corrected live
-payload is blocked before Replica creation because the 16-GPU request exceeds
-the current 6-GPU B300 queue remainder.
+**GPU execution:** One-node B300 smoke PASS. The active two-node lifecycle
+hardening passes local contracts, but no new live job was submitted because
+independent current quota evidence for the required `16` B300 GPUs is absent;
+the last trusted event reported only `6` remaining.
 
 ## 1. Test Script Information
 
@@ -28,11 +29,17 @@ the current 6-GPU B300 queue remainder.
 - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/run_b300_single_smoke.sh`
 - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh`
 - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/run_b300_two_node_nccl_preflight.sh`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/run_b300_two_node_deepep_legacy_probe.sh`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/b300_runtime_contract.sh`
 
 ### Contract tests
 
 - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py`
 - `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/test_b300_runtime_contract.py`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py`
+- `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro/tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py`
 
 ### Reproducible commands
 
@@ -42,19 +49,41 @@ cd /data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro
 systemd-run --user --scope -p MemoryMax=2G \
   /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python \
   -m pytest -q \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
   tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
-  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
 
 systemd-run --user --scope -p MemoryMax=2G bash -lc '
   cd /data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro
   for f in \
+    tests/e2e/step4_pro_latest/b300_runtime_contract.sh \
     tests/e2e/step4_pro_latest/run_b300_single_smoke.sh \
     tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh \
-    tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh
+    tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh \
+    tests/e2e/step4_pro_latest/run_b300_two_node_nccl_preflight.sh \
+    tests/e2e/step4_pro_latest/run_b300_two_node_deepep_legacy_probe.sh
   do
     bash -n "$f"
   done
 '
+
+systemd-run --user --scope -p MemoryMax=2G \
+  ruff check \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
+
+systemd-run --user --scope -p MemoryMax=2G \
+  ruff format --check \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
 
 git diff --check
 ```
@@ -74,6 +103,11 @@ Evidence logs:
 - `/data/ycfeng/tmp/step4_phase12_resume2_20260817/ruff_check.log`
 - `/data/ycfeng/tmp/step4_phase12_resume2_20260817/ruff_format.log`
 - `/data/ycfeng/tmp/step4_phase12_resume2_20260817/git_diff_check.log`
+- `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/focused_runtime_contracts_after_format.log`
+- `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/shell_syntax.log`
+- `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/ruff_check.log`
+- `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/ruff_format_check_after.log`
+- `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/git_diff_check.log`
 
 ## 2. Validation Criteria
 
@@ -94,11 +128,19 @@ Evidence logs:
    package-version evidence.
 10. All three active shell scripts parse successfully.
 11. Repository whitespace validation passes.
-12. Both replicas write validation readiness before shutdown is armed.
-13. Both replicas acknowledge the shutdown arm before final shutdown requests
-    are sent concurrently.
-14. Each replica proves explicit AgRs configuration plus a real-batch forward;
-    the globally scoped AgRs manager line appears at least once across the job.
+12. Both replicas write validation readiness and remain alive while the host
+    pulls their evidence.
+13. The host pulls and validates both evidence trees before deleting the RJob.
+14. Exactly one `brainctl delete rjob` is used for the active two-node
+    teardown.
+15. Cleanup requires successful exact RJob and Replica queries plus empty
+    matching inventories.
+16. Predict-only and live launch use the same launch argument array; the
+    predict-only output has at least one `Node:` and leaves zero resources.
+17. Independent disk-backed quota evidence reports at least `16` B300 GPUs.
+18. Each replica proves explicit AgRs configuration and a synchronized
+    `MODEL_FORWARD_COMPLETE.*batch=real` marker; the global manager line
+    appears at least once across the job.
 
 ## 3. Test Results and Evidence
 
@@ -106,9 +148,9 @@ Evidence logs:
 
 | Check | Actual result | Acceptance | Status |
 | --- | ---: | ---: | --- |
-| Focused pytest | `14/14` passed, `0` failed | `14/14` pass | PASS |
-| Active shell syntax | `3/3` passed | `3/3` pass | PASS |
-| Active runtime files audited | `3` | `3` | PASS |
+| Focused pytest | `26/26` passed, `0` failed | `26/26` pass | PASS |
+| Active shell syntax | `6/6` passed | `6/6` pass | PASS |
+| Active runtime files audited | `6` shell files including shared contract | all parse | PASS |
 | Runtime backend | `allgather_reducescatter` | exact match | PASS |
 | Runtime manager | `AgRsAll2AllManager` | exact match | PASS |
 | Dispatch/combine source mapping | `all_gatherv` / `reduce_scatterv` | exact match | PASS |
@@ -118,6 +160,11 @@ Evidence logs:
 | `deep_ep` package-evidence dependencies | `0` | `0` | PASS |
 | DeepEP manager matching | generic `DeepEP*All2AllManager` | generic rejection | PASS |
 | Automatic backend selection allowed | `0` | `0` | PASS |
+| Predict-only candidate output | `>=1` `Node:` required | same-shape args and zero resources | PASS (static contract) |
+| Quota evidence | required `16`, last trusted available `6` | `>=16` current | BLOCKED |
+| Cleanup query status | both exact queries must exit `0` | query failure is FAIL | PASS (contract) |
+| Completion marker | synchronized real-batch marker required | one per replica | PASS (contract) |
+| Minimum remote timeout | `3060s`; default `3600s` | `>=3060s` | PASS |
 | `git diff --check` findings | `0` | `0` | PASS |
 
 ### TDD evidence
@@ -130,6 +177,10 @@ Evidence logs:
 - Intermediate lifecycle GREEN: `12 passed, 0 failed`.
 - Final GREEN after global-marker-scope correction:
   `14 passed, 0 failed`.
+- Phase 14 lifecycle RED: `4 failed, 2 passed`.
+- Phase 14 runtime-contract transfer RED: `1 failed`.
+- Phase 14 timeout-margin RED: `1 failed`.
+- Phase 14 final combined GREEN: `26 passed, 0 failed` in `0.28s`.
 
 ### Source evidence
 
@@ -194,7 +245,11 @@ selection, or AgRs manager-selection failure. The controller was interrupted
 after the root cause was captured; exact-name queries verified residual RJobs
 `0` and Replicas `0`.
 
-### Coordinated lifecycle implementation
+### Historical coordinator attempt (superseded)
+
+The four-marker lifecycle below is retained as historical evidence only. It is
+not the current implementation; Phase 14 uses live evidence pull followed by
+one host-owned RJob delete.
 
 The root fix uses four explicit marker paths:
 
@@ -388,7 +443,49 @@ Evidence:
 ```
 
 **Final status:** configuration, source contracts, lifecycle coordination,
-and global-marker-scope validation are locally PASS. Complete two-node runtime
+and global-marker-scope validation are locally PASS. Phase 14 lifecycle and
+evidence contracts are also locally PASS. Complete two-node runtime
 acceptance remains BLOCKED until an authorized source confirms at least `16`
 available B300 GPUs, same-shape predict-only passes for per-worker fit, and the
-corrected payload completes both-node validation and coordinated cleanup.
+corrected payload completes both-node validation, live evidence pull, and
+strict single-delete cleanup.
+
+### Phase 14 lifecycle/evidence hardening
+
+The current implementation supersedes the historical shutdown-arm protocol:
+
+```text
+remote_validation_ready
+  -> host pulls and validates replica-0 evidence
+  -> host pulls and validates replica-1 evidence
+  -> one exact brainctl delete rjob
+  -> successful empty exact RJob/Replica queries
+```
+
+The two-node wrapper uses one `launch_args` array for predict-only and live
+launch. Predict-only output is archived and hashed, must contain at least one
+`Node:`, and is followed by exact zero-resource queries. Live submission is
+gated by a disk-backed evidence file with B300, charged group
+`b300_train_infra`, and `B300_QUOTA_AVAILABLE_GPUS >= 16`.
+
+The remote runner receives the shared contract library and requires
+`DISTRIBUTED_RUNTIME_VALIDATION=PASS`, a real-batch
+`MODEL_FORWARD_COMPLETE.*batch=real` marker on every replica, zero DeepEP and
+automatic-selection markers, and no `Traceback`, `ERROR`, or `Broken pipe`.
+The completion marker is emitted only after a source-hash-verified
+`current_platform.synchronize()`. This is a correctness/diagnostic gate; it
+adds synchronization and therefore its request timings are not uninstrumented
+performance measurements.
+
+| Check | Actual result | Acceptance | Status |
+| --- | ---: | ---: | --- |
+| Two-node lifecycle contract | `7/7` passed | all pass | PASS |
+| Combined runtime contracts | `26/26` in `0.21s` | all pass | PASS |
+| Shell syntax | `6/6` | all parse | PASS |
+| Ruff check | `0` findings | `0` | PASS |
+| Ruff format | `5` files already formatted | all formatted | PASS |
+| Timeout budget | `3060s` minimum, `3600s` default | minimum met | PASS |
+| Live two-node admission | no submission | current `>=16` quota evidence | BLOCKED_BY_QUOTA |
+
+Final revalidation evidence root:
+`/data/ycfeng/tmp/step4_phase14_final_20260817/`.

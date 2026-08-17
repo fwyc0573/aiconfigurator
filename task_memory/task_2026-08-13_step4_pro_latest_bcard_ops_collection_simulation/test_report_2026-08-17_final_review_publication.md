@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes |
 |------------|--------------------|
+| 2026-08-17 | Added the Phase 14 follow-up publication gate with the current one-delete evidence lifecycle, strict cleanup/quota contracts, and fresh `26/26` targeted verification. |
 | 2026-08-17 | Created the final independent-review and clean-commit verification report. |
 | 2026-08-17 | Included Phase 12, fresh regression/artifact evidence, B300 live results, and the blocking two-node lifecycle finding. |
 | 2026-08-17 | Replaced the obsolete lifecycle publication block with the completed local root-fix review, fresh `347/347` and `401/401` verification, and the remaining external B300 quota blocker. |
@@ -9,11 +10,11 @@
 # Test Report: Final Review and Publication Gate
 
 **Date:** 2026-08-17
-**Base commit:** `c422e0ae6a44d382b2c163697c3b0dd70759cdf4`
+**Base commit:** `0b8d651c42ab2efa825cbcabbf7b078fd88d5b06`
 **Candidate branch:** `task/step4-pro-latest-b300`
-**Overall result:** **APPROVED FOR TASK-SCOPED COMMIT/PUSH; AIC MTP-off and
-local Phase 12 contracts PASS; final two-node live acceptance remains
-BLOCKED_BY_QUOTA**
+**Overall result:** **APPROVED FOR A TASK-SCOPED FOLLOW-UP COMMIT/PUSH;
+Phase 14 runtime/evidence contracts PASS; final two-node live acceptance
+remains BLOCKED_BY_QUOTA**
 
 ## 1. Test Script Information
 
@@ -28,7 +29,24 @@ BLOCKED_BY_QUOTA**
 - Controller limits: `timeout 60s`, `MemoryMax=2G`
 - Temporary/log storage: `/data/ycfeng/tmp`
 
-### Focused regression command
+### Current Phase 14 focused runtime command
+
+```bash
+timeout 60s systemd-run --user --scope -p MemoryMax=2G \
+  env TMPDIR=/data/ycfeng/tmp PYTHONPATH=src:. \
+  /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python \
+  -m pytest -q \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
+```
+
+### Phase 13 full focused regression command
+
+This command produced the published `347/347` evidence before base commit
+`0b8d651c42ab2efa825cbcabbf7b078fd88d5b06`:
 
 ```bash
 timeout 60s systemd-run --user --scope -p MemoryMax=2G \
@@ -63,7 +81,7 @@ timeout 60s systemd-run --user --scope -p MemoryMax=2G \
   tests/unit/sdk/backends/test_base_backend.py
 ```
 
-### Collector regression command
+### Phase 13 Collector regression command
 
 ```bash
 timeout 60s systemd-run --user --scope -p MemoryMax=2G \
@@ -75,13 +93,30 @@ timeout 60s systemd-run --user --scope -p MemoryMax=2G \
 ### Static and artifact checks
 
 ```bash
-BASE=84021c6c8fa47bad9a72c335940c4be9fd0740db
 RUFF=/home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/ruff
-"$RUFF" check $(git diff --name-only "$BASE" -- '*.py')
-"$RUFF" format --check $(git diff --name-only "$BASE" -- '*.py')
 
-for f in $(git diff --name-only "$BASE" -- '*.sh' |
-  grep '^tests/\(e2e\|performance\)/step4_pro_latest/'); do
+"$RUFF" check \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
+
+"$RUFF" format --check \
+  tests/e2e/step4_pro_latest/test_b300_runtime_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_deepep_legacy_probe_contract.py \
+  tests/e2e/step4_pro_latest/test_b300_two_node_nccl_preflight_contract.py
+
+for f in \
+  tests/e2e/step4_pro_latest/b300_runtime_contract.sh \
+  tests/e2e/step4_pro_latest/run_b300_single_smoke.sh \
+  tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh \
+  tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh \
+  tests/e2e/step4_pro_latest/run_b300_two_node_nccl_preflight.sh \
+  tests/e2e/step4_pro_latest/run_b300_two_node_deepep_legacy_probe.sh
+do
   bash -n "$f"
 done
 
@@ -95,9 +130,11 @@ and asserted that no DeepEP Parquet exists.
 
 ## 2. Validation Criteria
 
-1. Both focused and full Collector tests must have zero failures.
-2. All changed task Python files must pass Ruff check and format.
-3. All changed Step4-Pro-Latest shell scripts must pass `bash -n`.
+1. The current five-file Phase 14 runtime contract suite must have zero
+   failures.
+2. The five current runtime contract Python files must pass Ruff check and
+   format.
+3. The six current runtime/diagnostic shell files must pass `bash -n`.
 4. All recorded deliverable hashes must match.
 5. Canonical B300 data must contain exactly `709` rows:
    `68 + 167 + 174 + 75 + 75 + 150`.
@@ -107,11 +144,20 @@ and asserted that no DeepEP Parquet exists.
 9. Three-repeat evidence must contain `468` executions, `156/156` identical
    cases, and maximum spread `0.0`.
 10. `step4_deepep_ht_perf.parquet` must remain absent.
-11. The complete current code/doc diff must contain no unresolved blocking
+11. Both replicas must remain live while the host pulls and validates both
+    evidence trees.
+12. The active two-node path must use exactly one RJob deletion, and cleanup
+    must reject failed exact resource queries.
+13. Predict-only and live launch must use the same argument array; live
+    submission additionally requires independent evidence of at least `16`
+    available B300 GPUs.
+14. Distributed acceptance must use the synchronized
+    `MODEL_FORWARD_COMPLETE.*batch=real` marker on both replicas.
+15. The complete current code/doc diff must contain no unresolved blocking
     defect.
-12. The two-node B300 smoke must not be reported as PASS unless both replicas
-    complete the corrected lifecycle.
-13. The owner-authorized checkpoint may be committed and pushed while the
+16. The two-node B300 smoke must not be reported as PASS unless both replicas
+    complete the current evidence-pull and single-delete lifecycle.
+17. The owner-authorized checkpoint may be committed and pushed while the
     live run is quota-blocked, provided the report keeps that limitation
     explicit.
 
@@ -121,10 +167,11 @@ and asserted that no DeepEP Parquet exists.
 
 | Check | Result | Numeric evidence |
 |---|---|---:|
-| Focused regression | PASS | `347/347`, `8.21s` |
-| Full Collector regression | PASS | `401/401`, `31.60s` |
-| Ruff check/format | PASS | `45/45` files |
-| Shell syntax | PASS | `14/14` scripts |
+| Phase 14 focused runtime contracts | PASS | `26/26`, `0.21s` |
+| Phase 14 Ruff check/format | PASS | `5/5` files; findings `0` |
+| Phase 14 shell syntax | PASS | `6/6` scripts |
+| Published Phase 13 focused regression | PASS | `347/347`, `8.21s` |
+| Published Phase 13 Collector regression | PASS | `401/401`, `31.60s` |
 | Working-tree whitespace | PASS | exit `0` |
 | Canonical B300 data | PASS | `709` rows |
 | Prefill matrix | PASS_WITH_PROXY | `72`; `24 PASS_WITH_PROXY + 48 OOM` |
@@ -138,6 +185,18 @@ and asserted that no DeepEP Parquet exists.
 
 Evidence logs:
 
+- `/data/ycfeng/tmp/step4_phase14_final_20260817/focused_runtime_contracts.log`
+  - SHA256:
+    `472d24ece6750a9e0fb975c4abc538e5c8f13bb0b2080db4b1f64733817ce1e7`
+- `/data/ycfeng/tmp/step4_phase14_final_20260817/shell_syntax.log`
+  - SHA256:
+    `fee25a798970315268cbc5c2981c223d6986bc4e5935d170905b1ce39cf8df7c`
+- `/data/ycfeng/tmp/step4_phase14_final_20260817/ruff_check.log`
+  - SHA256:
+    `7cec1405a93be76b850e30934c6362726beed6188ab888f25b42bae442423e3c`
+- `/data/ycfeng/tmp/step4_phase14_final_20260817/ruff_format.log`
+  - SHA256:
+    `21a1bde9702e81681bc9268a2863f2ccc51a01ade5a35184af1f3c0ca588070e`
 - `/data/ycfeng/tmp/step4_final_publication_20260817_rerun/focused_pytest.log`
   - SHA256:
     `0a0486bcb10f1296078d4ad9d24d4bdce83ef2be9109c8738653a4228f465293`
@@ -171,12 +230,12 @@ The architecture watch items are:
 3. Some raw collection evidence remains outside the Git commit under
    `/data/ycfeng/tmp`.
 
-The current uncommitted Phase 12 runtime-wrapper and documentation diff was
-reviewed locally. No independent sub-agent review is claimed for this later
-slice. The local review inspected the AgRs backend selection, both-node
-validation barrier, shutdown-arm acknowledgement, concurrent final release,
-manager-marker scope, fail-fast DeepEP rejection, tests, and task records.
-Blocking findings: `0`.
+The current Phase 14 follow-up was reviewed locally. No independent sub-agent
+review is claimed for this later slice. The local review inspected the AgRs
+backend selection, live evidence pull, single-owner deletion, strict cleanup
+queries, same-argument predict-only, quota evidence, timeout margin,
+synchronized completion marker, tests, and task records. Blocking findings:
+`0`.
 
 ### Audit-command failure and root cause
 
@@ -201,9 +260,15 @@ retry.
 
 ### Publication boundary
 
-The earlier Phase 12 lifecycle and script/test skew are resolved in the
-current candidate. The final corrected two-node payload did not run because
-the platform created `0/2` replicas for a request of `16` B300 GPUs while the
-last trusted queue remainder was `6`. This checkpoint may be published by the
-owner's explicit instruction, but publication is not evidence of a completed
-two-node runtime PASS.
+The current candidate removes the superseded remote shutdown-marker protocol.
+Both replicas now stay alive while the host pulls and validates their evidence,
+then one exact `brainctl delete rjob` owns teardown. Cleanup accepts only
+successful empty exact RJob and Replica queries. The source-hash-bounded
+completion marker synchronizes CUDA after model forward, so it is valid for
+runtime correctness evidence but not for uninstrumented timing.
+
+No new two-node payload was submitted in Phase 14. Independent current evidence
+for at least `16` available B300 GPUs is absent, and the last trusted queue
+event reported `6`. This checkpoint may be published by the owner's explicit
+instruction, but publication is not evidence of a completed two-node runtime
+PASS.

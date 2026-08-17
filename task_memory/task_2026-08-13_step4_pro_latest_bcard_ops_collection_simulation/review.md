@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Reviewed Phase 14 lifecycle/evidence hardening: one-delete teardown, strict cleanup, same-argument predict-only, quota evidence, timeout margin, and synchronized forward marker; local approve, live still quota-blocked. |
 | 2026-08-17 | Reviewed the complete publication candidate, found no new blocking code issue, normalized stale reports, and approved a quota-blocked checkpoint commit/push. |
 | 2026-08-17 | Reviewed the post-concurrency runtime files and approved the refreshed 16-file Phase 12 inventory. |
 | 2026-08-17 | Reviewed the predict-only replica-sensitivity diagnostic and replaced it as a total-quota gate with direct platform confirmation. |
@@ -1323,3 +1324,51 @@
 - **Verdict:** **LOCAL APPROVE FOR TASK-SCOPED COMMIT/PUSH; LIVE
   BLOCKED_BY_QUOTA.** Publication is allowed by Q26 and must not be presented
   as a completed two-node runtime validation.
+
+### Review B300-27 — Phase 14 lifecycle and evidence hardening
+
+- **Target Component/Phase:** Active B300 single/two-node wrappers, shared
+  runtime contract, distributed evidence lifecycle, and quota admission gate.
+- **Reviewer Agent Identity:** Codex task execution agent, local review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/b300_runtime_contract.sh`;
+  - all five current runtime contract tests;
+  - Phase 12/14 plan, notes, issues, design, harness, progress, lessons,
+    summary, future, and runtime test report;
+  - RED/GREEN and static evidence under
+    `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/`.
+- **Identified Issues/Anomalies:**
+  - the prior four-marker shutdown protocol was more complex than necessary
+    and left evidence collection coupled to remote teardown;
+  - cleanup could accept a failed control-plane query as an empty inventory;
+  - predict-only could drift from live launch arguments;
+  - the prior forward marker did not prove asynchronous CUDA completion;
+  - the final corrected two-node live run remains blocked before Replica
+    creation because current quota evidence is unavailable and the last
+    trusted event reported `6` available B300 GPUs versus `16` requested.
+- **Remediation/Verification Code Actions Taken:**
+  - kept both replicas alive after `remote_validation_ready`, pulled and
+    validated both evidence trees, and reduced teardown to one exact RJob
+    delete;
+  - added query-status-aware cleanup and exact zero-resource checks;
+  - reused one launch argument array for predict-only/live, archived
+    predict-only SHA256, and required a non-empty candidate list;
+  - added disk-backed quota evidence validation for B300/`b300_train_infra`
+    and `>=16` GPUs;
+  - added source-hash-bounded `MODEL_FORWARD_COMPLETE` after
+    `current_platform.synchronize()`;
+  - added the `3060s` minimum timeout guard with `3600s` defaults;
+  - observed lifecycle/transfer/timeout RED and final `26/26` focused
+    contracts in `0.21s`, shell syntax `6/6`, Ruff clean, and
+    `git diff --check` clean;
+  - audited the complete publication inventory: `76/76` paths matched,
+    duplicate/missing/mismatched counts `0/0/0`.
+- **Verdict:** **LOCAL APPROVE; LIVE BLOCKED_BY_QUOTA.** The implementation
+  addresses the lifecycle and evidence root causes without changing model
+  weights, communication algorithm, or training graph. The synchronize
+  overlay affects timing, so any future measurements from this smoke must be
+  labeled instrumented runtime evidence.

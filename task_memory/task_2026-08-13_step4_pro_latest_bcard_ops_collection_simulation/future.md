@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Updated the quota-gated live rerun to the current evidence-pull and single-delete lifecycle. |
 | 2026-08-17 | Replaced the insufficient predict-only quota gate with separate per-worker fit and direct total-quota evidence requirements. |
 | 2026-08-17 | Replaced the completed coordinator implementation item with the quota-gated final two-node live rerun. |
 | 2026-08-17 | Added live AgRs runtime validation and direct AgRs simulation calibration as future execution work; DeepEP is no longer required by the active runtime. |
@@ -23,7 +24,8 @@
   contracts. Final live acceptance still requires both nodes to finish, at
   least one global `AgRsAll2AllManager` marker, a real-batch forward on each
   node, no DeepEP or automatic backend-selection marker, no `Broken pipe`,
-  and exact cleanup.
+  both evidence trees pulled while the RJob is live, exactly one RJob delete,
+  and successful empty exact-name cleanup queries.
 - Add pinned AgRs execution-level evidence, such as profiler/provider markers
   for both `all_gatherv` dispatch and `reduce_scatterv` combine. The current
   manager plus real-batch gate does not expose separate collective call

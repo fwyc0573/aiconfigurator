@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Replaced remote shutdown markers with host-owned live evidence collection and one RJob delete; added quota, strict cleanup, timeout, and synchronized completion-marker design. |
 | 2026-08-17 | Added the two-stage distributed validation/shutdown coordinator and global AgRs marker aggregation rule. |
 | 2026-08-17 | Defined the active non-DeepEP vLLM communication contract as NCCL-backed `allgather_reducescatter`/AgRs and separated it from the simulation proxy. |
 | 2026-08-13 | Recorded the initial design boundary; implementation design awaits runtime identity confirmation. |
@@ -315,16 +316,44 @@ signal rather than a per-replica signal. Each replica validates its local
 backend configuration marker and real-batch forward. The host aggregates the
 pulled evidence and requires at least one AgRs manager line across the job.
 
-Distributed teardown is a two-stage barrier:
+Distributed teardown has one resource owner:
 
-1. Both replicas write `remote_validation_ready`.
-2. The host writes `coordinated_shutdown_armed` on both replicas.
-3. Both replicas acknowledge with `remote_shutdown_armed`.
-4. The host sends both `coordinated_shutdown` requests concurrently.
+1. Both replicas write `remote_validation_ready` after local validation.
+2. Both remote processes keep vLLM and TCPStore alive without waiting for
+   additional shutdown marker files.
+3. The host pulls both evidence trees while the RJob is still running and
+   validates local backend configuration, a completed real-batch forward,
+   clean logs, zero DeepEP/automatic-selection markers, and at least one
+   job-level AgRs manager marker.
+4. Only after both evidence sets pass does the host call
+   `brainctl delete rjob` once. The same cleanup path verifies that exact RJob
+   and Replica queries both succeeded and are empty.
 
-This ordering prevents rank 0 from closing the shared TCPStore while rank 1
-is still validating. It changes only the test-runner lifecycle; it does not
-change model execution, communication math, weights, or training behavior.
+This removes the earlier shutdown-arm/acknowledgement/release control traffic
+and keeps rank 0's shared TCPStore alive through evidence collection. It
+changes only test orchestration; it does not change model execution,
+communication math, weights, or training behavior.
+
+The host uses one `launch_args` array for predict-only and live launch, so the
+node-fit probe cannot silently drift from GPU, RDMA, topology, replica, image,
+or environment settings. Predict-only success remains insufficient for
+multi-replica admission. A separate disk-backed quota evidence contract must
+state B300, charged group `b300_train_infra`, and at least `16` available GPUs.
+
+The remote runner adds a source-hash-bounded
+`MODEL_FORWARD_COMPLETE` diagnostic after `_model_forward`. It calls
+`current_platform.synchronize()` before logging, which proves that the
+asynchronous CUDA work completed but adds a synchronization point. Therefore
+the overlay is valid for runtime/provider/communication smoke evidence and is
+not valid as an uninstrumented latency or throughput measurement.
+
+The remote exec timeout must include the validation window, both sequential
+evidence-pull budgets, and a fixed margin:
+
+```text
+minimum = 2400 + 2 * 300 + 60 = 3060 seconds
+default = 3600 seconds
+```
 
 This changes the runtime communication algorithm, not model shape, weights,
 precision, expert GEMMs, attention, or any training graph. It therefore does
@@ -411,6 +440,8 @@ same drivers must be rerun with the proxy option omitted.
 | Attention-type-scoped fallback assertion | A global assertion incorrectly classified legal SWA Triton/TRTLLM execution as Full-MFA fallback | Test/validation logic only; runtime execution unchanged |
 | Source-hash-bounded SWA QKV annotation resolution | Cutlass DSL 4.4.2 does not resolve the image-native postponed `Constexpr` annotations | Annotation metadata only; provider, kernel body, inputs, outputs, QKV arithmetic, and persisted identity unchanged |
 | Active `allgather_reducescatter`/AgRs runtime | DeepEP/NVSHMEM cannot run reliably in the current platform contract | NCCL-backed all-gather dispatch and reduce-scatter combine; sequence parallelism disabled; communication performance differs from DeepEP |
+| Source-hash-bounded `MODEL_FORWARD_COMPLETE` overlay | Existing forward-context logging occurs before asynchronous CUDA completion | Adds one diagnostic synchronize after model forward; values and training graph unchanged, but smoke timing is instrumented |
+| Host-owned evidence pull and single RJob delete | Remote shutdown markers add control-plane races and can tear down TCPStore before evidence is durable | Test lifecycle only; both runtimes remain live through evidence validation, then one resource deletion performs teardown |
 | Explicit B300 NCCL `alltoall` proxy for DeepEP | Exact DeepEP measurement is owner-deferred at `0/116`, while MTP-off simulation must continue | Simulation-only approximation; always labeled `PROXY`; no fake DeepEP rows; differs from active AgRs and must be replaced or recalibrated after target communication measurement |
 
 These deviations are approved only for the pinned B300 provider/performance

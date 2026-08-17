@@ -15,21 +15,27 @@ MODEL_CONFIG_DIR="${MODEL_CONFIG_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && p
 SERVING_PORT="${SERVING_PORT:-8000}"
 VLLM_REPO="${VLLM_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../vllm-step4-pro" && pwd)}"
 REMOTE_SCRIPT="${REMOTE_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/remote_b300_single_smoke.sh}"
+CONTRACT_LIB="${CONTRACT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/b300_runtime_contract.sh}"
 PAYLOAD_SOURCE_ROOT="${PAYLOAD_SOURCE_ROOT:-/data/ycfeng/tmp/b300_step4_smoke_20260814}"
 IDENTITY_PAYLOAD_ROOT="${IDENTITY_PAYLOAD_ROOT:-${PAYLOAD_SOURCE_ROOT}/pinned_identity_fulltrees_pack_v2}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/data/ycfeng/tmp/b300_step4_smoke_20260814/two_node_${RJOB_NAME}}"
-CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-3G}"
+CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-2G}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-1200}"
 DISTRIBUTED_ENV_READY_TIMEOUT_SECONDS="${DISTRIBUTED_ENV_READY_TIMEOUT_SECONDS:-180}"
 REMOTE_RESULT_TIMEOUT_SECONDS="${REMOTE_RESULT_TIMEOUT_SECONDS:-2400}"
 LIVE_TIMEOUT_SECONDS="${LIVE_TIMEOUT_SECONDS:-3600}"
 CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"
 EVIDENCE_HOLD_SECONDS="${EVIDENCE_HOLD_SECONDS:-300}"
+EVIDENCE_PULL_TIMEOUT_SECONDS="${EVIDENCE_PULL_TIMEOUT_SECONDS:-300}"
 DATA_PARALLEL_SIZE=16
 DATA_PARALLEL_SIZE_LOCAL=8
 VLLM_ALL2ALL_BACKEND=allgather_reducescatter
 VLLM_ENABLE_SEQUENCE_PARALLEL=0
 NCCL_PREFLIGHT_EVIDENCE="${NCCL_PREFLIGHT_EVIDENCE:-}"
+B300_QUOTA_EVIDENCE="${B300_QUOTA_EVIDENCE:-}"
+REQUIRED_B300_GPUS=16
+REMOTE_EXEC_TIMEOUT_SECONDS="${REMOTE_EXEC_TIMEOUT_SECONDS:-${LIVE_TIMEOUT_SECONDS}}"
+MIN_REMOTE_EXEC_TIMEOUT_SECONDS="$((REMOTE_RESULT_TIMEOUT_SECONDS + 2 * EVIDENCE_PULL_TIMEOUT_SECONDS + 60))"
 
 PAYLOAD_ROOT="${ARTIFACT_ROOT}/payload"
 REMOTE_BOOTSTRAP_ROOT="/home/step4pro-bootstrap-${RJOB_NAME}"
@@ -39,13 +45,21 @@ DISTRIBUTED_ENV_FILE="/home/step4pro-distributed-${RJOB_NAME}.env"
 RJOB_LABEL="rjob.brainpp.cn/rjob-name=${RJOB_NAME}"
 REPLICAS=()
 EXEC_PIDS=()
+declare -A EXEC_PID_BY_REPLICA=()
 CLEANUP_DONE=0
 
 if (( ${#RJOB_NAME} > 50 )); then
     echo "RJOB_NAME exceeds platform limit: ${#RJOB_NAME} > 50" >&2
     exit 1
 fi
+if (( REMOTE_EXEC_TIMEOUT_SECONDS < MIN_REMOTE_EXEC_TIMEOUT_SECONDS ||
+    LIVE_TIMEOUT_SECONDS < MIN_REMOTE_EXEC_TIMEOUT_SECONDS )); then
+    echo "Remote execution timeout is too short for validation and evidence pulls: remote=${REMOTE_EXEC_TIMEOUT_SECONDS} live=${LIVE_TIMEOUT_SECONDS} required=${MIN_REMOTE_EXEC_TIMEOUT_SECONDS}" >&2
+    exit 1
+fi
 mkdir -p "${PAYLOAD_ROOT}"
+test -f "${CONTRACT_LIB}"
+source "${CONTRACT_LIB}"
 
 : "${NCCL_PREFLIGHT_EVIDENCE:?NCCL_PREFLIGHT_EVIDENCE is required}"
 test -s "${NCCL_PREFLIGHT_EVIDENCE}"
@@ -71,6 +85,21 @@ if grep -Eq "NCCL_PREFLIGHT_HCA=FAIL|Error 803|NCCL error" \
 fi
 sha256sum "${NCCL_PREFLIGHT_EVIDENCE}" \
     >"${ARTIFACT_ROOT}/nccl_preflight_evidence.sha256"
+
+: "${B300_QUOTA_EVIDENCE:?B300_QUOTA_EVIDENCE is required}"
+available_b300_gpus="$(
+    require_b300_quota_evidence \
+        "${B300_QUOTA_EVIDENCE}" \
+        "${REQUIRED_B300_GPUS}" \
+        "${CHARGED_GROUP}"
+)"
+cp "${B300_QUOTA_EVIDENCE}" \
+    "${ARTIFACT_ROOT}/b300_quota_evidence.txt"
+sha256sum "${ARTIFACT_ROOT}/b300_quota_evidence.txt" \
+    >"${ARTIFACT_ROOT}/b300_quota_evidence.sha256"
+printf 'required_b300_gpus=%s\navailable_b300_gpus=%s\n' \
+    "${REQUIRED_B300_GPUS}" "${available_b300_gpus}" \
+    >"${ARTIFACT_ROOT}/quota_metrics.env"
 
 scoped() {
     local timeout_seconds="$1"
@@ -102,12 +131,21 @@ cleanup() {
     scoped 60 /kubebrain/brainctl delete rjob "${RJOB_NAME}" \
         -n "${NAMESPACE}" >"${ARTIFACT_ROOT}/cleanup_delete.log" 2>&1
     local deadline=$(( $(date +%s) + CLEANUP_TIMEOUT_SECONDS ))
+    local cleanup_status=1
     while (( $(date +%s) < deadline )); do
+        local rjob_query_status=0
+        local replica_query_status=0
         query_rjob "${ARTIFACT_ROOT}/cleanup_rjob_poll.log"
+        rjob_query_status=$?
         query_replicas "${ARTIFACT_ROOT}/cleanup_replicas_poll.log"
-        if ! grep -q "${RJOB_NAME}" \
+        replica_query_status=$?
+        if cleanup_inventory_is_empty \
+            "${rjob_query_status}" \
+            "${replica_query_status}" \
             "${ARTIFACT_ROOT}/cleanup_rjob_poll.log" \
-            "${ARTIFACT_ROOT}/cleanup_replicas_poll.log"; then
+            "${ARTIFACT_ROOT}/cleanup_replicas_poll.log" \
+            "${RJOB_NAME}"; then
+            cleanup_status=0
             break
         fi
         sleep 5
@@ -129,6 +167,9 @@ cleanup() {
         awk -v job="${RJOB_NAME}" 'index($0, job) > 0 { print }' \
             >"${ARTIFACT_ROOT}/cleanup_local_processes.log"
     set -e
+    if (( cleanup_status != 0 && status == 0 )); then
+        status=1
+    fi
     return "${status}"
 }
 trap 'status=$?; cleanup; exit "${status}"' EXIT
@@ -150,6 +191,7 @@ cp "${PAYLOAD_SOURCE_ROOT}/image_base_changed_manifest.tsv.gz" "${PAYLOAD_ROOT}/
 cp "${PAYLOAD_SOURCE_ROOT}/pinned_vllm_manifest.sha256.gz" "${PAYLOAD_ROOT}/"
 cp "${identity_pack}" "${identity_index}" "${PAYLOAD_ROOT}/"
 cp "${REMOTE_SCRIPT}" "${PAYLOAD_ROOT}/remote_b300_single_smoke.sh"
+cp "${CONTRACT_LIB}" "${PAYLOAD_ROOT}/b300_runtime_contract.sh"
 mkdir -p "${PAYLOAD_ROOT}/model_config"
 cp "${MODEL_CONFIG_DIR}/config.json" "${PAYLOAD_ROOT}/model_config/config.json"
 
@@ -183,24 +225,67 @@ printf 'distributed_env_ready=PASS path=%s\n' '${DISTRIBUTED_ENV_FILE}'
 cat '${DISTRIBUTED_ENV_FILE}'
 nvidia-smi -L
 sleep '${LIVE_TIMEOUT_SECONDS}'"
+
+launch_args=(
+    --auto-delete-duration=60m
+    --max-wait-duration=15m
+    --name "${RJOB_NAME}"
+    --replica 2
+    --charged-group "${CHARGED_GROUP}"
+    --private-machine group
+    --positive-tags "${POSITIVE_TAGS}"
+    --set-env=DISTRIBUTED_JOB=true
+    -e MODELNAME="${MODEL_NAME}"
+    -e PORT_AUTO0="${SERVING_PORT}"
+    --host-network=true
+    --custom-resources=rdma/mlnx_shared=8
+    --custom-resources=mellanox.com/mlnx_rdma=1
+    --topo-group=yes
+    --gpu 8
+    --cpu 64
+    --memory 600000
+    --backoff-limit 1
+    --enable-sshd=false
+    --enable-jobutil-config=false
+    --image "${IMAGE}"
+    --entrypoint /bin/bash
+    -- -lc "${worker_command}"
+)
+
+scoped 300 /kubebrain/brainctl rjob launch --predict-only \
+    "${launch_args[@]}" >"${ARTIFACT_ROOT}/predict_only.log" 2>&1
+sha256sum "${ARTIFACT_ROOT}/predict_only.log" \
+    >"${ARTIFACT_ROOT}/predict_only.sha256"
+predict_candidate_count="$(
+    {
+        grep -c '^Node:' "${ARTIFACT_ROOT}/predict_only.log" || true
+    }
+)"
+if (( predict_candidate_count < 1 )); then
+    echo "Same-shape predict-only returned no B300 candidates" >&2
+    exit 1
+fi
+printf 'predict_candidate_count=%s\n' "${predict_candidate_count}" \
+    >"${ARTIFACT_ROOT}/predict_only_metrics.env"
+
+set +e
+query_rjob "${ARTIFACT_ROOT}/predict_only_rjob.log"
+predict_rjob_query_status=$?
+query_replicas "${ARTIFACT_ROOT}/predict_only_replicas.log"
+predict_replica_query_status=$?
+set -e
+cleanup_inventory_is_empty \
+    "${predict_rjob_query_status}" \
+    "${predict_replica_query_status}" \
+    "${ARTIFACT_ROOT}/predict_only_rjob.log" \
+    "${ARTIFACT_ROOT}/predict_only_replicas.log" \
+    "${RJOB_NAME}"
+
 setsid sudo -n systemd-run --scope -p MemoryMax="${CONTROL_MEMORY_MAX}" \
     --expand-environment=no \
     timeout --signal=TERM --kill-after=30s "${LIVE_TIMEOUT_SECONDS}s" \
     /kubebrain/brainctl rjob launch --detach \
-    --auto-delete-duration=60m --max-wait-duration=15m \
-    --name "${RJOB_NAME}" --replica 2 \
-    --charged-group "${CHARGED_GROUP}" --private-machine group \
-    --positive-tags "${POSITIVE_TAGS}" \
-    --set-env=DISTRIBUTED_JOB=true \
-    -e MODELNAME="${MODEL_NAME}" -e PORT_AUTO0="${SERVING_PORT}" \
-    --host-network=true \
-    --custom-resources=rdma/mlnx_shared=8 \
-    --custom-resources=mellanox.com/mlnx_rdma=1 \
-    --topo-group=yes \
-    --gpu 8 --cpu 64 --memory 600000 --backoff-limit 1 \
-    --enable-sshd=false --enable-jobutil-config=false \
-    --image "${IMAGE}" --entrypoint /bin/bash \
-    -- -lc "${worker_command}" \
+    "${launch_args[@]}" \
     >"${ARTIFACT_ROOT}/launch.log" 2>&1 < /dev/null &
 LAUNCH_PID=$!
 
@@ -276,23 +361,26 @@ export VLLM_ALL2ALL_BACKEND='${VLLM_ALL2ALL_BACKEND}'
 export VLLM_ENABLE_SEQUENCE_PARALLEL='${VLLM_ENABLE_SEQUENCE_PARALLEL}'
 export OPTIMUS_WHEEL_URL='${OPTIMUS_WHEEL_URL}'
 export OPTIMUS_WHEEL_SHA256='${OPTIMUS_WHEEL_SHA256}'
+export RUNTIME_CONTRACT_LIB='${REMOTE_BOOTSTRAP_ROOT}/b300_runtime_contract.sh'
 export ENABLE_PROFILER=0
 export EVIDENCE_HOLD_SECONDS='${EVIDENCE_HOLD_SECONDS}'
 chmod +x '${REMOTE_BOOTSTRAP_ROOT}/remote_b300_single_smoke.sh'
 exec '${REMOTE_BOOTSTRAP_ROOT}/remote_b300_single_smoke.sh'"
     setsid sudo -n systemd-run --scope -p MemoryMax="${CONTROL_MEMORY_MAX}" \
         --expand-environment=no \
-        timeout --signal=TERM --kill-after=30s "${REMOTE_RESULT_TIMEOUT_SECONDS}s" \
+        timeout --signal=TERM --kill-after=30s "${REMOTE_EXEC_TIMEOUT_SECONDS}s" \
         /kubebrain/brainctl -n "${NAMESPACE}" exec -i "replica/${replica}" -- \
         /bin/bash -lc "${remote_command}" \
         >"${ARTIFACT_ROOT}/remote_exec_${replica}.log" 2>&1 < /dev/null &
-    EXEC_PIDS+=("$!")
+    remote_exec_pid=$!
+    EXEC_PIDS+=("${remote_exec_pid}")
+    EXEC_PID_BY_REPLICA["${replica}"]="${remote_exec_pid}"
 done
 
 validation_deadline=$(( $(date +%s) + REMOTE_RESULT_TIMEOUT_SECONDS ))
-agrs_manager_replica_count=0
 for replica in "${REPLICAS[@]}"; do
     evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
+    remote_exec_pid="${EXEC_PID_BY_REPLICA[$replica]}"
     validation_ready=0
     while (( $(date +%s) < validation_deadline )); do
         if scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
@@ -301,68 +389,31 @@ for replica in "${REPLICAS[@]}"; do
             validation_ready=1
             break
         fi
+        if ! kill -0 "${remote_exec_pid}" 2>/dev/null; then
+            remote_exec_status=0
+            wait "${remote_exec_pid}" || remote_exec_status=$?
+            echo "Remote execution exited before validation: replica=${replica} status=${remote_exec_status}" >&2
+            tail -n 200 "${ARTIFACT_ROOT}/remote_exec_${replica}.log" >&2
+            exit 1
+        fi
         sleep 5
     done
     test "${validation_ready}" = "1"
 done
 
+agrs_manager_replica_count=0
 for replica in "${REPLICAS[@]}"; do
     evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
-    scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
-        "replica/${replica}" -- touch "${evidence_root}/coordinated_shutdown_armed" \
-        >"${ARTIFACT_ROOT}/shutdown_arm_request_${replica}.log" 2>&1 < /dev/null
-done
-
-shutdown_arm_deadline=$(( $(date +%s) + REMOTE_RESULT_TIMEOUT_SECONDS ))
-for replica in "${REPLICAS[@]}"; do
-    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
-    shutdown_armed=0
-    while (( $(date +%s) < shutdown_arm_deadline )); do
-        if scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
-            "replica/${replica}" -- test -f "${evidence_root}/remote_shutdown_armed" \
-            >/dev/null 2>"${ARTIFACT_ROOT}/shutdown_arm_probe_${replica}.log" < /dev/null; then
-            shutdown_armed=1
-            break
-        fi
-        sleep 2
-    done
-    test "${shutdown_armed}" = "1"
-done
-
-shutdown_request_pids=()
-for replica in "${REPLICAS[@]}"; do
-    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
-    scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
-        "replica/${replica}" -- touch "${evidence_root}/coordinated_shutdown" \
-        >"${ARTIFACT_ROOT}/shutdown_request_${replica}.log" 2>&1 < /dev/null &
-    shutdown_request_pids+=("$!")
-done
-
-shutdown_request_status=0
-for pid in "${shutdown_request_pids[@]}"; do
-    if ! wait "$pid"; then
-        shutdown_request_status=1
+    remote_exec_pid="${EXEC_PID_BY_REPLICA[$replica]}"
+    if ! kill -0 "${remote_exec_pid}" 2>/dev/null; then
+        echo "Remote execution exited before evidence pull: replica=${replica}" >&2
+        tail -n 200 "${ARTIFACT_ROOT}/remote_exec_${replica}.log" >&2
+        exit 1
     fi
-done
-test "${shutdown_request_status}" = "0"
-
-for replica in "${REPLICAS[@]}"; do
-    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
-    deadline=$(( $(date +%s) + REMOTE_RESULT_TIMEOUT_SECONDS ))
-    ready=0
-    while (( $(date +%s) < deadline )); do
-        if scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
-            "replica/${replica}" -- test -f "${evidence_root}/remote_result_ready" \
-            >/dev/null 2>"${ARTIFACT_ROOT}/result_probe_${replica}.log" < /dev/null; then
-            ready=1
-            break
-        fi
-        sleep 5
-    done
-    test "${ready}" = "1"
 
     evidence_tar="${ARTIFACT_ROOT}/evidence_${replica}.tar"
-    scoped 300 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
+    scoped "${EVIDENCE_PULL_TIMEOUT_SECONDS}" \
+        /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
         "replica/${replica}" -- \
         tar cf - -C /home "$(basename "${evidence_root}")" \
         >"${evidence_tar}" 2>"${ARTIFACT_ROOT}/evidence_pull_${replica}.log" \
@@ -370,12 +421,16 @@ for replica in "${REPLICAS[@]}"; do
     evidence_dir="${ARTIFACT_ROOT}/evidence_${replica}"
     mkdir -p "${evidence_dir}"
     tar xf "${evidence_tar}" -C "${evidence_dir}"
-    result_file="${evidence_dir}/$(basename "${evidence_root}")/result.env"
-    grep -q '^ONE_GPU_SMOKE=PASS$' "${result_file}"
-    server_log="${evidence_dir}/$(basename "${evidence_root}")/vllm_server.log"
+    pulled_evidence_root="${evidence_dir}/$(basename "${evidence_root}")"
+    remote_execution_file="${pulled_evidence_root}/remote_execution.env"
+    server_log="${pulled_evidence_root}/vllm_server.log"
+    grep -q '^DISTRIBUTED_RUNTIME_VALIDATION=PASS$' \
+        "${remote_execution_file}"
     grep -Fq \
         "DeepEP runtime not available; using allgather_reducescatter all2all backend without sequence parallelism" \
         "${server_log}"
+    grep -Eq "MODEL_FORWARD_COMPLETE.*batch=real" "${server_log}"
+    assert_runtime_log_clean "${server_log}"
     if grep -q "Using AgRsAll2AllManager all2all manager" "${server_log}"; then
         agrs_manager_replica_count="$((agrs_manager_replica_count + 1))"
     fi
@@ -387,6 +442,12 @@ for replica in "${REPLICAS[@]}"; do
         echo "Unexpected Step MoE automatic backend selection" >&2
         exit 1
     fi
+    model_forward_complete_count="$(
+        grep -Ec "MODEL_FORWARD_COMPLETE.*batch=real" "${server_log}"
+    )"
+    printf 'replica=%s model_forward_complete_count=%s\n' \
+        "${replica}" "${model_forward_complete_count}" \
+        >>"${ARTIFACT_ROOT}/host_metrics.env"
 done
 test "${agrs_manager_replica_count}" -ge 1
 printf 'agrs_manager_replica_count=%s\n' "${agrs_manager_replica_count}" \

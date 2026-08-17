@@ -16,6 +16,7 @@ OPTIMUS_WHEEL_URL="${OPTIMUS_WHEEL_URL:-https://artifactory.stepfun-inc.com/arti
 OPTIMUS_WHEEL_SHA256="${OPTIMUS_WHEEL_SHA256:-2eaec8660cd8505486ec06b09b5b508d73483e0729cbe9a2a60afb5cf9a19cfe}"
 VLLM_REPO="${VLLM_REPO:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../vllm-step4-pro" && pwd)}"
 REMOTE_SCRIPT="${REMOTE_SCRIPT:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/remote_b300_single_smoke.sh}"
+CONTRACT_LIB="${CONTRACT_LIB:-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/b300_runtime_contract.sh}"
 ARTIFACT_ROOT="${ARTIFACT_ROOT:-/data/ycfeng/tmp/b300_step4_smoke_20260814/single_${RJOB_NAME}}"
 PAYLOAD_SOURCE_ROOT="${PAYLOAD_SOURCE_ROOT:-/data/ycfeng/tmp/b300_step4_smoke_20260814}"
 IDENTITY_PAYLOAD_ROOT="${IDENTITY_PAYLOAD_ROOT:-${PAYLOAD_SOURCE_ROOT}/pinned_identity_fulltrees_pack_v2}"
@@ -23,7 +24,7 @@ LIVE_TIMEOUT_SECONDS="${LIVE_TIMEOUT_SECONDS:-1200}"
 READY_TIMEOUT_SECONDS="${READY_TIMEOUT_SECONDS:-900}"
 REMOTE_RESULT_TIMEOUT_SECONDS="${REMOTE_RESULT_TIMEOUT_SECONDS:-900}"
 EVIDENCE_HOLD_SECONDS="${EVIDENCE_HOLD_SECONDS:-300}"
-CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-3G}"
+CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-2G}"
 CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-180}"
 CUDA_LAUNCH_BLOCKING="${CUDA_LAUNCH_BLOCKING:-0}"
 ENABLE_PROFILER="${ENABLE_PROFILER:-0}"
@@ -61,6 +62,8 @@ if [[ ! "${SERVING_PORT}" =~ ^[0-9]+$ ]] ||
 fi
 
 mkdir -p "${PAYLOAD_ROOT}"
+test -f "${CONTRACT_LIB}"
+source "${CONTRACT_LIB}"
 
 scoped() {
     local timeout_seconds="$1"
@@ -118,11 +121,18 @@ cleanup() {
     cleanup_deadline=$(( $(date +%s) + CLEANUP_TIMEOUT_SECONDS ))
     cleanup_status=1
     while (( $(date +%s) < cleanup_deadline )); do
+        rjob_query_status=0
+        replica_query_status=0
         query_rjob "${ARTIFACT_ROOT}/cleanup_rjob_poll.log"
+        rjob_query_status=$?
         query_replicas "${ARTIFACT_ROOT}/cleanup_replicas_poll.log"
-        if ! grep -q "${RJOB_NAME}" \
+        replica_query_status=$?
+        if cleanup_inventory_is_empty \
+            "${rjob_query_status}" \
+            "${replica_query_status}" \
             "${ARTIFACT_ROOT}/cleanup_rjob_poll.log" \
-            "${ARTIFACT_ROOT}/cleanup_replicas_poll.log"; then
+            "${ARTIFACT_ROOT}/cleanup_replicas_poll.log" \
+            "${RJOB_NAME}"; then
             cleanup_status=0
             break
         fi
@@ -193,6 +203,7 @@ cp "${PAYLOAD_SOURCE_ROOT}/pinned_vllm_manifest.sha256.gz" \
 cp "${identity_pack}" "${PAYLOAD_ROOT}/"
 cp "${identity_index}" "${PAYLOAD_ROOT}/"
 cp "${REMOTE_SCRIPT}" "${PAYLOAD_ROOT}/remote_b300_single_smoke.sh"
+cp "${CONTRACT_LIB}" "${PAYLOAD_ROOT}/b300_runtime_contract.sh"
 mkdir -p "${PAYLOAD_ROOT}/model_config"
 cp "${MODEL_CONFIG_DIR}/config.json" "${PAYLOAD_ROOT}/model_config/config.json"
 
@@ -211,6 +222,7 @@ export IDENTITY_INDEX_PATH='${REMOTE_BOOTSTRAP_ROOT}/$(basename "${identity_inde
 export PINNED_COMMIT='${PINNED_COMMIT}'
 export OPTIMUS_WHEEL_URL='${OPTIMUS_WHEEL_URL}'
 export OPTIMUS_WHEEL_SHA256='${OPTIMUS_WHEEL_SHA256}'
+export RUNTIME_CONTRACT_LIB='${REMOTE_BOOTSTRAP_ROOT}/b300_runtime_contract.sh'
 export EVIDENCE_HOLD_SECONDS='${EVIDENCE_HOLD_SECONDS}'
 export CUDA_LAUNCH_BLOCKING='${CUDA_LAUNCH_BLOCKING}'
 export ENABLE_PROFILER='${ENABLE_PROFILER}'
@@ -333,6 +345,8 @@ test "${evidence_exit}" = "0"
 remote_result="${ARTIFACT_ROOT}/$(basename "${REMOTE_EVIDENCE_ROOT}")/result.env"
 test -f "${remote_result}"
 grep -q '^ONE_GPU_SMOKE=PASS$' "${remote_result}"
+assert_runtime_log_clean \
+    "${ARTIFACT_ROOT}/$(basename "${REMOTE_EVIDENCE_ROOT}")/vllm_server.log"
 
 cleanup
 cleanup_exit=$?

@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Replaced the shutdown-arm gate with live evidence pull plus one RJob delete and added strict cleanup, quota-file, timeout, and completion-marker gates. |
 | 2026-08-17 | Corrected the quota gate after proving `predict-only` is per-worker only, and reduced remaining controller scopes to `MemoryMax=2G`. |
 | 2026-08-17 | Added the two-node ready/armed/shutdown barrier, global AgRs marker scope, and quota admission gate. |
 | 2026-08-17 | Added the active AgRs runtime gate and separated it from both DeepEP diagnostics and the NCCL `alltoall` simulation proxy. |
@@ -143,10 +144,10 @@
     marker across the whole job, not one marker per replica. Each replica must
     still prove the explicit AgRs configuration, a real-batch forward, and
     zero DeepEP/automatic-selection markers.
-34. A two-node run may stop vLLM only after all replicas write validation
-    readiness, all replicas acknowledge the shutdown arm, and the host sends
-    the final shutdown requests concurrently. A sleep or independent per-node
-    teardown is not an acceptable substitute.
+34. After all replicas write validation readiness, every remote vLLM/TCPStore
+    process must remain alive until the host has pulled and accepted both
+    evidence trees. Remote shutdown-arm, acknowledgement, and release markers
+    are prohibited in the current lifecycle.
 35. The final two-node live rerun requires both a fresh same-shape
     predict-only check and independent total-quota evidence for
     `8 GPU/replica x 2 replicas = 16 GPU`. Predict-only is a per-worker node
@@ -154,6 +155,22 @@
     queue another live run while the platform reports less than `16` B300
     GPUs remaining or while current quota is unreadable and the last trusted
     event remains below `16`.
+36. Predict-only and live launch must consume the same launch-argument array.
+    Predict-only must archive its output and SHA256, report at least one
+    candidate `Node:`, and prove through successful exact-name queries that it
+    created no RJob or Replica.
+37. Distributed teardown has one resource owner. After host-side evidence
+    validation, call `brainctl delete rjob` exactly once. Cleanup PASS requires
+    successful exact RJob and Replica queries plus empty matching inventories;
+    query failure must remain FAIL.
+38. Distributed real-batch acceptance requires a source-hash-bounded
+    `MODEL_FORWARD_COMPLETE` marker emitted after
+    `current_platform.synchronize()`. This proves runtime completion but
+    instruments timing, so request latency from that run must not be reported
+    as an unmodified performance benchmark.
+39. Remote execution and worker-holder timeouts must be at least the validation
+    budget plus two evidence-pull budgets and a 60-second margin. With current
+    defaults the minimum is `3060s`, and both defaults remain `3600s`.
 
 ## Prohibited Actions
 
@@ -169,6 +186,8 @@
 - No `rm`, `mv`, reset, or bulk replacement without explicit permission.
 - No GPU/Docker launch before the identity gate is closed.
 - No multi-replica live launch based only on a predict-only node list.
+- No cleanup PASS from failed, missing, or unreadable exact resource queries.
+- No restoration of the superseded shutdown-arm/release marker protocol.
 - No temporary files under `/tmp`.
 - No namespace-wide Replica inventory.
 - No whole Git pack, bundle, tar archive, or large log in shell variables,

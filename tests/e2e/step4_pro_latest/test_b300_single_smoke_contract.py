@@ -47,8 +47,11 @@ def test_host_wrapper_builds_identity_payload_and_recovers_evidence() -> None:
     assert "rjob.brainpp.cn/rjob-name=${RJOB_NAME}" in script
     assert "setsid sudo -n systemd-run" in script
     assert "timeout --signal=TERM" in script
-    assert 'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-3G}"' in script
+    assert 'CONTROL_MEMORY_MAX="${CONTROL_MEMORY_MAX:-2G}"' in script
     assert '-p MemoryMax="${CONTROL_MEMORY_MAX}"' in script
+    assert "b300_runtime_contract.sh" in script
+    assert "cleanup_inventory_is_empty" in script
+    assert "assert_runtime_log_clean" in script
     assert "kill -KILL" in script
     assert "remote_result_ready" in script
     assert "\n:\n" not in script
@@ -78,6 +81,13 @@ def test_remote_script_proves_pinned_runtime_source() -> None:
     assert "ep_gather_block_overlay.patch" in script
     assert "optimus_triton_gather_overlay.patch" in script
     assert "hidden_size & -hidden_size" in script
+    assert (
+        'PINNED_GPU_MODEL_RUNNER_SHA256="298a43a69f3b5b43bdbb753b3cee642933a0dbd71368dfbf0271dba1fce32bcb"'
+    ) in script
+    assert "model_forward_complete_overlay.patch" in script
+    assert "MODEL_FORWARD_COMPLETE" in script
+    assert "synchronize = current_platform.synchronize" in script
+    assert "synchronize()" in script
 
 
 def test_remote_script_preserves_single_gpu_recipe_and_provider_gates() -> None:
@@ -170,11 +180,16 @@ def test_remote_script_uses_headless_mode_for_nonzero_dp_start_rank() -> None:
         "DATA_PARALLEL_START_RANK > 0",
         'HEADLESS_ARGS="--headless --api-server-count 0"',
         'touch "${REMOTE_VALIDATION_READY_FILE}"',
-        "await_coordinated_shutdown",
+        "hold_distributed_runtime_for_host_cleanup",
         "HEADLESS_RUNTIME=PASS",
+        "DISTRIBUTED_RUNTIME_VALIDATION=PASS",
+        "MODEL_FORWARD_COMPLETE.*batch=real",
     ):
         assert marker in script
     assert "headless_server_exit_status" not in script
+    assert "await_coordinated_shutdown" not in script
+    assert "COORDINATED_SHUTDOWN" not in script
+    assert 'wait_for_server_log_marker \\\n        "FORWARD_CONTEXT.*batch=real"' not in script
 
 
 def test_ep_gather_block_rule_preserves_exact_dimension_coverage() -> None:

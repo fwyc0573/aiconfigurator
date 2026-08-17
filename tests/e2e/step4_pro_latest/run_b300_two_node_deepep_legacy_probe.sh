@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# HISTORICAL/INACTIVE: not used by the active AgRs runtime path.
+# Retained only for DeepEP/NVSHMEM diagnosis.
+
 NAMESPACE="${NAMESPACE:-shai-core}"
 RJOB_NAME="${RJOB_NAME:-s4p-legacy-deepep-$(date +%m%d-%H%M%S)}"
 IMAGE="${IMAGE:-hub.stepfun-inc.com/stepcast/stepcast:2026-08-06-server-vllm-test-0.19.0.post20.dev26.gc820e5ae1.precompiled}"

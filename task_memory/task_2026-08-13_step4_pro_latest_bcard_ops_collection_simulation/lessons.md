@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Replaced the multi-marker shutdown lesson with live evidence collection, single-owner resource deletion, query-aware cleanup, and completion-marker timing boundaries. |
 | 2026-08-17 | Added the verified vLLM backend-selection, communication-identity, distributed log-scope, coordinated-shutdown, and quota-admission lessons from replacing DeepEP with AgRs. |
 | 2026-08-13 | Created the reusable-lessons scaffold; no lesson has been validated yet. |
 | 2026-08-15 | Added vetted Collector-coverage and blocked-simulation lessons. |
@@ -56,13 +57,22 @@
     per-replica contract. Require backend configuration and real-batch
     evidence on every replica, then require the global manager marker at
     least once across the complete job.
-13. **Coordinate distributed teardown with explicit barriers.** A successful
+13. **Collect distributed evidence before resource teardown.** A successful
     API rank must not stop its TCPStore while headless ranks are still
-    validating. Use validation-ready, shutdown-arm, armed-acknowledgement,
-    and concurrent final-shutdown stages; a sleep or independent EXIT handler
-    does not establish safe ordering.
+    validating. Keep all ranks alive after validation, pull every evidence
+    tree while the RJob exists, then let one host-owned RJob deletion terminate
+    the distributed runtime.
 14. **Treat predict-only as a per-worker fit check until replica sensitivity
     is proven.** Here, replica counts `2` and `8` returned the same seven-node
     list, while a real 2-replica submission later exposed only `6` GPUs of
     quota. Multi-replica admission therefore needs separate current quota
     evidence; a node list alone is insufficient.
+15. **Cleanup proof includes query success.** An empty-looking output from a
+    failed or OOM-killed control-plane query is not proof that resources are
+    gone. Require successful exact-name queries and empty inventories before a
+    launcher may report cleanup PASS.
+16. **A synchronized completion marker is diagnostic instrumentation.** A log
+    emitted before asynchronous CUDA work finishes proves only dispatch. A
+    source-hash-bounded synchronize after model forward proves completion and
+    catches deferred CUDA failures, but it changes timing and must not be used
+    as an uninstrumented latency result.

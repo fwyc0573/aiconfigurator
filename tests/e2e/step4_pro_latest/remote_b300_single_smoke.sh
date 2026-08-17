@@ -15,6 +15,8 @@ set -euo pipefail
 : "${PORT_AUTO0:?PORT_AUTO0 is required}"
 : "${OPTIMUS_WHEEL_URL:?OPTIMUS_WHEEL_URL is required}"
 : "${OPTIMUS_WHEEL_SHA256:?OPTIMUS_WHEEL_SHA256 is required}"
+: "${RUNTIME_CONTRACT_LIB:?RUNTIME_CONTRACT_LIB is required}"
+source "${RUNTIME_CONTRACT_LIB}"
 EVIDENCE_HOLD_SECONDS="${EVIDENCE_HOLD_SECONDS:-300}"
 HEADLESS_WAIT_TIMEOUT_SECONDS="${HEADLESS_WAIT_TIMEOUT_SECONDS:-1800}"
 ENABLE_PROFILER="${ENABLE_PROFILER:-0}"
@@ -43,10 +45,8 @@ METRICS_FILE="${EVIDENCE_ROOT}/metrics.env"
 SERVER_LOG="${EVIDENCE_ROOT}/vllm_server.log"
 PROFILER_DIR="${EVIDENCE_ROOT}/torch_profiler"
 REMOTE_VALIDATION_READY_FILE="${EVIDENCE_ROOT}/remote_validation_ready"
-COORDINATED_SHUTDOWN_ARM_FILE="${EVIDENCE_ROOT}/coordinated_shutdown_armed"
-REMOTE_SHUTDOWN_ARMED_FILE="${EVIDENCE_ROOT}/remote_shutdown_armed"
-COORDINATED_SHUTDOWN_FILE="${EVIDENCE_ROOT}/coordinated_shutdown"
 ALLGATHER_REDUCESCATTER_CONFIG_MARKER="DeepEP runtime not available; using allgather_reducescatter all2all backend without sequence parallelism"
+PINNED_GPU_MODEL_RUNNER_SHA256="298a43a69f3b5b43bdbb753b3cee642933a0dbd71368dfbf0271dba1fce32bcb"
 SERVER_PID=""
 
 record_metric() {
@@ -136,38 +136,15 @@ wait_for_server_log_marker() {
     return 1
 }
 
-await_coordinated_shutdown() {
-    local deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))
-    while (( $(date +%s) < deadline )); do
-        if test -f "${COORDINATED_SHUTDOWN_ARM_FILE}"; then
-            touch "${REMOTE_SHUTDOWN_ARMED_FILE}"
-            break
-        fi
+hold_distributed_runtime_for_host_cleanup() {
+    while true; do
         if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-            echo "vLLM stopped before coordinated shutdown" >&2
+            echo "vLLM stopped before host completed distributed cleanup" >&2
             cat "${SERVER_LOG}"
             return 1
         fi
-        sleep 2
+        sleep 5
     done
-    if ! test -f "${REMOTE_SHUTDOWN_ARMED_FILE}"; then
-        echo "Timed out waiting for coordinated shutdown arm" >&2
-        return 1
-    fi
-    deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))
-    while (( $(date +%s) < deadline )); do
-        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
-            echo "vLLM stopped before coordinated shutdown release" >&2
-            cat "${SERVER_LOG}"
-            return 1
-        fi
-        if test -f "${COORDINATED_SHUTDOWN_FILE}"; then
-            return 0
-        fi
-        sleep 2
-    done
-    echo "Timed out waiting for coordinated shutdown" >&2
-    return 1
 }
 
 finish() {
@@ -304,6 +281,108 @@ git -C "${RUNTIME_REPO}" cat-file -p HEAD |
 git -C "${RUNTIME_REPO}" ls-tree -r HEAD -- vllm |
     tee "${EVIDENCE_ROOT}/runtime_git_tree.txt" >/dev/null
 test "$(wc -l <"${EVIDENCE_ROOT}/runtime_git_tree.txt")" = "2103"
+
+python3 - \
+    "${RUNTIME_REPO}" \
+    "${EVIDENCE_ROOT}" \
+    "${PINNED_GPU_MODEL_RUNNER_SHA256}" <<'PY'
+from __future__ import annotations
+
+import difflib
+import hashlib
+from pathlib import Path
+import shutil
+import sys
+
+runtime_root = Path(sys.argv[1])
+evidence_root = Path(sys.argv[2])
+expected_sha256 = sys.argv[3]
+source_path = runtime_root / "vllm" / "v1" / "worker" / "gpu_model_runner.py"
+pinned_copy = evidence_root / "gpu_model_runner.pinned.py"
+digest = hashlib.sha256()
+with source_path.open("rb") as stream:
+    while chunk := stream.read(1024 * 1024):
+        digest.update(chunk)
+actual_sha256 = digest.hexdigest()
+if actual_sha256 != expected_sha256:
+    raise RuntimeError(
+        "unexpected pinned gpu_model_runner.py source: "
+        f"expected={expected_sha256} actual={actual_sha256}"
+    )
+shutil.copyfile(source_path, pinned_copy)
+
+source = source_path.read_text()
+import_anchor = """from vllm.forward_context import (
+    BatchDescriptor,
+    is_local_deepep_decode_only,
+"""
+import_replacement = """from vllm.forward_context import (
+    BatchDescriptor,
+    get_forward_context,
+    is_local_deepep_decode_only,
+"""
+if source.count(import_anchor) != 1:
+    raise RuntimeError("unexpected pinned forward-context import block")
+source = source.replace(import_anchor, import_replacement, 1)
+
+forward_anchor = """            model_output = self._model_forward(
+                input_ids=input_ids,
+                positions=positions,
+                intermediate_tensors=intermediate_tensors,
+                inputs_embeds=inputs_embeds,
+                **model_kwargs,
+            )
+"""
+forward_replacement = forward_anchor + """
+            if _dummy_diag_enabled():
+                synchronize = current_platform.synchronize
+                if synchronize is None:
+                    raise RuntimeError(
+                        "MODEL_FORWARD_COMPLETE requires platform synchronization"
+                    )
+                synchronize()
+                diagnostic_context = get_forward_context()
+                from vllm.v1.worker.deepep_diagnostics import distributed_rank
+
+                logger.warning(
+                    "MODEL_FORWARD_COMPLETE global_rank=%s dp_rank=%s "
+                    "forward_seq=%s stage=%s batch=%s num_tokens=%s",
+                    distributed_rank(),
+                    diagnostic_context.diagnostic_dp_rank,
+                    diagnostic_context.diagnostic_forward_sequence,
+                    diagnostic_context.diagnostic_stage,
+                    diagnostic_context.diagnostic_batch_type,
+                    num_tokens_padded,
+                )
+"""
+if source.count(forward_anchor) != 1:
+    raise RuntimeError("unexpected pinned _model_forward call site")
+source = source.replace(forward_anchor, forward_replacement, 1)
+source_path.write_text(source)
+
+patch = "".join(
+    difflib.unified_diff(
+        pinned_copy.read_text().splitlines(keepends=True),
+        source.splitlines(keepends=True),
+        fromfile="gpu_model_runner.py.pinned",
+        tofile="gpu_model_runner.py.runtime",
+    )
+)
+if not patch:
+    raise RuntimeError("model forward completion overlay produced an empty diff")
+(evidence_root / "model_forward_complete_overlay.patch").write_text(patch)
+print(
+    "model_forward_complete_overlay=APPLIED",
+    f"pinned_sha256={expected_sha256}",
+    f"path={source_path}",
+)
+PY
+python3 -m py_compile \
+    "${RUNTIME_REPO}/vllm/v1/worker/gpu_model_runner.py"
+sha256sum \
+    "${EVIDENCE_ROOT}/gpu_model_runner.pinned.py" \
+    "${RUNTIME_REPO}/vllm/v1/worker/gpu_model_runner.py" \
+    >"${EVIDENCE_ROOT}/model_forward_complete_overlay.sha256"
 
 python3 - "${RUNTIME_REPO}" "${EVIDENCE_ROOT}" <<'PY'
 from __future__ import annotations
@@ -695,7 +774,8 @@ PY
 sha256sum \
     "${RUNTIME_REPO}/vllm/model_executor/models/step4pro.py" \
     "${RUNTIME_REPO}/vllm/v1/attention/backends/optimus_fa4.py" \
-    "${RUNTIME_REPO}/vllm/model_executor/layers/fused_moe/optimus_fp8_moe.py" |
+    "${RUNTIME_REPO}/vllm/model_executor/layers/fused_moe/optimus_fp8_moe.py" \
+    "${RUNTIME_REPO}/vllm/v1/worker/gpu_model_runner.py" |
     tee "${EVIDENCE_ROOT}/runtime_key_files.sha256"
 
 mkdir -p "${PROFILER_DIR}"
@@ -761,17 +841,19 @@ if (( HEADLESS_MODE == 1 )); then
         "${ALLGATHER_REDUCESCATTER_CONFIG_MARKER}" \
         "allgather_reducescatter runtime configuration"
     wait_for_server_log_marker \
-        "FORWARD_CONTEXT.*batch=real" \
-        "real distributed batch forward"
+        "MODEL_FORWARD_COMPLETE.*batch=real" \
+        "completed real distributed batch forward"
     validate_distributed_all2all_runtime 0
     grep -En \
-        "Using .*All2AllManager|using allgather_reducescatter all2all backend|Auto-configured .*VLLM_ALL2ALL_BACKEND|FORWARD_CONTEXT.*batch=real|Model loading took|Traceback|ERROR" \
+        "Using .*All2AllManager|using allgather_reducescatter all2all backend|Auto-configured .*VLLM_ALL2ALL_BACKEND|FORWARD_CONTEXT.*batch=real|MODEL_FORWARD_COMPLETE.*batch=real|Model loading took|Traceback|ERROR|Broken pipe" \
         "${SERVER_LOG}" | tee "${EVIDENCE_ROOT}/provider_markers.log"
+    assert_runtime_log_clean "${SERVER_LOG}"
     printf 'HEADLESS_RUNTIME=PASS\n' |
         tee "${EVIDENCE_ROOT}/remote_execution.env"
+    printf 'DISTRIBUTED_RUNTIME_VALIDATION=PASS\n' |
+        tee -a "${EVIDENCE_ROOT}/remote_execution.env"
     touch "${REMOTE_VALIDATION_READY_FILE}"
-    await_coordinated_shutdown
-    exit 0
+    hold_distributed_runtime_for_host_cleanup
 fi
 
 HEALTHY=0
@@ -911,8 +993,9 @@ if grep -q "Step4 Pro Optimus FA4 probe: available=False" "${SERVER_LOG}"; then
 fi
 if (( DATA_PARALLEL_SIZE > 1 )); then
     validate_distributed_all2all_runtime 1
-    grep -q "FORWARD_CONTEXT.*batch=real" "${SERVER_LOG}"
+    grep -q "MODEL_FORWARD_COMPLETE.*batch=real" "${SERVER_LOG}"
 fi
+assert_runtime_log_clean "${SERVER_LOG}"
 
 python3 - "${SERVER_LOG}" "${METRICS_FILE}" <<'PY'
 import re
@@ -951,11 +1034,13 @@ if (( ENABLE_PROFILER == 1 )); then
 fi
 
 if (( DATA_PARALLEL_SIZE > 1 )); then
+    printf 'DISTRIBUTED_RUNTIME_VALIDATION=PASS\n' |
+        tee "${EVIDENCE_ROOT}/remote_execution.env"
     touch "${REMOTE_VALIDATION_READY_FILE}"
-    await_coordinated_shutdown
+    hold_distributed_runtime_for_host_cleanup
 else
     stop_server
     SERVER_PID=""
+    printf 'ONE_GPU_REMOTE_EXECUTION=PASS\n' |
+        tee "${EVIDENCE_ROOT}/remote_execution.env"
 fi
-printf 'ONE_GPU_REMOTE_EXECUTION=PASS\n' |
-    tee "${EVIDENCE_ROOT}/remote_execution.env"

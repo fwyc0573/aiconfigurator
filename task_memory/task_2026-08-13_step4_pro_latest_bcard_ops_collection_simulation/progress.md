@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Completed Phase 14 runtime lifecycle/evidence hardening locally: `26/26` contracts, `6/6` shell syntax, strict cleanup, same-argument predict-only, quota gate, timeout margin, and synchronized forward evidence. |
 | 2026-08-17 | Completed the current code/docs publication review, normalized stale reports, and recorded fresh `347/347` focused plus `401/401` Collector evidence before commit/push. |
 | 2026-08-17 | Revalidated the stable post-concurrency Phase 12 files and corrected stale runtime-inventory hashes and the inventory count. |
 | 2026-08-17 | Completed the local two-node coordinator and global-marker-scope fixes, recorded the post-fix live evidence, and stopped on the 16-GPU request versus 6-GPU quota blocker. |
@@ -6246,3 +6247,114 @@ lifecycle defect as the publication blocker.
   created `0/2`.
 - Commit and push are the next ordered actions after the final hash/staged
   diff audit.
+
+## 2026-08-17 — Phase 14 runtime lifecycle and evidence hardening
+
+**Status:** LOCAL PASS; live two-node execution remains
+`BLOCKED_BY_QUOTA`.
+
+### Motivation
+
+The active two-node wrapper had already received a lifecycle repair, but the
+remaining implementation and task records still needed a single-owner
+teardown contract, strict query handling, a non-drifting predict-only probe,
+and explicit evidence that a distributed model forward really completed.
+
+### Expectation
+
+- Both replicas remain alive while the host pulls and validates evidence.
+- Exactly one host-side RJob deletion performs distributed teardown.
+- Cleanup fails if either exact resource query fails or reports the target.
+- Predict-only uses the exact live launch arguments and leaves no resources.
+- A source-hash-bounded completion marker catches deferred CUDA failures.
+- No new live RJob is submitted while current `16`-GPU quota evidence is
+  unavailable.
+
+### Method
+
+1. Added `b300_runtime_contract.sh` with quota, cleanup, and runtime-log
+   contracts, plus `test_b300_runtime_contract.py`.
+2. Made the two-node wrapper reuse one `launch_args` array for predict-only and
+   live launch; archived predict-only output/SHA256 and checked exact
+   zero-resource state.
+3. Added an explicit disk-backed B300 quota evidence contract requiring
+   `>=16` GPUs and the expected charged group.
+4. Removed the active shutdown-arm/acknowledgement/release marker protocol.
+   The host now waits for `remote_validation_ready`, pulls both evidence trees,
+   validates them, then deletes the RJob once.
+5. Transferred the common contract to each replica and added
+   `MODEL_FORWARD_COMPLETE` after a source-hash-verified
+   `current_platform.synchronize()`.
+6. Added a timeout guard requiring
+   `2400 + 2 * 300 + 60 = 3060s`; the default remote/live timeout is `3600s`.
+
+### Result
+
+- TDD RED:
+  - two-node lifecycle contract: `4 failed, 2 passed`;
+  - runtime-contract transfer: `1 failed`;
+  - timeout-margin contract: `1 failed`.
+- Final focused runtime contracts: `26/26` passed in `0.28s`.
+- Active shell syntax: `6/6` passed.
+- Ruff check: `0` findings; Ruff format: `5` files already formatted.
+- `git diff --check`: `0` findings.
+- Controller scopes remain `MemoryMax=2G`; all logs/evidence remain under
+  `/data/ycfeng/tmp`.
+- No live RJob was submitted. The last trusted platform event still reports
+  `6` B300 GPUs remaining for a `16`-GPU request; direct quota reads remain
+  RBAC-forbidden.
+- Evidence:
+  `/data/ycfeng/tmp/step4_phase14_review_fix_20260817/`.
+
+The synchronized completion marker is diagnostic instrumentation. It does not
+change model weights, communication selection, or training graph, but its
+extra synchronize can change request timing. Any future timing from this
+instrumented smoke must remain labeled runtime-smoke evidence.
+
+## 2026-08-17 — Phase 14 final publication revalidation
+
+**Status:** IN PROGRESS; code/static verification and report normalization
+PASS, final inventory/staged-diff audit, commit, and push remain.
+
+### Motivation
+
+Resume from the interrupted Phase 14 finalization without relying only on the
+earlier local test claim, remove the stale four-marker lifecycle from the
+publication summary, and prepare one task-scoped follow-up commit.
+
+### Expectation
+
+- The five current runtime contract files pass `26/26`.
+- All six affected shell files parse.
+- All five affected Python test files pass Ruff check and format.
+- The publication report identifies the current live-evidence-pull and
+  single-delete lifecycle.
+- The two-node result remains `BLOCKED_BY_QUOTA`; no live RJob is submitted.
+
+### Method
+
+1. Recovered the existing task state and compared the Phase 14 code/doc diff
+   against base commit `0b8d651c42ab2efa825cbcabbf7b078fd88d5b06`.
+2. Ran the five runtime contract files, six shell syntax checks, and Ruff
+   check/format serially under `MemoryMax=2G`.
+3. Stored all fresh logs under
+   `/data/ycfeng/tmp/step4_phase14_final_20260817/`.
+4. Updated the existing final publication and non-DeepEP runtime reports;
+   no duplicate report was created.
+
+### Result
+
+- Runtime contracts: `26/26` passed in `0.21s`.
+- Shell syntax: `6/6` passed.
+- Ruff check: `0` findings.
+- Ruff format: `5/5` files already formatted.
+- Publication inventory: `76/76` hashes matched; duplicate, missing, and
+  mismatched paths were `0/0/0`.
+- `git diff --check`: exit `0`, findings `0`.
+- One stale-text `rg` command used Markdown backticks inside a double-quoted
+  shell pattern, causing the shell to try to execute `16/16`. It was rerun
+  with a single-quoted pattern, returned zero stale matches, and changed no
+  files.
+- Live B300 submissions: `0`.
+- Remaining blocker: independent current evidence for at least `16` B300
+  GPUs is unavailable; the last trusted platform event reported `6`.

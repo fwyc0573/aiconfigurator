@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Opened and resolved ISSUE-046 for the superseded shutdown-marker lifecycle, non-strict cleanup queries, predict-only drift, timeout margin, and missing CUDA-complete forward evidence. |
 | 2026-08-17 | Opened and resolved ISSUE-045 for stale publication text that still treated the already-fixed lifecycle defect as the commit/push blocker. |
 | 2026-08-17 | Opened and resolved ISSUE-044 for stale Phase 12 hashes and an incorrect inventory count after later concurrent edits. |
 | 2026-08-17 | Extended ISSUE-043 after proving predict-only does not validate total replica quota and direct quota reads are forbidden for the current identity. |
@@ -2936,3 +2937,64 @@ limitation.
 - Collector regression: `401/401` in `31.60s`.
 - The corrected two-node run remains explicitly not-PASS: requested `16`
   B300 GPUs, last trusted queue remainder `6`, created replicas `0/2`.
+
+## ISSUE-046 — Runtime evidence and teardown contract was too weak
+
+**Status:** Resolved locally on 2026-08-17; final live validation remains
+blocked by the external B300 quota gate.
+
+**Observed failure/risk:**
+
+- The earlier coordinator used four remote shutdown markers:
+  `remote_validation_ready`, `coordinated_shutdown_armed`,
+  `remote_shutdown_armed`, and `coordinated_shutdown`.
+- A remote EXIT path could still terminate one distributed process before the
+  host had pulled the other rank's evidence.
+- Cleanup treated an output file from a failed control-plane query as if it
+  were an empty inventory because it only searched for the RJob name.
+- Predict-only and live launch were maintained as separate argument lists, so
+  resource or topology drift was possible.
+- The previous `FORWARD_CONTEXT` marker could be emitted before asynchronous
+  CUDA work completed.
+
+**Root cause:**
+
+The runner mixed remote process lifecycle control with host resource cleanup
+and used text absence instead of successful exact queries as the cleanup
+contract. It also relied on a pre-forward diagnostic marker for distributed
+completion.
+
+**Impact:**
+
+- Rank 0/TCPStore teardown could race rank 1 validation.
+- A control-plane OOM, timeout, or permission error could be misclassified as
+  zero residual resources.
+- A changed launch argument could make predict-only evidence irrelevant to the
+  live allocation.
+- Deferred CUDA failures could be reported after a seemingly successful
+  forward, and synchronized smoke timing could be mistaken for benchmark
+  timing.
+
+**Root resolution:**
+
+1. Keep both remote runtimes alive after `remote_validation_ready`.
+2. Pull and validate both evidence trees while the RJob is live.
+3. Delete the exact RJob once; require successful empty exact RJob and
+   exact-label Replica queries.
+4. Reuse one launch argument array for predict-only and live launch, archive
+   its output/SHA256, and require at least one `Node:` candidate plus zero
+   resources.
+5. Require independent disk-backed B300 quota evidence for `>=16` GPUs.
+6. Add a source-hash-bounded post-forward synchronize and
+   `MODEL_FORWARD_COMPLETE` marker.
+7. Guard remote/live timeouts with the `3060s` minimum budget and `3600s`
+   default.
+
+**Verification result:**
+
+- Lifecycle RED: `4 failed, 2 passed`; final two-node contract `7/7`.
+- Runtime contract transfer RED: `1 failed`; final combined contracts `26/26`.
+- Timeout RED: `1 failed`; final shell syntax `6/6`.
+- Ruff check/format and `git diff --check`: PASS.
+- No live retry was submitted because current quota evidence is below the
+  required `16` GPUs.

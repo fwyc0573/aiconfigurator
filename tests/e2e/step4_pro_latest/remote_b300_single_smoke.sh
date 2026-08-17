@@ -21,7 +21,16 @@ ENABLE_PROFILER="${ENABLE_PROFILER:-0}"
 DATA_PARALLEL_SIZE="${DATA_PARALLEL_SIZE:-1}"
 DATA_PARALLEL_SIZE_LOCAL="${DATA_PARALLEL_SIZE_LOCAL:-1}"
 DATA_PARALLEL_RPC_PORT="${DATA_PARALLEL_RPC_PORT:-5678}"
-VLLM_ALL2ALL_BACKEND="${VLLM_ALL2ALL_BACKEND:-deepep_high_throughput}"
+VLLM_ALL2ALL_BACKEND="${VLLM_ALL2ALL_BACKEND:-allgather_reducescatter}"
+if [[ "${VLLM_ALL2ALL_BACKEND}" != "allgather_reducescatter" ]]; then
+    echo "VLLM_ALL2ALL_BACKEND must be allgather_reducescatter: ${VLLM_ALL2ALL_BACKEND}" >&2
+    exit 1
+fi
+VLLM_ENABLE_SEQUENCE_PARALLEL="${VLLM_ENABLE_SEQUENCE_PARALLEL:-0}"
+if [[ "${VLLM_ENABLE_SEQUENCE_PARALLEL}" != "0" ]]; then
+    echo "VLLM_ENABLE_SEQUENCE_PARALLEL must be 0 with AgRs: ${VLLM_ENABLE_SEQUENCE_PARALLEL}" >&2
+    exit 1
+fi
 if [[ "${ENABLE_PROFILER}" != "0" && "${ENABLE_PROFILER}" != "1" ]]; then
     echo "ENABLE_PROFILER must be 0 or 1: ${ENABLE_PROFILER}" >&2
     exit 1
@@ -33,10 +42,71 @@ exec > >(tee -a "${EVIDENCE_ROOT}/remote_stdout.log") 2>&1
 METRICS_FILE="${EVIDENCE_ROOT}/metrics.env"
 SERVER_LOG="${EVIDENCE_ROOT}/vllm_server.log"
 PROFILER_DIR="${EVIDENCE_ROOT}/torch_profiler"
+REMOTE_VALIDATION_READY_FILE="${EVIDENCE_ROOT}/remote_validation_ready"
+COORDINATED_SHUTDOWN_ARM_FILE="${EVIDENCE_ROOT}/coordinated_shutdown_armed"
+REMOTE_SHUTDOWN_ARMED_FILE="${EVIDENCE_ROOT}/remote_shutdown_armed"
+COORDINATED_SHUTDOWN_FILE="${EVIDENCE_ROOT}/coordinated_shutdown"
+ALLGATHER_REDUCESCATTER_CONFIG_MARKER="DeepEP runtime not available; using allgather_reducescatter all2all backend without sequence parallelism"
 SERVER_PID=""
 
 record_metric() {
     printf '%s=%s\n' "$1" "$2" | tee -a "${METRICS_FILE}"
+}
+
+validate_distributed_all2all_runtime() {
+    local require_local_manager_marker="${1:?require_local_manager_marker is required}"
+    if [[ "${require_local_manager_marker}" != "0" &&
+        "${require_local_manager_marker}" != "1" ]]; then
+        echo "require_local_manager_marker must be 0 or 1" >&2
+        return 1
+    fi
+    local agrs_manager_marker_count
+    local backend_config_marker_count
+    local deepep_manager_marker_count
+    local auto_backend_selection_marker_count
+    agrs_manager_marker_count="$(
+        grep -c "Using AgRsAll2AllManager all2all manager" \
+            "${SERVER_LOG}" || true
+    )"
+    backend_config_marker_count="$(
+        grep -Fc "${ALLGATHER_REDUCESCATTER_CONFIG_MARKER}" \
+            "${SERVER_LOG}" || true
+    )"
+    deepep_manager_marker_count="$(
+        grep -Ec "Using DeepEP[A-Za-z0-9_]*All2AllManager" \
+            "${SERVER_LOG}" || true
+    )"
+    auto_backend_selection_marker_count="$(
+        grep -c 'Auto-configured .*VLLM_ALL2ALL_BACKEND=' \
+            "${SERVER_LOG}" || true
+    )"
+    record_metric agrs_manager_marker_count "${agrs_manager_marker_count}"
+    record_metric backend_config_marker_count "${backend_config_marker_count}"
+    record_metric deepep_manager_marker_count "${deepep_manager_marker_count}"
+    record_metric auto_backend_selection_marker_count \
+        "${auto_backend_selection_marker_count}"
+    if (( backend_config_marker_count < 1 )); then
+        echo "allgather_reducescatter runtime configuration marker is missing" >&2
+        return 1
+    fi
+    if (( require_local_manager_marker == 1 &&
+        agrs_manager_marker_count < 1 )); then
+        echo "AgRs all2all manager marker is missing" >&2
+        return 1
+    fi
+    if (( deepep_manager_marker_count != 0 )); then
+        echo "Unexpected DeepEP all2all manager selected" >&2
+        return 1
+    fi
+    if (( auto_backend_selection_marker_count != 0 )); then
+        echo "Unexpected Step MoE automatic backend selection" >&2
+        return 1
+    fi
+    if (( agrs_manager_marker_count > 0 )); then
+        record_metric runtime_all2all_manager AgRsAll2AllManager
+    else
+        record_metric runtime_all2all_manager_marker_scope global_peer
+    fi
 }
 
 stop_server() {
@@ -44,6 +114,60 @@ stop_server() {
         kill "${SERVER_PID}" 2>/dev/null || true
         wait "${SERVER_PID}" 2>/dev/null || true
     fi
+}
+
+wait_for_server_log_marker() {
+    local pattern="$1"
+    local description="$2"
+    local deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))
+    while (( $(date +%s) < deadline )); do
+        if grep -qE "${pattern}" "${SERVER_LOG}"; then
+            return 0
+        fi
+        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "vLLM stopped before ${description}" >&2
+            cat "${SERVER_LOG}"
+            return 1
+        fi
+        sleep 2
+    done
+    echo "Timed out waiting for ${description}" >&2
+    cat "${SERVER_LOG}"
+    return 1
+}
+
+await_coordinated_shutdown() {
+    local deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))
+    while (( $(date +%s) < deadline )); do
+        if test -f "${COORDINATED_SHUTDOWN_ARM_FILE}"; then
+            touch "${REMOTE_SHUTDOWN_ARMED_FILE}"
+            break
+        fi
+        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "vLLM stopped before coordinated shutdown" >&2
+            cat "${SERVER_LOG}"
+            return 1
+        fi
+        sleep 2
+    done
+    if ! test -f "${REMOTE_SHUTDOWN_ARMED_FILE}"; then
+        echo "Timed out waiting for coordinated shutdown arm" >&2
+        return 1
+    fi
+    deadline=$(( $(date +%s) + HEADLESS_WAIT_TIMEOUT_SECONDS ))
+    while (( $(date +%s) < deadline )); do
+        if ! kill -0 "${SERVER_PID}" 2>/dev/null; then
+            echo "vLLM stopped before coordinated shutdown release" >&2
+            cat "${SERVER_LOG}"
+            return 1
+        fi
+        if test -f "${COORDINATED_SHUTDOWN_FILE}"; then
+            return 0
+        fi
+        sleep 2
+    done
+    echo "Timed out waiting for coordinated shutdown" >&2
+    return 1
 }
 
 finish() {
@@ -65,6 +189,8 @@ trap finish EXIT
 worker_started_epoch="$(date +%s)"
 record_metric worker_started_epoch "${worker_started_epoch}"
 record_metric worker_started_iso "$(date --iso-8601=seconds)"
+record_metric runtime_all2all_backend "${VLLM_ALL2ALL_BACKEND}"
+record_metric sequence_parallel false
 
 export LD_LIBRARY_PATH=/usr/local/cuda-13.0/compat:/usr/local/nvidia/lib64
 export OPTIMUS_MUST_LOAD_LIB=1
@@ -74,6 +200,7 @@ export VLLM_USE_DEEP_GEMM_E8M0=1
 export OPTIMUS_TRITON_DRIVER_STRICT_SIGNATURE=1
 export VLLM_DUMMY_BATCH_DIAGNOSTICS=1
 export VLLM_ALL2ALL_BACKEND
+export VLLM_ENABLE_SEQUENCE_PARALLEL
 export VLLM_LOGGING_LEVEL=DEBUG
 export PYTHONUNBUFFERED=1
 export TORCH_SHOW_CPP_STACKTRACES=1
@@ -561,7 +688,7 @@ for key in ("vllm_file", "step4pro_file", "optimus_fa4_file", "optimus_fp8_moe_f
 print("step4pro_class", step4pro.Step4ProForCausalLM)
 print("step_optimus", importlib.metadata.version("step-optimus"))
 print("rmsnorm_op", torch.ops.Optimus.RMSNorm_forward)
-for package in ("deep_gemm", "deep_ep", "torch"):
+for package in ("deep_gemm", "torch"):
     print(package, importlib.metadata.version(package))
 PY
 
@@ -616,6 +743,7 @@ SERVER_COMMAND="vllm serve ${MODEL_PATH} \
 ${DISTRIBUTED_ARGS} \
 --block-size 128 \
 --enable-expert-parallel \
+--all2all-backend ${VLLM_ALL2ALL_BACKEND} \
 --max-model-len 8192 \
 --max-num-seqs 8 \
 --max-num-batched-tokens 8192 \
@@ -629,37 +757,20 @@ SERVER_PID=$!
 record_metric server_pid "${SERVER_PID}"
 
 if (( HEADLESS_MODE == 1 )); then
-    headless_deadline="$(date +%s)"
-    headless_deadline="$((headless_deadline + HEADLESS_WAIT_TIMEOUT_SECONDS))"
-    while kill -0 "${SERVER_PID}" 2>/dev/null &&
-        (( $(date +%s) < headless_deadline )); do
-        sleep 2
-    done
-    if kill -0 "${SERVER_PID}" 2>/dev/null; then
-        echo "Headless vLLM did not stop before the bounded deadline" >&2
-        cat "${SERVER_LOG}"
-        exit 1
-    fi
-    set +e
-    wait "${SERVER_PID}"
-    headless_server_exit_status=$?
-    set -e
-    SERVER_PID=""
-    record_metric headless_server_exit_status "${headless_server_exit_status}"
-    if (( headless_server_exit_status != 0 &&
-        headless_server_exit_status != 143 )); then
-        cat "${SERVER_LOG}"
-        exit "${headless_server_exit_status}"
-    fi
-    grep -q "Using DeepEPHTAll2AllManager all2all manager" "${SERVER_LOG}"
-    grep -q "backend=HT.*op=dispatch" "${SERVER_LOG}"
-    grep -q "backend=HT.*op=combine" "${SERVER_LOG}"
-    grep -q "FORWARD_CONTEXT.*batch=real" "${SERVER_LOG}"
+    wait_for_server_log_marker \
+        "${ALLGATHER_REDUCESCATTER_CONFIG_MARKER}" \
+        "allgather_reducescatter runtime configuration"
+    wait_for_server_log_marker \
+        "FORWARD_CONTEXT.*batch=real" \
+        "real distributed batch forward"
+    validate_distributed_all2all_runtime 0
     grep -En \
-        "Using DeepEPHTAll2AllManager|backend=HT|FORWARD_CONTEXT.*batch=real|Model loading took|Traceback|ERROR" \
+        "Using .*All2AllManager|using allgather_reducescatter all2all backend|Auto-configured .*VLLM_ALL2ALL_BACKEND|FORWARD_CONTEXT.*batch=real|Model loading took|Traceback|ERROR" \
         "${SERVER_LOG}" | tee "${EVIDENCE_ROOT}/provider_markers.log"
     printf 'HEADLESS_RUNTIME=PASS\n' |
         tee "${EVIDENCE_ROOT}/remote_execution.env"
+    touch "${REMOTE_VALIDATION_READY_FILE}"
+    await_coordinated_shutdown
     exit 0
 fi
 
@@ -799,9 +910,7 @@ if grep -q "Step4 Pro Optimus FA4 probe: available=False" "${SERVER_LOG}"; then
     exit 1
 fi
 if (( DATA_PARALLEL_SIZE > 1 )); then
-    grep -q "Using DeepEPHTAll2AllManager all2all manager" "${SERVER_LOG}"
-    grep -q "backend=HT.*op=dispatch" "${SERVER_LOG}"
-    grep -q "backend=HT.*op=combine" "${SERVER_LOG}"
+    validate_distributed_all2all_runtime 1
     grep -q "FORWARD_CONTEXT.*batch=real" "${SERVER_LOG}"
 fi
 
@@ -841,7 +950,12 @@ if (( ENABLE_PROFILER == 1 )); then
     test -s "${EVIDENCE_ROOT}/profiler_files.txt"
 fi
 
-stop_server
-SERVER_PID=""
+if (( DATA_PARALLEL_SIZE > 1 )); then
+    touch "${REMOTE_VALIDATION_READY_FILE}"
+    await_coordinated_shutdown
+else
+    stop_server
+    SERVER_PID=""
+fi
 printf 'ONE_GPU_REMOTE_EXECUTION=PASS\n' |
     tee "${EVIDENCE_ROOT}/remote_execution.env"

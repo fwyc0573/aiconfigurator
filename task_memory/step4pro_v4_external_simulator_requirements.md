@@ -1,3 +1,11 @@
+## Modification History
+
+| Date       | Summary of Changes |
+| ---------- | ------------------ |
+| 2026-08-17 | Added a fail-fast quota-admission gate: `predict-only` proves per-worker node fit but not total replica quota, so a 2×8 B300 live run requires separate confirmation of at least 16 available B300 GPUs. |
+| 2026-08-17 | Clarified the distributed AgRs evidence scope and required a coordinated two-node validation/shutdown barrier. |
+| 2026-08-17 | Replaced the unavailable DeepEP runtime requirement with explicit vLLM `allgather_reducescatter` communication, clarified env/CLI selection semantics and runtime evidence limits, and retained NCCL `alltoall` only as a labeled AIC simulation proxy. |
+
 # Step4-pro-v4 B300 性能建模需求
 
 ## 1. 要做什么
@@ -17,7 +25,7 @@ vLLM `--load-format dummy` 运行。真实权重以后只用于补充路由分�
 
 1. 用仓库里的 14 层小模型脚本验证 Step4Pro 和 FA4 执行链路。
 2. 按本文 Shape 生成 78 层 synthetic config。
-3. 用 dummy weights 在 B300 上跑 EP16、EP32 和 2×EP16。
+3. 用 dummy weights 和非 DeepEP 通信在 B300 上跑 EP16、EP32 和 2×EP16。
 4. 仿真器运行相同工况。
 5. 输出实测与仿真的对比表和初步分析。
 
@@ -40,6 +48,67 @@ vllm/model_executor/layers/fused_moe/optimus_fp8_moe.py
 ```
 
 仿真器的算子 shape、dtype、KV cache 和通信方式以这个 commit 的实际执行路径为准。
+
+本次任务对通信后端有一项明确运行覆盖：由于当前 DeepEP/NVSHMEM
+环境不能稳定启动，vLLM 实际运行不得自动选择 DeepEP，必须显式使用：
+
+```text
+VLLM_ALL2ALL_BACKEND=allgather_reducescatter
+VLLM_ENABLE_SEQUENCE_PARALLEL=0
+--all2all-backend allgather_reducescatter
+```
+
+`nccl` 不是该 vLLM 版本接受的 `all2all` backend 名称。上述 backend
+由 `AgRsAll2AllManager` 实现：dispatch 使用 `all_gatherv`，combine 使用
+`reduce_scatterv`，CUDA 通信路径使用 PyNccl/NCCL。它是 NCCL 支持的
+MoE 通信替代方案，但不是字面意义上的直接 NCCL `alltoall`。
+
+环境变量和 CLI 参数必须同时保留，但作用不同：
+
+- `VLLM_ALL2ALL_BACKEND` 的“已设置”状态阻止 Step MoE 自动选择
+  DeepEP；
+- CLI 参数把同一 backend 写入 `parallel_config`，并使 DP=1 等不会进入
+  Step MoE 默认处理的运行也保持自描述和一致。
+
+`VLLM_ENABLE_SEQUENCE_PARALLEL=0` 是显式安全约束。pinned source 的 AgRs
+分支本身不会自动开启 sequence parallelism，且当前脚本固定 TP=1；
+显式设置用于拒绝外部覆盖并保证运行记录清楚。运行日志必须包含：
+
+```text
+Using AgRsAll2AllManager all2all manager
+```
+
+并且不得包含任何 `Using DeepEP*All2AllManager` 或
+`Auto-configured ... VLLM_ALL2ALL_BACKEND=...` marker。不允许运行时
+fallback 或自动 backend 改写。
+
+该 AgRs manager marker 在 pinned vLLM 中通过
+`logger.info_once(..., scope="global")` 输出，因此双节点验收要求整个
+distributed job 至少出现一份，不要求每个 replica 各输出一份。每个
+replica 必须分别证明：
+
+- `allgather_reducescatter` 配置 marker 可见；
+- 至少一个真实 batch forward 可见；
+- DeepEP manager marker 和自动 backend 选择 marker 均为 `0`。
+
+双节点 runner 必须在两个 replica 都完成上述本地验证后才开始退出：
+host 先等待 `2/2` validation-ready，再通知两端进入 shutdown-armed；
+确认 `2/2` armed 后，必须并发发出最终 shutdown。任何一个 replica
+不得在另一端 armed 前独立停止 vLLM/TCPStore。
+
+双节点 live run 还必须单独确认总 quota。当前 `brainctl rjob launch
+--predict-only` 只返回单个 worker 可使用的节点资源：`--replica 2`
+和诊断用的 `--replica 8` 都返回相同的 7 个单节点候选，因此它不能证明
+总 quota 足以容纳 `2 × 8 = 16` 张 B300。提交 live run 前必须从平台
+event、quota owner 或其他有权限的直接查询获得当前可用 B300 quota
+`>=16` 的证据。若当前身份因 RBAC 不能读取 quota，且最近一次可信 event
+仍显示小于 `16`，必须停止，不得用 predict-only 的节点列表代替 quota
+证据。
+
+`AgRsAll2AllManager` 当前没有与 DeepEP `backend=HT op=dispatch/combine`
+等价的逐次调用日志。因此配置验证只能证明 backend/manager 选择、无自动
+改写和真实 batch forward；在加入 AgRs profiler 或 provider marker 前，
+不得声称已由日志逐次证明每个 dispatch/combine 调用。
 
 ### 2.2 模型 Shape
 
@@ -119,7 +188,9 @@ MTP1，不要求构造或推算 MTP3/MTP5。当前分支复用了 Step3p5 MTP �
 ```text
 GPU: NVIDIA B300 SXM6 AC
 Full MFA backend: Optimus CuTe FA4，block/page size 128
-MoE backend: 目标分支实际选择的 Optimus FP8 MoE / DeepGEMM / DeepEP
+MoE compute backend: Optimus FP8 MoE / DeepGEMM
+MoE communication backend: allgather_reducescatter / AgRs / NCCL
+DeepEP status: disabled for active task runs
 ```
 
 | 配置 | GPU | 组织方式 | 静态权重估算 |
@@ -139,7 +210,8 @@ MoE backend: 目标分支实际选择的 Optimus FP8 MoE / DeepGEMM / DeepEP
 | 脚本 | 用途 |
 | --- | --- |
 | `rjob-step4pro-optimus-single.sh` | 14 层模型，1×B300，验证加载、hd512 FA4、prefill/decode 和并发请求 |
-| `rjob-step4pro-2node.sh` | 48 层模型，2×8 B300，验证 DP16+EP16 和 DeepEP |
+| `rjob-step4pro-2node.sh` | pinned source 中的历史 DeepEP 参考脚本；不再作为本任务的 active runtime 入口 |
+| `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh` | 当前 2×8 B300 active wrapper，验证 DP16+EP16、NCCL preflight 和 `AgRsAll2AllManager` |
 
 先运行单卡脚本：
 
@@ -172,6 +244,8 @@ bash rjob-step4pro-optimus-single.sh
 启动命令的公共部分：
 
 ```bash
+VLLM_ALL2ALL_BACKEND=allgather_reducescatter \
+VLLM_ENABLE_SEQUENCE_PARALLEL=0 \
 vllm serve "${MODEL_CONFIG_DIR}" \
   --tokenizer "${TOKENIZER_PATH}" \
   --served-model-name step4pro-v4-perf \
@@ -180,6 +254,7 @@ vllm serve "${MODEL_CONFIG_DIR}" \
   --tensor-parallel-size 1 \
   --block-size 128 \
   --enable-expert-parallel \
+  --all2all-backend allgather_reducescatter \
   --kv-cache-dtype auto \
   --max-model-len 1048576 \
   --enable-chunked-prefill \
@@ -187,12 +262,29 @@ vllm serve "${MODEL_CONFIG_DIR}" \
   --gpu-memory-utilization 0.9
 ```
 
-DP/EP 的跨节点参数从 `rjob-step4pro-2node.sh` 改造。加载 smoke 可以加
+DP/EP 的跨节点资源、rank 和 RDMA 参数可参考 `rjob-step4pro-2node.sh`，
+但不得沿用其 DeepEP/NVSHMEM backend 设置。加载 smoke 可以加
 `--enforce-eager`；正式性能测试去掉它，并记录 CUDA Graph 是否生效。
 
-Dummy weights 可以测算子时延、吞吐、显存、KV 和通信。它不能代表真实 expert 路由。
+Dummy weights 可以测算子时延、吞吐、显存、KV 和 AgRs 通信。它不能代表真实 expert 路由。
 端到端运行记录实际 expert histogram，MoE microbenchmark 另外覆盖 balanced、轻度不均和
 重度不均三种路由。
+
+仿真侧现有 `--deepep-proxy b300_nccl_alltoall` 仍可作为显式、临时的
+NCCL `alltoall` 通信 proxy，并必须继续标记为 `PROXY`。它与实际 vLLM
+的 AgRs backend 不是同一个算法，因此在补齐 AgRs 实测/模型前，不得把
+通信分项误差描述为同 backend 的精度误差，也不得把 proxy 当作真实 DeepEP
+或真实 AgRs silicon 数据。
+
+当前存在三个必须分开记录的通信身份：
+
+1. active vLLM runtime：`allgather_reducescatter` / AgRs；
+2. AIC exact operation identity：`vllm_deepep_high_throughput`，其真实
+   B300 数据仍缺失；
+3. 已完成仿真：显式 `b300_nccl_alltoall` `PROXY`。
+
+AIC 尚无 AgRs-specific 通信模型。因此当前仿真结果不能作为 AgRs
+same-backend 精度验证；补建或校准 AgRs 模型属于后续工作。
 
 ## 4. 测什么
 
@@ -343,6 +435,20 @@ B_max_mtp1(S_tpot) = max B satisfying T1(B)/1.85 <= S_tpot
 | 分项 | Full MFA、SWA、Dense、Latent MoE、MTP1 iteration、dispatch/combine |
 | MoE | expert token histogram、max/mean load、padding ratio |
 | 状态 | OOM、backend fallback、重试和异常日志 |
+
+通信状态还必须记录：
+
+- `runtime_all2all_backend=allgather_reducescatter`；
+- 整个 distributed job 至少一份
+  `runtime_all2all_manager=AgRsAll2AllManager`；
+- `sequence_parallel=false`；
+- 每个 replica 的 `backend_config_marker_count>=1`；
+- 每个 replica 至少一份真实 batch forward；
+- 所有 replica 合计 `agrs_manager_marker_count>=1`；
+- DeepEP manager marker 数量为 `0`；
+- backend 自动选择 marker 数量为 `0`；
+- 双节点 validation-ready 和 shutdown-armed 均为 `2/2`；
+- 仿真若使用 `b300_nccl_alltoall`，必须记录 `result_fidelity=PROXY`。
 
 最终提交：
 

@@ -2,6 +2,9 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Recorded the explicit request to review the current task code/docs and then commit and push the audited checkpoint. |
+| 2026-08-17 | Replaced DeepEP in the active vLLM runtime requirement with explicit NCCL-backed `allgather_reducescatter` communication. |
+| 2026-08-17 | Recorded authorization to root-fix the blocked two-node runtime lifecycle and rerun bounded validation. |
 | 2026-08-16 | Added the final simulation-completeness review, normalized test record, commit, and push request. |
 | 2026-08-13 | Created the raw requirements record for the Step4-Pro-latest B-card task. |
 | 2026-08-13 | Recorded user choice A: the pinned local vLLM checkout and requirements shape are authoritative. |
@@ -62,6 +65,9 @@
 18. [Original Request] Temporarily allow another operation to substitute for
     DeepEP in simulation; after the DeepEP environment is restored, remeasure
     the real DeepEP operation and replace the temporary result.
+19. [Original Request] Modify the task runtime settings because DeepEP cannot
+    currently run normally, and replace it with another supported
+    communication path, for example NCCL `alltoall`.
 
 ## Pending Q&A Follow-ups
 
@@ -590,3 +596,60 @@ be supplied before implementation.
   `PROXY`.
 - Whole-model pinned-vLLM B300 execution remains externally owned and its
   missing comparison data must not be invented.
+
+### Q24 — Replace DeepEP in active runtime settings
+
+1. [Original Request] Change the task's active runtime requirements because
+   DeepEP is currently unusable.
+2. [Original Request] Use another supported communication mechanism, with
+   NCCL `alltoall` given as an example.
+
+**Status:** Resolved for configuration on 2026-08-17; B300 live validation is
+still pending.
+
+**Decision:**
+
+- The pinned vLLM does not accept a literal `nccl` backend value.
+- Active vLLM runs use the supported NCCL-backed backend
+  `allgather_reducescatter`, which selects `AgRsAll2AllManager`.
+- Active scripts explicitly set both values. The env variable's presence
+  prevents Step MoE automatic DeepEP selection; the CLI value writes the same
+  backend into `parallel_config`, including DP=1 runs.
+- Sequence parallelism is explicitly pinned off. The AgRs branch does not
+  auto-enable it, and the explicit setting rejects external override.
+- DeepEP/NVSHMEM-only probes remain historical diagnostics and are not active
+  runtime entry points.
+- The existing AIC `b300_nccl_alltoall` simulation proxy remains explicitly
+  labeled `PROXY`; it must not be described as the same communication
+  algorithm as the vLLM AgRs runtime.
+- The AIC exact operation identity remains DeepEP HT, and no AgRs-specific AIC
+  communication model exists yet. Active AgRs, exact DeepEP HT, and the NCCL
+  `alltoall` proxy are three separate identities.
+- Pinned AgRs does not emit DeepEP-style per-dispatch/per-combine markers.
+  Configuration acceptance therefore covers manager selection, absence of
+  DeepEP/automatic selection, and real-batch forward; stronger collective
+  execution evidence remains pending.
+
+### Q25 — Authorize the two-node lifecycle root fix
+
+1. [Original Request] Confirm continuation after the two-node AgRs validation
+   blocked on the independent per-node runner lifecycle.
+
+**Status:** Explicitly authorized on 2026-08-17.
+
+**Decision:** Implement the root fix for the two-node runtime-test lifecycle,
+validate it with focused tests and one bounded B300 run, and continue the
+task only from the resulting evidence.
+
+### Q26 — Review, commit, and push the current task checkpoint
+
+1. [Original Request] Confirm whether the current task code modules and
+   documentation have been reviewed, committed, and pushed.
+2. [Original Request] If any of those steps is incomplete, execute review,
+   commit, and push in that order.
+
+**Status:** Explicitly requested on 2026-08-17.
+
+**Scope clarification:** Publish the audited current checkpoint while keeping
+the final two-node AgRs live result explicitly blocked by B300 quota. The Git
+publication must not be described as a passing two-node runtime validation.

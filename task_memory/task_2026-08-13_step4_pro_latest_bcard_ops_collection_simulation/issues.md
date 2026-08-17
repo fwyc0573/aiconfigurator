@@ -2,6 +2,13 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Opened and resolved ISSUE-045 for stale publication text that still treated the already-fixed lifecycle defect as the commit/push blocker. |
+| 2026-08-17 | Opened and resolved ISSUE-044 for stale Phase 12 hashes and an incorrect inventory count after later concurrent edits. |
+| 2026-08-17 | Extended ISSUE-043 after proving predict-only does not validate total replica quota and direct quota reads are forbidden for the current identity. |
+| 2026-08-17 | Locally resolved ISSUE-043 lifecycle and global-marker-scope defects; final live closure is externally blocked by a 16-GPU request with only 6 B300 GPUs remaining. |
+| 2026-08-17 | Opened and resolved ISSUE-042 for active runtime scripts that still hard-coded DeepEP after DeepEP was declared unusable. |
+| 2026-08-17 | Opened ISSUE-043 for the independent per-node smoke teardown that breaks the two-node distributed TCPStore lifecycle. |
+| 2026-08-17 | Extended ISSUE-042 verification with passing B300 predict-only, single-B300 requests, and rank-0 AgRs selection; ISSUE-043 blocks complete two-node validation. |
 | 2026-08-13 | Opened the initial requirements identity blocker. |
 | 2026-08-13 | Added measured blockers ISSUE-002 (B300 quota RBAC), ISSUE-003 (vLLM repository credentials), ISSUE-004 (cached image lacks target implementation), ISSUE-005 (AIC Step4-Pro-V4 shape conflict). Downgraded ISSUE-001 registry-absence caveat to a measured result. |
 | 2026-08-13 | Revalidated the latest branch/image and B300 quota path; narrowed the remaining gate to explicit semantic scope decisions. |
@@ -2608,3 +2615,324 @@ line-oriented Git tooling.
   `9d5c296c7c4e95859982cbb986cbda21ef65f9a56d286ebe37cc5a780f7208a1`.
 - CSV SHA256:
   `4c1afd34a37877a6cb59cf79c37a326b537261ed9640ee4d657ce527ff49ac62`.
+
+## ISSUE-042 — Active runtime scripts still required DeepEP
+
+**Status:** Resolved for backend selection, predict-only, single-B300 requests,
+and rank-0 AgRs manager execution on 2026-08-17. Complete two-node lifecycle
+validation is blocked by ISSUE-043.
+
+**Observed failure:**
+
+- `run_b300_two_node_smoke.sh` fixed
+  `VLLM_ALL2ALL_BACKEND=deepep_high_throughput`.
+- The shared remote runner defaulted to the same backend and accepted no
+  explicit standard-backend contract.
+- Runtime acceptance required `DeepEPHTAll2AllManager` plus DeepEP-specific
+  dispatch/combine markers.
+- The active two-node wrapper exported an explicit NVSHMEM setting, and the
+  shared runner required the `deep_ep` package merely to print its version.
+
+**Root cause:**
+
+The active wrappers were built while the task was still attempting to
+reproduce the pinned DeepEP path. Later task decisions stopped DeepEP
+measurement and added a simulation proxy, but the whole-model runtime scripts
+were not updated. The pinned vLLM also auto-selects a DeepEP backend for Step
+MoE when `VLLM_ALL2ALL_BACKEND` is not explicitly set.
+
+**Impact:**
+
+- The active smoke could not run under the current platform contract.
+- Leaving only the CLI default would not be enough because runtime
+  auto-selection could silently choose DeepEP again.
+- A literal replacement value `nccl` would fail argument validation; it is
+  not a supported backend name in the pinned vLLM.
+
+**Root resolution:**
+
+1. Set `VLLM_ALL2ALL_BACKEND=allgather_reducescatter` in active host and
+   remote wrappers.
+2. Pass `--all2all-backend allgather_reducescatter` to `vllm serve`.
+3. Set and validate `VLLM_ENABLE_SEQUENCE_PARALLEL=0`, because the pinned Step
+   MoE code documents sequence parallelism as DeepEP-only.
+4. Require `Using AgRsAll2AllManager all2all manager` and fail if the DeepEP
+   manager marker for any DeepEP manager class appears.
+5. Remove active explicit NVSHMEM configuration and the non-functional
+   `deep_ep` package-evidence dependency.
+6. Keep DeepEP-specific probe scripts unchanged and inactive so historical
+   failure evidence remains reproducible.
+7. Record backend, sequence-parallel state, manager-marker counts, and
+   automatic-selection-marker counts in `metrics.env`; reject automatic
+   backend selection.
+
+**Verification result:**
+
+- TDD RED: the first focused run had `3 failed, 8 passed`; the dependency
+  cleanup RED had `2 failed, 9 passed`; the host fail-fast RED had
+  `1 failed`.
+- GREEN: `11/11` focused contracts passed in `0.04s`.
+- Shell syntax: `3/3` active scripts passed.
+- Static source/runtime audit: active runtime files `3`, backend
+  `allgather_reducescatter`, manager `AgRsAll2AllManager`, active
+  `deepep_high_throughput` settings `0`, explicit active NVSHMEM settings `0`,
+  `deep_ep` package-evidence dependencies `0`, sequence parallel `0`, generic
+  DeepEP-manager rejection enabled, and automatic backend selection allowed
+  `0`.
+- The first final audit assertion checked the obsolete exact DeepEP-HT shell
+  line instead of the current generic DeepEP-manager rejection expression.
+  Correcting the audit contract produced PASS without changing runtime code.
+- B300 predict-only passed for the exact single-node and two-node resource
+  shapes, with `4` and `10` candidate nodes respectively and no residual
+  RJobs or Replicas.
+- The single-B300 live smoke passed: scheduling `16s`, model loading
+  `8.819692s`, health readiness `99s`, one request `13.737685s`, four-request
+  wall time `0.474799647s`, and GPU memory `644 MiB` before load versus
+  `247628 MiB` after load.
+- The single-B300 log contained `9` real-batch forward markers, `0` DeepEP
+  manager markers, and `0` automatic backend-selection markers. Cleanup left
+  `0` RJobs and `0` Replicas.
+
+**Residual limitation:**
+
+- Pinned AgRs does not emit DeepEP-style per-dispatch/per-combine diagnostic
+  markers. The current runtime gate proves AgRs manager selection, no DeepEP
+  or automatic backend selection, and a real-batch forward. Separate
+  `all_gatherv` and `reduce_scatterv` call evidence requires a future pinned
+  profiler/provider trace.
+- DP=1 does not instantiate an all2all manager. The two-node attempt supplied
+  rank-0 AgRs manager evidence, but its shared runner lifecycle stopped the
+  TCPStore before rank 1 completed; see ISSUE-043.
+- AIC still has an exact DeepEP HT operation identity and an explicit NCCL
+  `alltoall` simulation proxy, but no AgRs-specific communication model.
+  These three identities are not interchangeable.
+
+## ISSUE-043 — Two-node AgRs smoke tears down rank 0 before rank 1 completes
+
+**Status:** Lifecycle and validation-contract root fixes are locally resolved
+as of 2026-08-17. Final live closure is externally blocked by B300 quota.
+
+**Original observed failure:**
+
+- Two B300 replicas for `s4p-agrs2-0817-163045` reached Running in `16s`.
+- Rank 0 completed the real request path with
+  `ONE_GPU_SMOKE=PASS`, `AgRsAll2AllManager=1`, DeepEP markers `0`, and
+  automatic-backend-selection markers `0`.
+- Rank 1 (global ranks `8-15`, `--headless`) never wrote
+  `remote_result_ready`.
+- Its server log reported `ProcessGroupNCCL` and `TCPStore` `Broken pipe` at
+  `2026-08-17 16:53:40+08:00`, including the message that the TCPStore server
+  may have shut down too early.
+
+**Root cause:**
+
+`run_b300_two_node_smoke.sh` starts the generic
+`remote_b300_single_smoke.sh` independently on both nodes. The shared
+runner's EXIT handler calls `stop_server` before it writes
+`remote_result_ready` and before it holds evidence. After rank 0 completes
+its API requests, it therefore terminates its local vLLM/TCPStore process
+while rank 1 remains in the bounded headless wait loop. Rank 1 loses the
+shared process group and cannot complete normally.
+
+**Authorized root resolution:**
+
+1. Each replica writes `remote_validation_ready` only after its local
+   validation passes.
+2. The host waits for readiness from all replicas, writes
+   `coordinated_shutdown_armed` to all replicas, and waits for every
+   `remote_shutdown_armed` acknowledgement.
+3. The host dispatches the final `coordinated_shutdown` requests
+   concurrently, so rank 0 cannot close TCPStore while rank 1 is still
+   entering shutdown.
+4. The remote EXIT handler remains responsible for local process cleanup
+   after the coordinated release.
+
+**Second root cause discovered during live validation:**
+
+The first coordinator payload still required every replica to emit
+`Using AgRsAll2AllManager all2all manager`. The pinned
+`cuda_communicator.py` emits that line through
+`logger.info_once(..., scope="global")`, so rank 1 is not required to have a
+local copy. In `s4p-agrs2-0817-174506`, rank 0 completed real requests and
+wrote validation readiness, while rank 1 remained alive but did not satisfy
+the incorrect local-manager-line requirement. The host correctly did not arm
+shutdown.
+
+**Validation-contract root resolution:**
+
+- Every replica now requires its local explicit
+  `allgather_reducescatter` configuration marker and a real-batch forward.
+- Every replica rejects local DeepEP manager and automatic backend-selection
+  markers.
+- Rank 0 still requires its local AgRs manager marker.
+- The host requires at least one AgRs manager marker across all pulled
+  replica evidence.
+
+**Local verification:**
+
+- Lifecycle ordering RED: `3 passed, 1 failed` in `0.15s`.
+- Declared validation-path RED: `2 failed` in `0.21s`.
+- Intermediate GREEN: `12/12` in `0.04s`.
+- Final focused contracts: `14/14` PASS.
+- Active shell syntax: `3/3` PASS.
+- Ruff check/format and `git diff --check`: PASS.
+
+**Post-fix live evidence:**
+
+- RJob `s4p-agrs2-0817-174506` reached `2/2` Running in `78s`.
+- Rank 0 model loading was `13.507140s`; health readiness was `229s`;
+  GPU memory after load was `257103 MiB`.
+- Rank 0 first request was `12.979565s`; four-request wall time was
+  `12.497070804s`.
+- Rank 0 markers were AgRs `1`, DeepEP `0`, and automatic selection `0`.
+- No `Broken pipe` was found in this coordinator attempt.
+- The run did not reach final coordinated shutdown because of the
+  global-marker-scope validation defect above. Cleanup terminated the remote
+  commands; exit `137` is cleanup-induced, not OOM evidence.
+
+**Current external blocker:**
+
+The final corrected payload was submitted as
+`s4p-agrs2b-0817-175947`. The RJob was created, but the platform created
+`0/2` replicas. The retained event says:
+
+```text
+2026-08-17T10:03:57Z Normal QueueWaiting s4p-agrs2b-0817-175947
+Waiting in queue "b300-train-infra-default". Insufficient GPU quota.
+Request: task "worker" 8 GPU/replica x 2 replicas = 16 GPU (B300).
+Queue remaining: B300=6.
+```
+
+**Quota-admission diagnostic:**
+
+- A fresh same-shape `--replica 2` predict-only command returned seven nodes,
+  each with `8` available B300 GPUs.
+- A no-allocation control using `--replica 8` returned the same seven nodes
+  and also exited `0`.
+- Exact-name checks confirmed both predict-only names created RJobs/Replicas
+  `0/0`.
+- Direct reads of
+  `quotagroups.stepmind.com/b300_train_infra` are forbidden for the current
+  identity.
+
+This proves predict-only reports per-worker node fit but does not validate the
+requested replica count or total B300 quota. It cannot replace current quota
+evidence.
+
+**Impact:**
+
+- The active DeepEP replacement is statically valid and rank 0 selects the
+  intended AgRs/NCCL-backed manager.
+- The source-level lifecycle and evidence-scope defects are resolved.
+- The task still cannot claim a completed two-node AgRs runtime validation
+  until the final corrected payload runs on `16` B300 GPUs.
+- The current blocker is quota availability, not DeepEP, NVSHMEM,
+  `--share-host-shm`, AgRs selection, or a known communication failure in the
+  corrected payload.
+
+**Cleanup evidence:**
+
+- Original lifecycle-failure attempt: residual RJobs `0`, Replicas `0`.
+- First coordinator attempt: residual RJobs `0`, Replicas `0`.
+- Quota-blocked final attempt: exact deletion succeeded; artifact and fresh
+  post-stop queries both found RJobs `0`, Replicas `0`.
+
+**Required next action:**
+
+Obtain direct platform or quota-owner confirmation that the queue can admit
+all `16` requested B300 GPUs. Then rerun the exact same-shape predict-only
+command for per-worker node fit and run one bounded live smoke. Acceptance
+requires both replicas to validate, `2/2` shutdown arms, concurrent release,
+at least one global AgRs manager marker, real-batch evidence on both replicas,
+DeepEP/automatic markers `0/0`, no `Broken pipe`, and exact cleanup.
+
+## ISSUE-044 — Phase 12 inventory drift after later concurrent edits
+
+**Status:** Resolved 2026-08-17.
+
+**Observed failure:**
+
+- `summary.md` was written at `18:36:00+08:00`.
+- `remote_b300_single_smoke.sh` was modified at `18:38:07+08:00`.
+- `test_b300_two_node_smoke_contract.py` was modified at
+  `18:40:00+08:00`.
+- The first fresh inventory audit matched `14/16` entries and found stale
+  hashes for those two files.
+- The validation table claimed `17/17`, but the active-runtime inventory
+  contained exactly `16` rows.
+
+**Root cause:**
+
+A concurrent task session completed the already-approved declared
+`REMOTE_VALIDATION_READY_FILE` path change and its contract after the summary
+inventory had been generated. The summary was not regenerated afterward, and
+its manually stated count was one larger than the table.
+
+**Impact:**
+
+The runtime implementation and contract remained valid, but the archive's
+hash-audit claim was false until refreshed. This did not create a runtime,
+communication, or quota failure.
+
+**Root resolution:**
+
+1. Verified the two files were stable across five seconds with no open writer.
+2. Inspected the later edits and confirmed they remain within the authorized
+   coordinator design.
+3. Re-ran `14/14` focused contracts, `3/3` shell syntax checks, Ruff
+   check/format, and `git diff --check`.
+4. Refreshed every affected summary hash and corrected the inventory count to
+   `16/16`.
+
+**Verification result:**
+
+- Current two-node contract SHA256:
+  `9b749a806fb5f60e78dd7b4a32967bfaaee14d25b39452ba776579f112f166c6`.
+- Current remote runner SHA256:
+  `7cc139aab85d3db29e53e2b750fd1d302d82d00a84a706368524e041d5d13e15`.
+- Focused contracts: `14/14` in `0.04s`.
+- Final active-runtime inventory audit: `16/16` matched, missing `0`,
+  mismatched `0`.
+
+## ISSUE-045 — Final publication report retained a superseded lifecycle block
+
+**Status:** Resolved 2026-08-17.
+
+**Observed failure:**
+
+- `test_report_2026-08-17_final_review_publication.md` still said publication
+  was blocked by the two-node lifecycle defect.
+- It still reported `344/344` focused tests and described the current Phase 12
+  files as incomplete changes owned by another flow.
+- The current code already contained the approved validation-ready,
+  shutdown-arm, armed-acknowledgement, concurrent-release, and global
+  manager-marker-scope fixes.
+
+**Root cause:**
+
+The publication report was created before the later Phase 12 root fixes and
+was not synchronized after those fixes, the quota-blocked rerun, and the fresh
+`347/347` regression.
+
+**Impact:**
+
+The code and tests were not affected, but the report would have incorrectly
+blocked the owner-authorized checkpoint and misidentified the remaining live
+limitation.
+
+**Root resolution:**
+
+1. Re-reviewed the current runtime and contract diff.
+2. Replaced the stale lifecycle publication block with the actual
+   `BLOCKED_BY_QUOTA` state.
+3. Updated the focused and Collector results to `347/347` and `401/401`.
+4. Marked the August 14 DeepEP/NVSHMEM report as historical and pointed to the
+   current AgRs runtime report.
+
+**Verification result:**
+
+- Current-diff blocking findings: `0`.
+- Focused regression: `347/347` in `8.21s`.
+- Collector regression: `401/401` in `31.60s`.
+- The corrected two-node run remains explicitly not-PASS: requested `16`
+  B300 GPUs, last trusted queue remainder `6`, created replicas `0/2`.

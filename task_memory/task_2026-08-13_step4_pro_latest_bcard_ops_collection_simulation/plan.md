@@ -2,6 +2,13 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Completed the Phase 13 review and report normalization; final hash/staged-diff verification, commit, push, and remote SHA confirmation remain. |
+| 2026-08-17 | Added the owner-requested final code/docs review and checkpoint commit/push phase without converting the quota-blocked two-node run to PASS. |
+| 2026-08-17 | Corrected the final live admission gate after proving `predict-only` ignores total replica count and direct quota reads are RBAC-blocked. |
+| 2026-08-17 | Completed the local two-node coordinator and global-marker-scope fixes; the final live rerun is blocked by B300 quota. |
+| 2026-08-17 | Added Phase 12 to replace active DeepEP runtime settings with explicit `allgather_reducescatter` and preserve the AIC proxy boundary. |
+| 2026-08-17 | Recorded passing B300 predict-only and single-B300 smoke evidence, rank-0 AgRs execution, and the blocking two-node lifecycle defect. |
+| 2026-08-17 | Added the owner-authorized two-node lifecycle root-fix and bounded rerun gate. |
 | 2026-08-13 | Initialized the execution plan and the first requirements-confirmation gate. |
 | 2026-08-13 | Closed the source/runtime identity gate using user choice A. |
 | 2026-08-13 | Confirmed the referenced manifest is unavailable and retained the explicit reconstruction decision gate. |
@@ -78,6 +85,8 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 9. SWA QKV completion and simulation refresh | Completed | The bounded overlay, correctness smoke, `75/75` SWA collection, `150/150` QKV canonicalization, exact consumer validation, and unchanged simulation refresh all passed. |
 | 10. Temporary DeepEP proxy and simulation completion | Completed | The explicit opt-in maps DeepEP dispatch/combine to B300 NCCL `alltoall`, labels all affected results `PROXY`, preserves the exact path by default, and completed the full prefill/decode matrix without creating fake DeepEP data. |
 | 11. Requirement-completeness audit and publication | Completed | The simulator exposes KV allocation, required component breakdown, normalized unavailable metrics, and three-repeat evidence; the manual-review packet is synchronized; fresh verification passes; only task-owned files enter the single publication commit. |
+| 12. Non-DeepEP vLLM runtime configuration | In progress: local coordinator complete; final two-node live rerun blocked by B300 quota visibility and availability | Active wrappers pin `allgather_reducescatter`, disable sequence parallelism, reject DeepEP selection, and pass `14/14` focused contracts. Final live acceptance still requires direct confirmation of 16 available B300 GPUs, both nodes validated, coordinated teardown, and zero communication/runtime errors. |
+| 13. Final code/docs review and checkpoint publication | Ready for exact staging | Fresh focused and Collector regressions pass, the current runtime diff has no unresolved local blocker, and stale publication records are being normalized. Commit/push publishes this audited checkpoint only; Phase 12 live acceptance remains open. |
 
 The bounded SWA annotation compatibility overlay was explicitly authorized and
 completed on 2026-08-16. It passed the source-hash, annotation-scope,
@@ -312,3 +321,124 @@ archived result; `343/343` focused and `401/401` Collector tests passed; Ruff
 passed on `45/45` Python files; shell syntax passed on `14/14` scripts. Remote
 publication is represented by the Git branch state rather than a
 self-referential commit hash in this file.
+
+## Phase 12 Implementation Plan
+
+1. Add failing contracts requiring the active runtime wrappers to select
+   `allgather_reducescatter`, disable sequence parallelism, pass the backend
+   through both environment and CLI, and reject DeepEP manager selection.
+2. Update the active single-node, two-node, and shared remote runtime scripts.
+   Keep the DeepEP-specific legacy probe scripts unchanged as historical
+   diagnostics.
+3. Remove active runtime dependencies on explicit NVSHMEM settings and on
+   importing the `deep_ep` package only for evidence collection.
+4. Update the authoritative requirements and task records. Keep the AIC
+   `b300_nccl_alltoall` result explicitly separate from the AgRs runtime.
+5. Run focused pytest, shell syntax, backend-source audit, and whitespace
+   checks under a `MemoryMax=2G` controller scope.
+6. Run B300 predict-only, then single-node and two-node live smoke. The
+   single-node run validates pinned model loading and real requests but does
+   not instantiate an all2all manager at DP=1. Distributed acceptance requires
+   `Using AgRsAll2AllManager all2all manager`, zero DeepEP and automatic
+   backend-selection markers, successful real-batch forward markers, and
+   exact resource cleanup.
+
+**Configuration completion evidence:** `11/11` focused contracts passed in
+`0.04s`; shell syntax passed for `3/3` active scripts; the source/backend audit
+confirmed AgRs `all_gatherv`/`reduce_scatterv`, sequence parallel `0`, zero
+active DeepEP/NVSHMEM settings, zero `deep_ep` evidence dependencies, generic
+DeepEP-manager rejection, and zero allowed automatic backend selection. The
+first final audit assertion used the obsolete exact DeepEP-HT shell pattern;
+aligning it to the current generic rejection contract resolved the
+validation-only failure without changing runtime code.
+
+**Predict-only evidence:** The exact single-node resource shape returned `4`
+candidate B300 nodes. The exact two-node shape, including two replicas,
+host networking, both RDMA resources, topology grouping, and distributed
+environment injection, returned `10` candidate B300 nodes. Exact-name cleanup
+queries found `0` RJobs and `0` Replicas. The active gate is now the bounded
+single-node live smoke.
+
+**Single-node live evidence:** One B300 scheduled in `16s`; the pinned dummy
+model loaded in `8.819692s`; one token-ID request and four concurrent requests
+completed; `9` real-batch forward markers were observed; DeepEP and automatic
+backend-selection markers were both `0`; cleanup left `0` RJobs and `0`
+Replicas. DP=1 does not instantiate an all2all manager, so the active gate is
+the two-node run that must prove `AgRsAll2AllManager`.
+
+**Original two-node live evidence:** Two replicas reached Running in `16s`.
+Rank 0 selected `AgRsAll2AllManager` once, emitted zero DeepEP and
+automatic-selection markers, loaded in `12.957171s`, and completed real
+requests. Rank 1 never wrote `remote_result_ready`: the reused one-node runner
+stopped rank 0 and its TCPStore before the headless rank group completed.
+Cleanup found `0` RJobs and `0` Replicas. The owner then authorized the
+coordinated lifecycle root fix.
+
+**Authorized lifecycle root-fix plan:**
+
+1. The remote runner will treat `DATA_PARALLEL_SIZE > 1` as one coordinated
+   distributed execution, rather than as two independent one-node runs.
+2. Rank 0 writes its local validation marker only after requests, real-batch
+   evidence, and AgRs validation pass. The headless rank group writes its
+   marker only after it observes the same manager and real-batch evidence.
+3. The host wrapper waits for the marker from both replicas before issuing a
+   controlled shutdown request to either one. Only then may either runner stop
+   its local vLLM process and write `remote_result_ready`.
+4. The focused test must first fail on the absence of this ordering. The B300
+   retry occurs only after local contracts, shell syntax, and static ordering
+   checks pass under the `2G` controller limit.
+
+**Lifecycle implementation evidence:** The validation-ready, shutdown-arm,
+armed-acknowledgement, and concurrent final-shutdown ordering is implemented.
+The lifecycle RED was `3 passed, 1 failed`; an additional path-identity RED
+was `2 failed`; the final focused contracts pass `14/14`. Active shell syntax
+passes `3/3`, Ruff check/format pass, and `git diff --check` passes.
+
+The first post-coordinator live run
+`s4p-agrs2-0817-174506` reached `2/2` Running in `78s`. Rank 0 completed real
+requests and recorded AgRs `1`, DeepEP `0`, and automatic selection `0`.
+Rank 1 did not emit its own manager line because the pinned source logs that
+line with `scope="global"`. The validation contract was corrected to require
+per-node backend configuration plus real-batch evidence and at least one
+manager line across the whole job.
+
+The final corrected payload was submitted as
+`s4p-agrs2b-0817-175947`, but the platform created `0` replicas. Its event
+reported a request for `16` B300 GPUs with only `6` remaining in
+`b300-train-infra-default`. Exact cleanup and fresh post-stop queries both
+found RJobs `0` and Replicas `0`.
+
+A fresh diagnostic proved that `predict-only` is not a total-quota gate:
+`--replica 2` and `--replica 8` both returned the same seven per-worker B300
+candidates and created no resources. Direct reads of
+`quotagroups.stepmind.com/b300_train_infra` are forbidden for the current
+identity. No further live attempt is allowed until a platform-visible event,
+quota owner, or other authorized direct source confirms at least `16`
+currently available B300 GPUs; same-shape predict-only remains necessary for
+node fit but is not sufficient for admission.
+
+## Phase 13 Review and Publication Plan
+
+1. Re-read the current task requirements and inspect the complete uncommitted
+   code/doc diff.
+2. Run the focused Step4-Pro-Latest regression, full Collector regression,
+   Ruff check/format, shell syntax, artifact/hash audit, and
+   `git diff --check`.
+3. Normalize the final publication report, summary inventory, review record,
+   and progress/issues records to the current quota-blocked state.
+4. Stage only the current task code, tests, authoritative requirements update,
+   and reviewed task reports. Exclude caches, unrelated historical tasks,
+   H800 data, temporary outputs, and `vllm-step4-pro/`.
+5. Commit once, push `task/step4-pro-latest-b300`, and verify local/remote
+   ahead/behind is `0/0`.
+
+**Publication boundary:** This phase may publish the reviewed checkpoint by
+the owner's explicit request. It does not close the Phase 12 two-node live
+acceptance gate or convert `BLOCKED_BY_QUOTA` to `PASS`.
+
+**Current Phase 13 evidence:** The complete current code/doc diff has been
+reviewed with blocking findings `0`; stale report state was normalized;
+`347/347` focused tests, `401/401` Collector tests, Ruff `45/45`, and shell
+syntax `14/14` passed. The remaining ordered steps are the final inventory
+hash audit, exact staged-diff review, commit, push, and remote SHA
+confirmation.

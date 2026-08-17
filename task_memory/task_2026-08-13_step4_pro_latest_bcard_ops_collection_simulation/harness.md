@@ -2,6 +2,9 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Corrected the quota gate after proving `predict-only` is per-worker only, and reduced remaining controller scopes to `MemoryMax=2G`. |
+| 2026-08-17 | Added the two-node ready/armed/shutdown barrier, global AgRs marker scope, and quota admission gate. |
+| 2026-08-17 | Added the active AgRs runtime gate and separated it from both DeepEP diagnostics and the NCCL `alltoall` simulation proxy. |
 | 2026-08-13 | Created task-specific gates and non-negotiable constraints. |
 | 2026-08-13 | Added explicit missing-manifest and dirty-worktree gates. |
 | 2026-08-13 | Added the pinned-vLLM runtime-trace gate for accepted Full-MFA profiling rows. |
@@ -37,7 +40,7 @@
    and a new hash or supplied by the task owner before production edits.
 9. The dirty linked worktree must have an explicitly approved isolation or
    consolidation path before production implementation.
-10. External B300 controller commands must run under `MemoryMax=3G`, use only
+10. External B300 controller commands must run under `MemoryMax=2G`, use only
     exact resource queries, and keep large I/O disk-backed and streamed.
 11. B300 model tests must use synthetic `config.json` and vLLM
     `--load-format dummy`; missing real checkpoint mounts are not a blocker.
@@ -107,16 +110,65 @@
     writable disk-backed path. Do not alter the model shape, backend,
     precision, RDMA resources, explicit NVSHMEM bootstrap, or DeepEP Buffer
     test to obtain a pass.
+25. Active vLLM smoke/performance runs must use
+    `VLLM_ALL2ALL_BACKEND=allgather_reducescatter` and
+    `--all2all-backend allgather_reducescatter`. A literal backend value
+    `nccl` is invalid for the pinned vLLM.
+26. Active AgRs runs must set `VLLM_ENABLE_SEQUENCE_PARALLEL=0`. The pinned
+    Step MoE runtime documents sequence parallelism as DeepEP-only; enabling
+    it with AgRs risks a rank/size mismatch.
+27. Active runtime acceptance requires
+    `Using AgRsAll2AllManager all2all manager` and must fail if
+    any `Using DeepEP*All2AllManager` marker appears.
+28. Active runtime scripts must not require explicit NVSHMEM settings or the
+    `deep_ep` package. DeepEP-specific legacy probes remain unchanged and
+    inactive.
+29. The AIC `b300_nccl_alltoall` proxy and the vLLM AgRs runtime are different
+    algorithms. Both may be used only with their exact identity recorded;
+    their communication difference must not be reported as same-backend
+    simulator error.
+30. Active distributed runtime evidence must record the backend,
+    sequence-parallel state, AgRs manager marker count, DeepEP manager marker
+    count, and automatic-backend-selection marker count. The latter two must
+    be zero.
+31. AgRs has no pinned per-dispatch/per-combine diagnostic marker equivalent
+    to the DeepEP HT logs. Until profiler/provider evidence is added, runtime
+    acceptance proves manager selection and real-batch forward only; it must
+    not claim separately logged collective call counts.
+32. The current AIC exact operation identity remains DeepEP HT and the
+    completed simulation uses an explicit NCCL `alltoall` proxy. Neither is an
+    AgRs-specific model, and all three identities must remain separate.
+33. `Using AgRsAll2AllManager all2all manager` is emitted with global log
+    scope in the pinned vLLM. Distributed acceptance requires at least one
+    marker across the whole job, not one marker per replica. Each replica must
+    still prove the explicit AgRs configuration, a real-batch forward, and
+    zero DeepEP/automatic-selection markers.
+34. A two-node run may stop vLLM only after all replicas write validation
+    readiness, all replicas acknowledge the shutdown arm, and the host sends
+    the final shutdown requests concurrently. A sleep or independent per-node
+    teardown is not an acceptable substitute.
+35. The final two-node live rerun requires both a fresh same-shape
+    predict-only check and independent total-quota evidence for
+    `8 GPU/replica x 2 replicas = 16 GPU`. Predict-only is a per-worker node
+    fit check and must not be treated as proof of total replica quota. Do not
+    queue another live run while the platform reports less than `16` B300
+    GPUs remaining or while current quota is unreadable and the last trusted
+    event remains below `16`.
 
 ## Prohibited Actions
 
 - No silent fallback logic. The owner-authorized DeepEP proxy must require an
   explicit simulation option and must never activate because measured data is
   merely missing.
+- No automatic DeepEP selection in active vLLM runs, and no replacement with
+  an unsupported literal `--all2all-backend nccl`.
+- No claim that `allgather_reducescatter` is a direct NCCL `alltoall`; it is
+  an all-gather dispatch plus reduce-scatter combine implementation.
 - No H800 data reuse as B-card results.
 - No unrecorded assumptions or invented shapes.
 - No `rm`, `mv`, reset, or bulk replacement without explicit permission.
 - No GPU/Docker launch before the identity gate is closed.
+- No multi-replica live launch based only on a predict-only node list.
 - No temporary files under `/tmp`.
 - No namespace-wide Replica inventory.
 - No whole Git pack, bundle, tar archive, or large log in shell variables,

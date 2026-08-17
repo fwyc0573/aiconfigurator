@@ -27,6 +27,8 @@ def test_host_wrapper_pins_resources_source_and_mounts() -> None:
     assert "step4pro_smoke_14l_dummy" in script
     assert "--entrypoint /bin/bash" in script
     assert '-- -lc "${worker_command}"' in script
+    assert 'if [[ "${VLLM_ALL2ALL_BACKEND}" != "allgather_reducescatter" ]]; then' in script
+    assert 'if [[ "${VLLM_ENABLE_SEQUENCE_PARALLEL}" != "0" ]]; then' in script
 
 
 def test_host_wrapper_builds_identity_payload_and_recovers_evidence() -> None:
@@ -88,6 +90,7 @@ def test_remote_script_preserves_single_gpu_recipe_and_provider_gates() -> None:
         "OPTIMUS_TRITON_DRIVER_STRICT_SIGNATURE=1",
         "step-optimus",
         "3.23.24",
+        'for package in ("deep_gemm", "torch"):',
         "RMSNorm_forward",
         "ModuleSpec",
         "sys.modules.pop(alias)",
@@ -106,11 +109,24 @@ def test_remote_script_preserves_single_gpu_recipe_and_provider_gates() -> None:
         "OptimusFp8Experts uses legacy Optimus DeepGemm",
         "BATCH_TOKEN_IDS=PASS",
         "--data-parallel-size",
-        "deepep_high_throughput",
-        "Using DeepEPHTAll2AllManager",
-        "backend=HT",
+        "allgather_reducescatter",
+        'VLLM_ENABLE_SEQUENCE_PARALLEL="${VLLM_ENABLE_SEQUENCE_PARALLEL:-0}"',
+        "--all2all-backend ${VLLM_ALL2ALL_BACKEND}",
+        "Using AgRsAll2AllManager all2all manager",
+        "validate_distributed_all2all_runtime",
+        "runtime_all2all_backend",
+        "runtime_all2all_manager",
+        "sequence_parallel",
+        "agrs_manager_marker_count",
+        "deepep_manager_marker_count",
+        "auto_backend_selection_marker_count",
     ):
         assert marker in script
+    assert "deepep_high_throughput" not in script
+    assert 'for package in ("deep_gemm", "deep_ep", "torch"):' not in script
+    assert 'grep -Ec "Using DeepEP[A-Za-z0-9_]*All2AllManager"' in script
+    assert "Unexpected Step MoE automatic backend selection" in script
+    assert "backend=HT" not in script
     assert "--tokenizer" not in script
     assert "COUNT_1_TO_100" not in script
     assert "/v1/chat/completions" not in script
@@ -153,10 +169,12 @@ def test_remote_script_uses_headless_mode_for_nonzero_dp_start_rank() -> None:
         "HEADLESS_ARGS=",
         "DATA_PARALLEL_START_RANK > 0",
         'HEADLESS_ARGS="--headless --api-server-count 0"',
-        "headless_server_exit_status",
+        'touch "${REMOTE_VALIDATION_READY_FILE}"',
+        "await_coordinated_shutdown",
         "HEADLESS_RUNTIME=PASS",
     ):
         assert marker in script
+    assert "headless_server_exit_status" not in script
 
 
 def test_ep_gather_block_rule_preserves_exact_dimension_coverage() -> None:

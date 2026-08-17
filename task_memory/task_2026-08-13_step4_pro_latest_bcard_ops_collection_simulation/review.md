@@ -2,6 +2,12 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Reviewed the complete publication candidate, found no new blocking code issue, normalized stale reports, and approved a quota-blocked checkpoint commit/push. |
+| 2026-08-17 | Reviewed the post-concurrency runtime files and approved the refreshed 16-file Phase 12 inventory. |
+| 2026-08-17 | Reviewed the predict-only replica-sensitivity diagnostic and replaced it as a total-quota gate with direct platform confirmation. |
+| 2026-08-17 | Reviewed the local two-node coordinator and global-marker-scope fixes; final live approval remains blocked by B300 quota. |
+| 2026-08-17 | Reviewed and approved the configuration-only replacement of active DeepEP runtime settings with AgRs/NCCL communication. |
+| 2026-08-17 | Reviewed the live two-node AgRs attempt; recorded the wrapper lifecycle blocker and rejected an ungrounded retry. |
 | 2026-08-13 | Recorded the initial requirements and workspace checkpoint. |
 | 2026-08-13 | Reviewed refreshed source/image/access evidence and recorded the remaining semantic gate. |
 | 2026-08-13 | Reviewed pinned-source operation provenance, AIC fidelity gaps, and the approved minimal-extension boundary. |
@@ -1060,3 +1066,260 @@
 - **Verdict:** **LOCAL APPROVE FOR FINAL STAGING.** The approved MTP-off plus
   explicit DeepEP-proxy simulation is complete and the review artifact is
   cleanly serialized. Commit, push, and remote ref verification remain.
+
+### Review B300-20 — Active runtime communication replacement
+
+- **Target Component/Phase:** Phase 12 active single-node/two-node vLLM
+  runtime settings and their contract tests.
+- **Reviewer Agent Identity:** Codex task execution agent, local review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh`;
+  - the two focused runtime contract tests;
+  - pinned vLLM `parallel.py`, `vllm.py`, `cuda_communicator.py`, and
+    `all2all.py`;
+  - authoritative requirements and Phase 12 task records;
+  - focused pytest, shell syntax, backend audit, and whitespace logs.
+- **Identified Issues/Anomalies:**
+  - active scripts still hard-coded DeepEP after the runtime was declared
+    unusable;
+  - `nccl` is not a valid backend literal in the pinned vLLM;
+  - relying only on the default/CLI value could allow Step MoE auto-selection
+    to choose DeepEP when its package is installed;
+  - AgRs uses NCCL-backed all-gather plus reduce-scatter, while the existing
+    AIC proxy uses an NCCL `alltoall` curve, so they are not same-backend
+    evidence.
+- **Remediation/Verification Code Actions Taken:**
+  - required `allgather_reducescatter` in both environment and CLI;
+  - required sequence parallelism `0`;
+  - required the `AgRsAll2AllManager` marker, rejected every
+    `DeepEP*All2AllManager` variant, and rejected automatic Step MoE backend
+    selection;
+  - recorded backend, manager, sequence-parallel state, and marker counts in
+    `metrics.env`;
+  - removed active explicit NVSHMEM configuration and the `deep_ep`
+    version-evidence dependency;
+  - retained legacy DeepEP probe scripts unchanged and inactive;
+  - observed the expected TDD failures before implementation;
+  - passed `11/11` focused contracts, shell syntax on `3/3` scripts, static
+    source/backend audit, and `git diff --check`;
+  - corrected one final audit-only assertion that still expected the earlier
+    exact DeepEP-HT shell line; the current generic rejection contract then
+    passed without a runtime-code change.
+- **Verdict:** **LOCAL APPROVE FOR CONFIGURATION.** The task's active runtime
+  requirement no longer depends on DeepEP. A B300 predict-only plus live
+  single/two-node smoke is still required before claiming runtime execution,
+  performance, or memory success.
+
+### Review B300-21 — Two-node AgRs live lifecycle gate
+
+- **Target Component/Phase:** Phase 12 two-B300 distributed runtime smoke.
+- **Reviewer Agent Identity:** Codex task execution agent, live review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `run_b300_two_node_smoke.sh` and `remote_b300_single_smoke.sh`;
+  - two-node evidence root
+    `/data/ycfeng/tmp/step4_runtime_backend_live_20260817/two_node_s4p-agrs2-0817-163045`;
+  - rank-0 `metrics.env`, `result.env`, provider markers, and server log;
+  - rank-1 server tail containing ProcessGroupNCCL/TCPStore failures;
+  - exact-name post-stop RJob and Replica queries.
+- **Identified Issues/Anomalies:** Rank 0 successfully selected
+  `AgRsAll2AllManager` and completed real requests, but its one-node-style
+  EXIT handler stopped the TCPStore before the rank-1 headless process
+  completed. Rank 1 then reported `Broken pipe` for ranks `8-15` and could
+  not write `remote_result_ready`.
+- **Remediation/Verification Code Actions Taken:** No runtime code change was
+  made. The blocked wrapper was interrupted after evidence capture (exit
+  `130`); cleanup verified RJobs `0` and Replicas `0`. The failure was
+  recorded as ISSUE-043 with a dedicated coordinated-lifecycle root-fix
+  requirement.
+- **Verdict:** **BLOCK.** The configuration replacement remains supported by
+  static checks and rank-0 live evidence, but the two-node smoke cannot be
+  called PASS. Do not retry or patch without explicit owner approval of the
+  two-node coordinator design.
+
+### Review B300-22 — Coordinated lifecycle and global marker scope
+
+- **Target Component/Phase:** Phase 12 two-node validation barrier, shutdown
+  ordering, distributed AgRs evidence scope, and final live rerun admission.
+- **Reviewer Agent Identity:** Codex task execution agent, local/live review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py`;
+  - pinned `vllm/distributed/device_communicators/cuda_communicator.py`;
+  - evidence roots for `s4p-agrs2-0817-174506` and
+    `s4p-agrs2b-0817-175947`;
+  - exact RJob event plus exact-name/label cleanup queries.
+- **Identified Issues/Anomalies:**
+  - the original per-node runner lifecycle stopped rank 0/TCPStore before
+    rank 1 completed;
+  - the first coordinator revision still treated the globally scoped AgRs
+    manager line as a required local rank-1 marker;
+  - the final corrected payload could not start because the `16`-GPU request
+    exceeded the queue's `6` remaining B300 GPUs.
+- **Remediation/Verification Code Actions Taken:**
+  - added the validation-ready, shutdown-arm, armed-acknowledgement, and
+    concurrent final-shutdown ordering;
+  - changed rank-1 acceptance to local backend configuration plus real-batch
+    evidence while retaining a job-level AgRs manager requirement;
+  - passed final focused contracts `14/14`, active shell syntax `3/3`, Ruff
+    check/format, and `git diff --check`;
+  - observed `2/2` Running in `78s` on the first coordinator revision, rank-0
+    AgRs/DeepEP/automatic markers `1/0/0`, model load `13.507140s`, first
+    request `12.979565s`, and four-request wall `12.497070804s`;
+  - preserved the exact quota event:
+    request `16` B300 GPUs, queue remaining `6`;
+  - verified final residual RJob/Replica counts `0/0`.
+- **Verdict:** **LOCAL APPROVE; LIVE BLOCKED.** The code now represents the
+  approved root design and the local contracts pass. Do not claim a completed
+  two-node runtime result or commit/push final publication until the corrected
+  payload runs with sufficient quota and passes both-node evidence plus
+  coordinated cleanup.
+
+### Review B300-23 — Phase 12 continuation and archive consistency
+
+- **Target Component/Phase:** Phase 12 resumed local verification, task-record
+  consistency, and admission gate for the corrected two-node live run.
+- **Reviewer Agent Identity:** Codex task execution agent, local review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - the three active runtime shell scripts and two focused contract files;
+  - Phase 12 plan, progress, issues, review, test report, lessons, future, and
+    summary records;
+  - evidence under
+    `/data/ycfeng/tmp/step4_phase12_resume_20260817/`;
+  - prior exact quota event and `0/0` cleanup evidence for
+    `s4p-agrs2b-0817-175947`.
+- **Identified Issues/Anomalies:**
+  - `summary.md` still described the independent EXIT-handler lifecycle as
+    unresolved even though the coordinator and global-marker-scope root fixes
+    were already implemented and locally verified;
+  - its active runtime test count still showed the earlier `11/11` result;
+  - no new runtime-code defect was found;
+  - complete two-node acceptance remains unavailable because the final
+    corrected payload created `0/2` replicas when only `6` of the required
+    `16` B300 GPUs remained in quota.
+- **Remediation/Verification Code Actions Taken:**
+  - changed no runtime code;
+  - refreshed focused contracts to `14/14` in `0.04s`;
+  - passed shell syntax `3/3`, Ruff check, Ruff format check, and
+    `git diff --check`;
+  - recorded the job-level meaning of the globally scoped AgRs manager line
+    and the four-stage coordinated teardown as vetted lessons;
+  - synchronized the summary and test report to distinguish local root-fix
+    completion from the external quota blocker.
+- **Verdict:** **LOCAL APPROVE; LIVE BLOCKED BY QUOTA.** The current code and
+  local contracts are internally consistent. Final publication still requires
+  direct evidence of at least `16` available B300 GPUs, one same-shape
+  predict-only node-fit check, and one corrected two-node live PASS.
+
+### Review B300-24 — Multi-replica quota admission evidence
+
+- **Target Component/Phase:** Phase 12 quota visibility and the decision
+  whether another corrected two-node live run may be queued.
+- **Reviewer Agent Identity:** Codex task execution agent, local/platform
+  review completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `/data/ycfeng/stepfun-env-handbook/guidence.md`;
+  - `/data/ycfeng/stepfun-env-handbook/brainctl-rjob.md`;
+  - current `brainctl rjob launch --help`;
+  - the prior quota event for `s4p-agrs2b-0817-175947`;
+  - fresh replica-2 and replica-8 predict-only outputs under
+    `/data/ycfeng/tmp/step4_phase12_resume_20260817/`;
+  - exact-name RJob and Replica cleanup queries.
+- **Identified Issues/Anomalies:**
+  - direct quota reads are RBAC-forbidden for the current identity;
+  - predict-only returned the same seven per-worker candidates for replica
+    counts `2` and `8`;
+  - the prior plan treated same-shape predict-only as if it could prove total
+    quota, which the sensitivity control disproved;
+  - the latest trustworthy total-quota event remains `6`, below the required
+    `16`.
+- **Remediation/Verification Code Actions Taken:**
+  - submitted no live RJob;
+  - confirmed both predict-only probes created RJobs/Replicas `0/0`;
+  - changed the task gate to require separate platform or quota-owner evidence
+    of at least `16` currently available B300 GPUs;
+  - retained predict-only only as the required per-worker node-fit check.
+- **Verdict:** **BLOCK.** Another live run would violate the recorded quota
+  gate. Resume only after direct quota evidence reaches `>=16`.
+
+### Review B300-25 — Post-concurrency stability and inventory integrity
+
+- **Target Component/Phase:** Phase 12 stable runtime contracts, archive
+  hashes, and final local verification before the quota-gated live rerun.
+- **Reviewer Agent Identity:** Codex task execution agent, local review
+  completed 2026-08-17. No independent sub-agent review is claimed.
+- **Inspected Artifacts:**
+  - `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh`;
+  - `tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py`;
+  - both focused runtime contract files and all three active shell scripts;
+  - the Phase 12 inventory in `summary.md`;
+  - fresh evidence under
+    `/data/ycfeng/tmp/step4_phase12_resume2_20260817/`.
+- **Identified Issues/Anomalies:**
+  - the remote runner and two-node contract were modified after the prior
+    summary inventory was written;
+  - the stale summary matched only `14/16` current entries;
+  - the summary incorrectly described its 16-row inventory as `17/17`;
+  - no new runtime-code defect or open file writer was found.
+- **Remediation/Verification Code Actions Taken:**
+  - changed no runtime code;
+  - verified stable SHA256 values across a five-second window and open writers
+    `0`;
+  - confirmed the later edits only complete the approved declared validation
+    marker path and matching contract;
+  - passed focused contracts `14/14` in `0.04s`, shell syntax `3/3`, Ruff
+    check/format, and `git diff --check`;
+  - refreshed affected hashes and corrected the active-runtime inventory to
+    `16/16`.
+- **Verdict:** **LOCAL APPROVE; LIVE BLOCKED BY QUOTA.** The current files and
+  archive are internally consistent. The next live action still requires
+  direct evidence that at least `16` B300 GPUs are available.
+
+### Review B300-26 — Final code/docs publication candidate
+
+- **Target Component/Phase:** Phase 13 complete current-diff review,
+  normalized test records, exact staging boundary, and commit/push readiness.
+- **Reviewer Agent Identity:** Codex task execution agent, local review
+  completed 2026-08-17. The earlier AIC core has recorded independent review;
+  no new independent sub-agent review is claimed for the Phase 12 wrapper
+  slice.
+- **Inspected Artifacts:**
+  - all five modified files under `tests/e2e/step4_pro_latest/`;
+  - the authoritative external-simulator requirements update;
+  - all modified task records;
+  - the current AgRs runtime report, final publication report, and historical
+    DeepEP/NVSHMEM report;
+  - fresh focused, Collector, Ruff, shell-syntax, and whitespace evidence
+    under `/data/ycfeng/tmp/step4_final_publication_20260817/`.
+- **Identified Issues/Anomalies:**
+  - the final publication report still treated the already-resolved lifecycle
+    defect as the publication blocker;
+  - its focused count was stale at `344/344`;
+  - the historical DeepEP report did not clearly say that it had been
+    superseded for active runtime use;
+  - current code review found no new CRITICAL, HIGH, MEDIUM, or blocking
+    lifecycle/backend defect;
+  - final corrected two-node live acceptance is still externally blocked:
+    request `16`, last trusted B300 remainder `6`, replicas `0/2`.
+- **Remediation/Verification Code Actions Taken:**
+  - synchronized all three reports to the current AgRs/quota state;
+  - retained fail-fast DeepEP rejection and the distinction between active
+    AgRs, exact DeepEP AIC identity, and NCCL `alltoall` `PROXY`;
+  - passed focused regression `347/347` in `8.21s`;
+  - passed Collector regression `401/401` in `31.60s`;
+  - passed Ruff check/format on `45/45` Python files and shell syntax on
+    `14/14` scripts;
+  - corrected one audit-only repeat-JSON schema assumption from `summary` to
+    `repeat_audit`, then passed all `70/70` hashes and simulation artifact
+    checks without changing implementation or archived results;
+  - defined an exact staging allowlist that excludes caches, unrelated tasks,
+    H800 data, temporary outputs, `.worktrees/`, and `vllm-step4-pro/`.
+- **Verdict:** **LOCAL APPROVE FOR TASK-SCOPED COMMIT/PUSH; LIVE
+  BLOCKED_BY_QUOTA.** Publication is allowed by Q26 and must not be presented
+  as a completed two-node runtime validation.

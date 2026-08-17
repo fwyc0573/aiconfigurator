@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Added the verified vLLM backend-selection, communication-identity, distributed log-scope, coordinated-shutdown, and quota-admission lessons from replacing DeepEP with AgRs. |
 | 2026-08-13 | Created the reusable-lessons scaffold; no lesson has been validated yet. |
 | 2026-08-15 | Added vetted Collector-coverage and blocked-simulation lessons. |
 | 2026-08-16 | Added vetted annotation, provider-output, and partial-slice validation lessons. |
@@ -35,3 +36,33 @@
    provider-only run must not be rejected for files belonging to unselected
    families, while every file required by the selected slice remains
    mandatory.
+9. **Pin Step MoE communication through both env and CLI.** In this vLLM
+   branch, leaving `VLLM_ALL2ALL_BACKEND` unset allows runtime auto-selection
+   to choose DeepEP when it is installed. The env variable's presence
+   prevents that change. Repeating the value in `--all2all-backend` writes the
+   same identity into `parallel_config`, including DP=1 paths, and makes the
+   command auditable.
+10. **Use backend implementation names precisely.** The supported replacement
+    is `allgather_reducescatter`/`AgRsAll2AllManager`: NCCL-backed all-gather
+    plus reduce-scatter. It is neither a literal backend named `nccl` nor the
+    same algorithm as an NCCL `alltoall` simulation curve.
+11. **Manager selection is not per-call evidence.** The pinned AgRs manager
+    has no DeepEP-style dispatch/combine diagnostic logger. A manager marker
+    plus real-batch forward proves the selected runtime path but does not
+    independently count both collectives; use a profiler/provider trace for
+    that stronger claim.
+12. **Match validation scope to logger scope.** A line emitted through
+    `logger.info_once(..., scope="global")` is a job-level singleton, not a
+    per-replica contract. Require backend configuration and real-batch
+    evidence on every replica, then require the global manager marker at
+    least once across the complete job.
+13. **Coordinate distributed teardown with explicit barriers.** A successful
+    API rank must not stop its TCPStore while headless ranks are still
+    validating. Use validation-ready, shutdown-arm, armed-acknowledgement,
+    and concurrent final-shutdown stages; a sleep or independent EXIT handler
+    does not establish safe ordering.
+14. **Treat predict-only as a per-worker fit check until replica sensitivity
+    is proven.** Here, replica counts `2` and `8` returned the same seven-node
+    list, while a real 2-replica submission later exposed only `6` GPUs of
+    quota. Multi-replica admission therefore needs separate current quota
+    evidence; a node list alone is insufficient.

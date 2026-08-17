@@ -2,6 +2,12 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Completed the current code/docs publication review, normalized stale reports, and recorded fresh `347/347` focused plus `401/401` Collector evidence before commit/push. |
+| 2026-08-17 | Revalidated the stable post-concurrency Phase 12 files and corrected stale runtime-inventory hashes and the inventory count. |
+| 2026-08-17 | Completed the local two-node coordinator and global-marker-scope fixes, recorded the post-fix live evidence, and stopped on the 16-GPU request versus 6-GPU quota blocker. |
+| 2026-08-17 | Replaced active DeepEP runtime settings with explicit AgRs/NCCL communication and recorded TDD/static verification. |
+| 2026-08-17 | Recorded B300 live evidence: single-node PASS, two-node lifecycle blocker, and zero-resource cleanup after controlled stop. |
+| 2026-08-17 | Started the owner-authorized two-node lifecycle root fix with a focused RED contract. |
 | 2026-08-13 | Created the task log and recorded the initial review and blocking scope discrepancy. |
 | 2026-08-13 | Recorded the access-probe session: measured B300 quota RBAC denial, vLLM credential denial, cached-image implementation gap, and the AIC Step4-Pro-V4 shape conflict. Produced the platform ticket packet. |
 | 2026-08-13 | Revalidated latest branch/image identity and B300 access; corrected stale blocker conclusions and stopped at the semantic scope gate. |
@@ -5652,3 +5658,591 @@ commit pushed to the remote repository.
 - Audit evidence:
   `/data/ycfeng/tmp/step4_phase11_publication_audit_20260816.log`, SHA256
   `1296ffcc75d5d4ef85f8567c258b247b66dbe2911db88cb2e509e5d33d484f66`.
+
+## 2026-08-17 — Active runtime changed from DeepEP to AgRs/NCCL
+
+**Status:** Configuration and local validation PASS; B300 live execution not
+run in this change.
+
+### Motivation
+
+The owner changed the task's runtime requirement because DeepEP cannot run
+normally in the current platform/runtime contract. The active whole-model
+scripts still hard-coded DeepEP even though DeepEP measurement had already
+been stopped and the simulator was using an explicit proxy.
+
+### Expectation
+
+- Select a supported non-DeepEP backend without automatic fallback.
+- Keep Step4-Pro model shape, dummy weights, precision, Optimus FP8 MoE,
+  DeepGEMM, FA4, topology, RDMA, and memory settings unchanged.
+- Fail before launch if the backend is overridden.
+- Require an unambiguous runtime manager marker.
+- Keep the AIC NCCL `alltoall` proxy visibly separate from the vLLM runtime
+  algorithm.
+
+### Method
+
+1. Inspected the pinned vLLM backend enum, Step MoE auto-selection logic,
+   CUDA communicator, and `AgRsAll2AllManager`.
+2. Confirmed that `nccl` is not a legal backend literal and that
+   `allgather_reducescatter` maps to NCCL-backed `all_gatherv` dispatch plus
+   `reduce_scatterv` combine.
+3. Added focused RED contracts for backend selection, sequence-parallel
+   disabling, AgRs log evidence, DeepEP rejection, removal of active NVSHMEM
+   settings, removal of the `deep_ep` package-evidence dependency, and
+   controller-side fail-fast validation.
+4. Updated the active single-node, two-node, and shared remote scripts.
+5. Updated the authoritative requirements, task harness/design/notes,
+   issue/review records, reusable lessons, and future-work boundary.
+6. Ran all local checks with `MemoryMax=2G` and disk-backed logs under
+   `/data/ycfeng/tmp/step4_runtime_backend_20260817`.
+
+### Resolved command errors
+
+1. The first RED command used the repository `.venv`, which does not contain
+   pytest. It was rerun with the task-recorded
+   `/home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python`.
+2. The first backend-audit one-liner had nested shell quoting around a Python
+   tuple and exited with code `2`. The audit was rerun by passing Python
+   directly through `systemd-run`; no code or result changed.
+3. The first final backend-audit assertion expected the earlier exact
+   `DeepEPHTAll2AllManager` rejection line. The implementation had already
+   been strengthened to reject all `DeepEP*All2AllManager` variants with one
+   regular expression. The audit was aligned to that current contract and
+   passed; no production or test code changed.
+
+### Result
+
+- RED evidence:
+  - initial contract: `3 failed, 8 passed`;
+  - active dependency cleanup: `2 failed, 9 passed`;
+  - controller fail-fast: `1 failed`.
+- GREEN focused contracts: `11/11` passed in `0.04s`.
+- Active shell syntax: `3/3` scripts passed.
+- Static backend audit:
+  - active runtime files: `3`;
+  - backend: `allgather_reducescatter`;
+  - manager: `AgRsAll2AllManager`;
+  - dispatch/combine source mapping: `all_gatherv` / `reduce_scatterv`;
+  - sequence parallel: `0`;
+  - active `deepep_high_throughput` settings: `0`;
+  - explicit active NVSHMEM settings: `0`;
+  - `deep_ep` package-evidence dependencies: `0`;
+  - generic DeepEP manager rejection: enabled;
+  - automatic backend selection allowed: `0`.
+- `git diff --check`: PASS.
+- No GPU was allocated and no vLLM service was launched. Runtime latency,
+  throughput, and HBM metrics remain pending live validation.
+
+## 2026-08-17 — Phase 12 B300 predict-only validation
+
+**Status:** PASS; single-node live smoke is the next gate.
+
+### Motivation
+
+The configuration-only replacement must pass the platform admission check
+with the exact B300 resource shape before any GPU allocation.
+
+### Expectation
+
+- Use `b300_train_infra` with tag `B300`.
+- Preserve the live single-node and two-node CPU, memory, GPU, RDMA, topology,
+  image, and distributed-environment settings.
+- Return enough candidate nodes for one 1-GPU worker and two 8-GPU workers.
+- Create no RJob or Replica during predict-only.
+
+### Method
+
+1. Ran the validated rlaunch/brainctl command-surface check under
+   `MemoryMax=2G`.
+2. Verified the pinned commit, model config, three payload files, one identity
+   pack/index pair, and the prior 16-rank NCCL preflight evidence.
+3. Ran exact single-node and two-node `brainctl rjob launch --predict-only`
+   commands with the intended live resource flags.
+4. Queried only the two exact predict-only names and their exact Replica
+   labels to verify no residual resources.
+
+### Result
+
+- brainctl version:
+  `v2.12.0-alpha.4.1328-20260814040139-9da5d7fa9435`.
+- Local prerequisites: PASS; NCCL rank markers `16`, node markers `2`.
+- Single-node predict-only: PASS; candidate nodes `4`, including three with
+  `8` free B300 GPUs and one with `7`.
+- Two-node predict-only: PASS; candidate nodes `10`, each with `8` free B300
+  GPUs.
+- Residual resources after predict-only: RJobs `0`, Replicas `0`.
+- Evidence root:
+  `/data/ycfeng/tmp/step4_runtime_backend_live_20260817`.
+
+## 2026-08-17 — Phase 12 single-B300 live smoke
+
+**Status:** PASS; two-node AgRs live smoke is the next gate.
+
+### Motivation
+
+Verify that the updated active launcher still loads the pinned Step4-Pro
+runtime and completes real prefill/decode requests before spending a
+two-node allocation.
+
+### Expectation
+
+- One B300 worker reaches Running and is removed afterward.
+- The pinned source, dummy model, Optimus FA4, Optimus FP8 MoE, and
+  `allgather_reducescatter` setting remain intact.
+- Token-ID completion requests and concurrent requests complete.
+- No DeepEP or automatic backend-selection marker appears.
+
+### Method
+
+Ran `run_b300_single_smoke.sh` with an outer and inner controller
+`MemoryMax=2G`, exact-name resource queries, and disk-backed evidence under
+`/data/ycfeng/tmp/step4_runtime_backend_live_20260817`.
+
+### Result
+
+- Host/remote result: `ONE_GPU_HOST_WRAPPER=PASS`,
+  `ONE_GPU_SMOKE=PASS`.
+- GPU: NVIDIA B300 SXM6 AC, `275040 MiB`.
+- Scheduling: `16s`; health readiness: `99s`.
+- Model load: `8.819692s`; reported model-load memory: `3.16 GiB`.
+- GPU memory: `644 MiB` before load, `247628 MiB` after load.
+- First request: `8` prompt plus `4` completion tokens in `13.737685s`.
+- Four concurrent requests: wall time `0.474799647s`; individual latency
+  `0.464150–0.467964s`.
+- Real-batch forward markers: `9`; DeepEP markers `0`; automatic-selection
+  markers `0`.
+- DP=1 does not instantiate an all2all manager, so an AgRs manager marker is
+  not expected in this single-GPU smoke; the two-node gate must provide it.
+- Cleanup: RJobs `0`, Replicas `0`; artifact hash verification PASS.
+- The log contains `8` caught chat-template warmup warnings because
+  `--skip-tokenizer-init` intentionally provides no tokenizer. Token-ID
+  completions succeeded, so this pinned-vLLM warning is unrelated to AgRs and
+  requires no runtime fallback or patch.
+
+## 2026-08-17 — Phase 12 two-B300 AgRs live smoke
+
+**Status:** BLOCKED; do not retry until the two-node runner lifecycle has an
+approved root fix.
+
+### Motivation
+
+Validate the configured AgRs backend across the actual `DP=16`, two-node
+runtime where the all2all manager is instantiated.
+
+### Expectation
+
+- Both replicas complete and write `remote_result_ready`.
+- Both rank groups remain alive through the distributed smoke.
+- The runtime selects `AgRsAll2AllManager`, not DeepEP or automatic backend
+  selection.
+
+### Method
+
+1. Launched `s4p-agrs2-0817-163045` with two B300 replicas, `8` GPUs per
+   node, full RDMA resources, and controller `MemoryMax=2G`.
+2. Ran the existing `remote_b300_single_smoke.sh` independently on each
+   replica; rank 0 served requests and rank 1 used `--headless`.
+3. Inspected the per-node evidence, the shared runner lifecycle, and bounded
+   rank-1 server tail after the missing result marker.
+4. Interrupted the blocked host wrapper and verified exact-name RJob and
+   Replica cleanup.
+
+### Result
+
+- Scheduling: `16s`; both replicas reached `2/2 Running`.
+- Rank 0: `ONE_GPU_SMOKE=PASS`; `AgRsAll2AllManager=1`; DeepEP manager
+  markers `0`; automatic backend-selection markers `0`; model loading
+  `12.957171s`; GPU after load `257103 MiB`; first request `10.762580s` for
+  `8` prompt plus `4` completion tokens; four-request wall time
+  `10.90261888s`.
+- Rank 1: node rank `1`, data-parallel start rank `8`, headless mode `1`;
+  no `remote_result_ready` was produced.
+- Root cause: `remote_b300_single_smoke.sh` executes `stop_server` in its
+  EXIT handler before writing `remote_result_ready`. The rank-0 API node
+  consequently shuts down its TCPStore after finishing the client request;
+  the rank-1 headless process still uses that process group and reports
+  `TCPStore` `Broken pipe` for ranks `8-15`.
+- This proves rank-0 AgRs manager selection and real execution, but it does
+  not prove a completed two-node distributed lifecycle. It is not a DeepEP or
+  NVSHMEM regression.
+- The interrupted wrapper returned `130`. Post-stop exact-name queries found
+  RJobs `0` and Replicas `0`. No code was changed and no retry was launched.
+
+## 2026-08-17 — Phase 12 two-node lifecycle root fix
+
+**Status:** LOCALLY PASS; final live rerun is blocked by B300 quota.
+
+### Motivation
+
+The completed rank-0 request path must not independently terminate the shared
+distributed vLLM process while the rank-1 headless group is still validating.
+
+### Expectation
+
+The host must wait for a success-only validation marker from both replicas
+before it requests shutdown. Each remote process may stop only after that
+host request.
+
+### Method
+
+Added a focused source-level contract in
+`tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py` before any
+runtime-script change.
+
+### Result
+
+- RED command:
+  `systemd-run --user --scope -p MemoryMax=2G timeout 120s /home/i-fengyicheng/miniconda3/envs/aic-step-design/bin/python -m pytest -q tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py`
+- Actual result: `3 passed, 1 failed` in `0.15s`.
+- Expected failure: the host wrapper lacks
+  `test -f "${evidence_root}/remote_validation_ready"` and therefore has no
+  all-replica validation barrier before teardown.
+- No B300 job was launched for RED. The implementation and later evidence are
+  recorded below.
+
+## 2026-08-17 — Final review/commit/push continuation
+
+**Status:** IN PROGRESS.
+
+### Motivation
+
+The owner requested that the current task code and documentation be reviewed,
+then committed and pushed. Phase 12 still had an uncommitted coordinated
+two-node lifecycle implementation and one stale contract assertion.
+
+### Expectation
+
+- Preserve the approved AgRs backend and two-node coordination design.
+- Remove only contract/runtime skew discovered by fresh verification.
+- Do not stage unrelated caches, historical tasks, H800 data, or the separate
+  pinned vLLM checkout.
+- Commit and push only after fresh review and all required checks pass.
+
+### Method
+
+1. Verified the branch remains
+   `task/step4-pro-latest-b300` at base commit `c422e0ae`.
+2. Checked repository writers and file mtimes; no open writer or new task-file
+   modification was observed during the stability window.
+3. Re-ran the two runtime contract files under conda `aic-step-design`,
+   Python `3.11.15`, pytest `8.4.2`, and
+   `systemd-run --user --scope -p MemoryMax=2G`.
+4. Identified the failing assertion as an obsolete expectation for
+   `headless_server_exit_status`, which the approved coordinator intentionally
+   removes.
+5. Added a RED contract requiring both distributed paths to use
+   `REMOTE_VALIDATION_READY_FILE` before `await_coordinated_shutdown`, then
+   changed the two runtime touch sites to use that declared path.
+
+### Result
+
+- Initial fresh runtime contracts: `11 passed, 1 failed` in `0.17s`; the only
+  failure was the obsolete `headless_server_exit_status` assertion.
+- Lifecycle path RED: `2 failed` in `0.21s`, both for the expected missing use
+  of `REMOTE_VALIDATION_READY_FILE`.
+- Lifecycle path GREEN: `12/12` passed in `0.04s`.
+- Active shell syntax: `3/3` passed.
+- Ruff check passed; Ruff format identified and normalized one test file.
+- Evidence:
+  `/data/ycfeng/tmp/step4_phase12_completion_20260817/`.
+
+## 2026-08-17 — Phase 12 coordinator and marker-scope root fixes
+
+**Status:** LOCAL PASS; final corrected payload still needs one two-node live
+run.
+
+### Motivation
+
+Fix the premature TCPStore teardown without adding a delay or retry, then
+ensure the validation contract matches the pinned vLLM logging scope.
+
+### Expectation
+
+- Both replicas validate before either may stop vLLM.
+- Both replicas acknowledge the shutdown arm before final shutdown.
+- Final shutdown requests are dispatched concurrently.
+- Every replica proves the explicit backend and a real-batch forward.
+- The globally scoped AgRs manager line is required at least once across the
+  complete job, not once per replica.
+
+### Method
+
+1. Added `remote_validation_ready`, `coordinated_shutdown_armed`,
+   `remote_shutdown_armed`, and `coordinated_shutdown` marker paths.
+2. Made the host wait for `2/2` validation markers, arm `2/2` replicas, wait
+   for `2/2` armed acknowledgements, and send both final shutdown requests in
+   parallel.
+3. Ran `s4p-agrs2-0817-174506` with the first coordinator revision.
+4. Compared that payload with pinned
+   `cuda_communicator.py`, where the manager line uses
+   `logger.info_once(..., scope="global")`.
+5. Changed rank-1 validation to use its local
+   `allgather_reducescatter` configuration marker plus real-batch forward,
+   while the host requires at least one AgRs manager line across pulled
+   replica evidence.
+
+### Result
+
+- Lifecycle ordering RED: `3 passed, 1 failed` in `0.15s`.
+- Declared-path RED: `2 failed` in `0.21s`.
+- Intermediate lifecycle GREEN: `12/12` in `0.04s`.
+- Final focused contracts after the marker-scope correction: `14/14` PASS.
+- Active shell syntax: `3/3` PASS.
+- Ruff check/format and `git diff --check`: PASS.
+- First coordinator live run scheduling: `78s`, replicas `2/2` Running.
+- Rank 0 model load: `13.507140s`; health readiness: `229s`; GPU after load:
+  `257103 MiB`.
+- Rank 0 first request: `12.979565s` for `8` prompt plus `4` completion
+  tokens; four-request wall time: `12.497070804s`.
+- Rank 0 markers: AgRs `1`, DeepEP `0`, automatic selection `0`.
+- Rank 1 did not write validation readiness because the first coordinator
+  revision incorrectly required a local copy of the globally scoped manager
+  line. The host therefore never armed shutdown.
+- Cleanup terminated the still-running remote commands; their exit `137` is
+  cleanup-induced and is not evidence of host or GPU OOM.
+- No `Broken pipe` was found in this post-coordinator attempt.
+
+## 2026-08-17 — Final corrected two-node rerun blocked by quota
+
+**Status:** BLOCKED before Replica creation; resources cleaned.
+
+### Motivation
+
+Run the corrected coordinator and marker-scope contract exactly once on the
+required `2 replicas x 8 B300` shape.
+
+### Expectation
+
+The platform must admit `16` B300 GPUs, create `2/2` replicas, and allow the
+full ready/armed/concurrent-shutdown path to execute.
+
+### Method
+
+1. Submitted RJob `s4p-agrs2b-0817-175947`.
+2. Observed exact RJob events and exact-label Replica state under
+   `MemoryMax=2G` and `timeout 60s`.
+3. Interrupted the waiting wrapper after the quota cause was established.
+4. Deleted the exact RJob and repeated exact-name/label cleanup queries.
+
+### Result
+
+- RJob creation: PASS at `2026-08-17 17:59:49+08:00`.
+- Replica creation: `0/2` for approximately `308s`.
+- Platform event at `2026-08-17T10:03:57Z`:
+  `Insufficient GPU quota. Request: task "worker" 8 GPU/replica x 2 replicas
+  = 16 GPU (B300). Queue remaining: B300=6.`
+- Runtime/model/communication metrics: not produced because no Replica was
+  created.
+- Cleanup artifact counts: exact RJob `0`, exact-label Replica `0`.
+- Fresh post-stop queries: exact RJob `0`, exact-label Replica `0`.
+- Evidence root:
+  `/data/ycfeng/tmp/step4_phase12_barrier_20260817/`.
+- Next live action is blocked until the same-shape predict-only check reports
+  enough quota for all `16` requested B300 GPUs.
+
+## 2026-08-17 — Phase 12 continuation verification and archive synchronization
+
+**Status:** LOCAL PASS; final corrected two-node live acceptance remains
+blocked by external B300 quota.
+
+### Motivation
+
+Resume from the quota interruption without relying on prior-session test
+claims, and remove stale archive text that still described the already-fixed
+independent teardown lifecycle.
+
+### Expectation
+
+- The current coordinator contracts still pass `14/14`.
+- All three active shell entry points still parse.
+- The two focused Python contract files remain Ruff-clean and formatted.
+- The working-tree diff has no whitespace errors.
+- Task records distinguish the completed local root fix from the still-missing
+  corrected two-node live result.
+
+### Method
+
+1. Re-read the Phase 12 plan, progress, issues, review, summary, future,
+   lessons, requirements, and test report.
+2. Ran focused pytest, shell syntax, Ruff check, Ruff format check, and
+   `git diff --check` under `MemoryMax=2G`.
+3. Stored logs under
+   `/data/ycfeng/tmp/step4_phase12_resume_20260817/`.
+4. Synchronized the reusable lessons, review record, test report, and summary
+   without changing runtime code.
+
+### Result
+
+- Focused contracts: `14/14` passed in `0.04s`.
+- Active shell syntax: `3/3` passed.
+- Ruff check: `All checks passed`.
+- Ruff format: `2 files already formatted`.
+- `git diff --check`: exit `0`, findings `0`.
+- Runtime code changes in this continuation: `0`.
+- Remaining blocker: the platform must admit
+  `2 replicas x 8 B300 = 16 B300`; the last measured queue remainder was `6`.
+
+## 2026-08-17 — Phase 12 quota-admission diagnostic
+
+**Status:** BLOCKED; no live RJob was submitted.
+
+### Motivation
+
+Determine whether a fresh same-shape predict-only result can safely replace
+the stale `6/16` quota event before another expensive two-node live attempt.
+
+### Expectation
+
+- Predict-only must reveal whether the requested replica count affects
+  admission.
+- A direct quota query is preferred when current identity permits it.
+- No RJob or Replica may be created by the diagnostic.
+- The corrected live wrapper must remain unsubmitted unless total available
+  B300 quota is proven to be at least `16`.
+
+### Method
+
+1. Read the GPU and brainctl handbooks and rechecked the current
+   `brainctl rjob launch` command surface under `MemoryMax=2G`.
+2. Attempted a direct read of
+   `quotagroups.stepmind.com/b300_train_infra`.
+3. Ran the exact two-node per-worker resource shape with `--replica 2`.
+4. Ran a no-allocation sensitivity control with `--replica 8`; this would
+   require `64` GPUs if replica count were part of the prediction.
+5. Queried only the two exact RJob names and exact Replica labels.
+6. One documentation search initially placed Markdown backticks inside a
+   double-quoted shell regex, so the shell attempted to execute `16`; it was
+   rerun with safe single quoting and changed no files.
+
+### Result
+
+- Direct quota read: `Forbidden`; current identity cannot get
+  `quotagroups.stepmind.com/b300_train_infra`.
+- `--replica 2`: exit `0`, seven candidate nodes, each with `8` B300 GPUs.
+- `--replica 8`: exit `0`, the same seven candidate nodes.
+- Diagnostic-created resources: RJobs `0`, Replicas `0` for both names.
+- Conclusion: predict-only checks per-worker node fit and ignores total
+  replica demand; it does not prove `16` GPUs of quota.
+- Last trustworthy total-quota evidence remains the `2026-08-17T10:03:57Z`
+  event reporting B300 remainder `6`.
+- Corrected two-node live submissions in this diagnostic: `0`.
+- Evidence:
+  `/data/ycfeng/tmp/step4_phase12_resume_20260817/predict_two_node_1828.log`
+  and
+  `/data/ycfeng/tmp/step4_phase12_resume_20260817/predict_replica8_diagnostic.log`.
+
+## 2026-08-17 — Post-concurrency stability and inventory re-audit
+
+**Status:** LOCAL PASS; final corrected two-node live acceptance remains
+blocked by external B300 quota.
+
+### Motivation
+
+Two task-owned files were modified after the prior `summary.md` inventory was
+written. Their recorded hashes and the stated inventory cardinality therefore
+needed fresh verification before any publication or commit decision.
+
+### Expectation
+
+- The current remote runner and two-node contract remain stable with no open
+  writer.
+- The post-coordinator runtime contracts still pass `14/14`.
+- Shell syntax, Ruff check/format, and whitespace checks still pass.
+- The active runtime inventory contains exactly `16` files, and every current
+  hash matches the refreshed summary.
+
+### Method
+
+1. Compared SHA256 and mtime across a five-second stability window and checked
+   both files with `lsof`.
+2. Inspected the current remote-runner and contract diffs against the branch
+   base to confirm that the later edits only complete the approved
+   `REMOTE_VALIDATION_READY_FILE` path contract and its source-level test.
+3. Re-ran the two focused runtime contract files under
+   `systemd-run --user --scope -p MemoryMax=2G`.
+4. Re-ran syntax checks on the three active shell scripts, Ruff check/format
+   on the two focused contract files, and `git diff --check`.
+5. Audited the active runtime inventory parsed directly from `summary.md`,
+   refreshed the changed document/code hashes, and corrected its count from
+   `17` to the actual `16`.
+
+### Result
+
+- Stable two-node contract SHA256:
+  `9b749a806fb5f60e78dd7b4a32967bfaaee14d25b39452ba776579f112f166c6`;
+  unchanged across the five-second window; open writers `0`.
+- Stable remote runner SHA256:
+  `7cc139aab85d3db29e53e2b750fd1d302d82d00a84a706368524e041d5d13e15`;
+  open writers `0`.
+- Focused contracts: `14/14` passed in `0.04s`.
+- Two-node contract alone: `6/6` passed in `0.05s`.
+- Active shell syntax: `3/3` passed.
+- Ruff check: `0` findings; Ruff format: `2/2` already formatted.
+- `git diff --check`: `0` findings.
+- Initial inventory audit against the stale summary: `14/16` matched and
+  `2/16` mismatched; missing files `0`.
+- Final refreshed active-runtime inventory: `16/16` matched.
+- Runtime code changes made by this continuation: `0`.
+- Evidence:
+  `/data/ycfeng/tmp/step4_phase12_resume2_20260817/`.
+
+## 2026-08-17 — Phase 13 code/docs publication review
+
+**Status:** READY FOR PRE-COMMIT VERIFICATION.
+
+### Motivation
+
+The owner requested review, commit, and push in that order. The current
+working tree contained the completed Phase 12 AgRs runtime slice plus task
+records, while the final publication report still described the already-fixed
+lifecycle defect as the publication blocker.
+
+### Expectation
+
+- Review the complete current code/doc diff and find no unresolved blocking
+  defect.
+- Preserve the real remaining limitation: the corrected two-node live run is
+  blocked by B300 quota, not by a known current lifecycle defect.
+- Include only current task code, authoritative requirements, task records,
+  and the three relevant test reports.
+- Exclude caches, unrelated historical tasks, H800 data, generated local
+  outputs, `.worktrees/`, and `vllm-step4-pro/`.
+
+### Method
+
+1. Reviewed the five current runtime/test files against base commit
+   `c422e0ae`, including backend fail-fast checks, per-replica validation,
+   shutdown-arm acknowledgement, concurrent release, manager-marker scope,
+   and exact cleanup ordering.
+2. Reviewed all modified task records and the authoritative requirements
+   update for consistency with Q24-Q26.
+3. Reclassified
+   `test_report_2026-08-14_b300_pinned_vllm_smoke_runtime_trace.md` as
+   historical DeepEP/NVSHMEM evidence.
+4. Replaced stale publication text with the current quota-blocked state.
+5. Used the fresh verification logs under
+   `/data/ycfeng/tmp/step4_final_publication_20260817/`.
+
+### Result
+
+- Current code review: blocking findings `0`.
+- Focused Step4-Pro-Latest regression: `347/347` passed in `8.21s`.
+- Full Collector regression: `401/401` passed in `31.60s`.
+- Ruff check/format: `45/45` task Python files passed.
+- Shell syntax: `14/14` task scripts passed.
+- The first final artifact-audit command failed with
+  `KeyError: 'summary'` because it used an obsolete repeat-JSON field path.
+  Inspection showed the actual fields under `repeat_audit`; the corrected
+  command passed inventory `70/70`, simulation `72+84`, repeat
+  `468/156/0.0`, CSV `156 × 87`, canonical rows `709`, and DeepEP-Parquet
+  absence.
+- The first exact staged-diff check found `7` Markdown trailing-space lines
+  across the three newly added reports. They were removed at the source; no
+  code, dataset, or result value changed.
+- Current live limitation: corrected two-node run remains
+  `BLOCKED_BY_QUOTA`; request `16`, last trusted remainder `6`, replicas
+  created `0/2`.
+- Commit and push are the next ordered actions after the final hash/staged
+  diff audit.

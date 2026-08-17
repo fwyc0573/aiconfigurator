@@ -2,6 +2,8 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Added the two-stage distributed validation/shutdown coordinator and global AgRs marker aggregation rule. |
+| 2026-08-17 | Defined the active non-DeepEP vLLM communication contract as NCCL-backed `allgather_reducescatter`/AgRs and separated it from the simulation proxy. |
 | 2026-08-13 | Recorded the initial design boundary; implementation design awaits runtime identity confirmation. |
 | 2026-08-13 | Added the audited minimal-extension design candidate and its unresolved decision gate. |
 | 2026-08-13 | Added the source-derived plus runtime-trace-validated profiling design. |
@@ -265,6 +267,81 @@ by the task. The completed dataset proves provider reachability and
 performance for this bounded runtime contract; it is not a training or model-
 quality claim.
 
+## Active non-DeepEP vLLM runtime communication
+
+The active runtime must not depend on the unavailable DeepEP/NVSHMEM
+bootstrap. The pinned vLLM source provides the supported backend
+`allgather_reducescatter`, which constructs `AgRsAll2AllManager` in the CUDA
+communicator.
+
+Its communication contract is:
+
+```text
+dispatch: all_gatherv over the EP/DP group
+combine: reduce_scatterv over the EP/DP group
+transport: PyNccl/NCCL CUDA collectives
+sequence parallelism: disabled
+```
+
+The setting is intentionally supplied twice:
+
+```text
+VLLM_ALL2ALL_BACKEND=allgather_reducescatter
+--all2all-backend allgather_reducescatter
+```
+
+The environment variable's presence prevents the Step MoE runtime's automatic
+backend selection from changing the effective backend when DeepEP happens to
+be installed. The CLI value writes the same identity into `parallel_config`,
+including DP=1 runs that return before the Step MoE default handler, and keeps
+the command self-describing. The wrappers fail before launch if the backend or
+sequence-parallel setting is overridden.
+
+`VLLM_ENABLE_SEQUENCE_PARALLEL=0` is an explicit guard rather than a hidden
+compatibility patch. The pinned AgRs branch does not auto-enable sequence
+parallelism, the active command uses TP=1, and Step4Pro currently disables its
+model-specific sequence-parallel path. The explicit value prevents an
+external override and makes the runtime contract auditable.
+
+The runtime records backend and sequence-parallel values, requires the AgRs
+manager marker, rejects every DeepEP manager class, and rejects the Step MoE
+automatic-backend marker. AgRs does not currently emit DeepEP-style
+per-dispatch/per-combine diagnostic markers. Until a pinned AgRs profiler or
+provider marker is added, the smoke proves manager selection plus real-batch
+forward, not a separately logged call count for both collectives.
+
+The manager line is emitted with `scope="global"`, so it is a job-level
+signal rather than a per-replica signal. Each replica validates its local
+backend configuration marker and real-batch forward. The host aggregates the
+pulled evidence and requires at least one AgRs manager line across the job.
+
+Distributed teardown is a two-stage barrier:
+
+1. Both replicas write `remote_validation_ready`.
+2. The host writes `coordinated_shutdown_armed` on both replicas.
+3. Both replicas acknowledge with `remote_shutdown_armed`.
+4. The host sends both `coordinated_shutdown` requests concurrently.
+
+This ordering prevents rank 0 from closing the shared TCPStore while rank 1
+is still validating. It changes only the test-runner lifecycle; it does not
+change model execution, communication math, weights, or training behavior.
+
+This changes the runtime communication algorithm, not model shape, weights,
+precision, expert GEMMs, attention, or any training graph. It therefore does
+not support a direct performance-equivalence claim against DeepEP. It also
+must not be described as a literal `--all2all-backend nccl` or direct NCCL
+`alltoall`.
+
+The communication identities remain intentionally separate:
+
+- active vLLM runtime: AgRs;
+- AIC exact operation identity: DeepEP HT, still missing exact B300 rows;
+- completed simulation: explicit NCCL `alltoall` `PROXY`.
+
+AIC does not yet contain an AgRs-specific communication model. Neither the
+exact DeepEP identity nor the proxy may be used as a same-backend AgRs error
+baseline.
+
 ## Temporary DeepEP simulation proxy
 
 The exact `vllm_deepep_high_throughput` operation remains the production AIC
@@ -333,7 +410,8 @@ same drivers must be rerun with the proxy option omitted.
 | `OPTIMUS_TRITON_DRIVER_STRICT_SIGNATURE=1` | Prevents cross-shape driver-cache reuse between batch 1 and batch 4 | Cache-key behavior only |
 | Attention-type-scoped fallback assertion | A global assertion incorrectly classified legal SWA Triton/TRTLLM execution as Full-MFA fallback | Test/validation logic only; runtime execution unchanged |
 | Source-hash-bounded SWA QKV annotation resolution | Cutlass DSL 4.4.2 does not resolve the image-native postponed `Constexpr` annotations | Annotation metadata only; provider, kernel body, inputs, outputs, QKV arithmetic, and persisted identity unchanged |
-| Explicit B300 NCCL `alltoall` proxy for DeepEP | Exact DeepEP measurement is owner-deferred at `0/116`, while MTP-off simulation must continue | Simulation-only approximation; always labeled `PROXY`; no fake DeepEP rows; must be replaced by real DeepEP measurement |
+| Active `allgather_reducescatter`/AgRs runtime | DeepEP/NVSHMEM cannot run reliably in the current platform contract | NCCL-backed all-gather dispatch and reduce-scatter combine; sequence parallelism disabled; communication performance differs from DeepEP |
+| Explicit B300 NCCL `alltoall` proxy for DeepEP | Exact DeepEP measurement is owner-deferred at `0/116`, while MTP-off simulation must continue | Simulation-only approximation; always labeled `PROXY`; no fake DeepEP rows; differs from active AgRs and must be replaced or recalibrated after target communication measurement |
 
 These deviations are approved only for the pinned B300 provider/performance
 validation. They must remain visible in reports and must not be described as

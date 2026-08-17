@@ -27,8 +27,8 @@ CLEANUP_TIMEOUT_SECONDS="${CLEANUP_TIMEOUT_SECONDS:-300}"
 EVIDENCE_HOLD_SECONDS="${EVIDENCE_HOLD_SECONDS:-300}"
 DATA_PARALLEL_SIZE=16
 DATA_PARALLEL_SIZE_LOCAL=8
-VLLM_ALL2ALL_BACKEND=deepep_high_throughput
-NVSHMEM_ENABLE_NIC_PE_MAPPING="${NVSHMEM_ENABLE_NIC_PE_MAPPING:-1}"
+VLLM_ALL2ALL_BACKEND=allgather_reducescatter
+VLLM_ENABLE_SEQUENCE_PARALLEL=0
 NCCL_PREFLIGHT_EVIDENCE="${NCCL_PREFLIGHT_EVIDENCE:-}"
 
 PAYLOAD_ROOT="${ARTIFACT_ROOT}/payload"
@@ -172,7 +172,7 @@ worker_command="set -euo pipefail
         case \"\${env_key}\" in
             JOB_ID|SOCKET_IP|NODE_NAME|GPU_TYPE|GPU_VENDOR|\
 RDMA_NETWORK_LINK_TYPE|CUDA_VISIBLE_DEVICES|NVIDIA_VISIBLE_DEVICES|\
-NCCL_*|NVSHMEM_*)
+NCCL_*)
                 printf 'export %s=%q\n' \"\${env_key}\" \"\${env_value}\"
                 ;;
         esac
@@ -193,7 +193,6 @@ setsid sudo -n systemd-run --scope -p MemoryMax="${CONTROL_MEMORY_MAX}" \
     --positive-tags "${POSITIVE_TAGS}" \
     --set-env=DISTRIBUTED_JOB=true \
     -e MODELNAME="${MODEL_NAME}" -e PORT_AUTO0="${SERVING_PORT}" \
-    -e NVSHMEM_ENABLE_NIC_PE_MAPPING="${NVSHMEM_ENABLE_NIC_PE_MAPPING}" \
     --host-network=true \
     --custom-resources=rdma/mlnx_shared=8 \
     --custom-resources=mellanox.com/mlnx_rdma=1 \
@@ -274,6 +273,7 @@ export PORT_AUTO0='${SERVING_PORT}'
 export DATA_PARALLEL_SIZE='${DATA_PARALLEL_SIZE}'
 export DATA_PARALLEL_SIZE_LOCAL='${DATA_PARALLEL_SIZE_LOCAL}'
 export VLLM_ALL2ALL_BACKEND='${VLLM_ALL2ALL_BACKEND}'
+export VLLM_ENABLE_SEQUENCE_PARALLEL='${VLLM_ENABLE_SEQUENCE_PARALLEL}'
 export OPTIMUS_WHEEL_URL='${OPTIMUS_WHEEL_URL}'
 export OPTIMUS_WHEEL_SHA256='${OPTIMUS_WHEEL_SHA256}'
 export ENABLE_PROFILER=0
@@ -288,6 +288,63 @@ exec '${REMOTE_BOOTSTRAP_ROOT}/remote_b300_single_smoke.sh'"
         >"${ARTIFACT_ROOT}/remote_exec_${replica}.log" 2>&1 < /dev/null &
     EXEC_PIDS+=("$!")
 done
+
+validation_deadline=$(( $(date +%s) + REMOTE_RESULT_TIMEOUT_SECONDS ))
+agrs_manager_replica_count=0
+for replica in "${REPLICAS[@]}"; do
+    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
+    validation_ready=0
+    while (( $(date +%s) < validation_deadline )); do
+        if scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
+            "replica/${replica}" -- test -f "${evidence_root}/remote_validation_ready" \
+            >/dev/null 2>"${ARTIFACT_ROOT}/validation_probe_${replica}.log" < /dev/null; then
+            validation_ready=1
+            break
+        fi
+        sleep 5
+    done
+    test "${validation_ready}" = "1"
+done
+
+for replica in "${REPLICAS[@]}"; do
+    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
+    scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
+        "replica/${replica}" -- touch "${evidence_root}/coordinated_shutdown_armed" \
+        >"${ARTIFACT_ROOT}/shutdown_arm_request_${replica}.log" 2>&1 < /dev/null
+done
+
+shutdown_arm_deadline=$(( $(date +%s) + REMOTE_RESULT_TIMEOUT_SECONDS ))
+for replica in "${REPLICAS[@]}"; do
+    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
+    shutdown_armed=0
+    while (( $(date +%s) < shutdown_arm_deadline )); do
+        if scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
+            "replica/${replica}" -- test -f "${evidence_root}/remote_shutdown_armed" \
+            >/dev/null 2>"${ARTIFACT_ROOT}/shutdown_arm_probe_${replica}.log" < /dev/null; then
+            shutdown_armed=1
+            break
+        fi
+        sleep 2
+    done
+    test "${shutdown_armed}" = "1"
+done
+
+shutdown_request_pids=()
+for replica in "${REPLICAS[@]}"; do
+    evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
+    scoped 60 /kubebrain/brainctl -n "${NAMESPACE}" exec -i \
+        "replica/${replica}" -- touch "${evidence_root}/coordinated_shutdown" \
+        >"${ARTIFACT_ROOT}/shutdown_request_${replica}.log" 2>&1 < /dev/null &
+    shutdown_request_pids+=("$!")
+done
+
+shutdown_request_status=0
+for pid in "${shutdown_request_pids[@]}"; do
+    if ! wait "$pid"; then
+        shutdown_request_status=1
+    fi
+done
+test "${shutdown_request_status}" = "0"
 
 for replica in "${REPLICAS[@]}"; do
     evidence_root="/home/step4pro-evidence-${RJOB_NAME}-${replica}"
@@ -316,10 +373,24 @@ for replica in "${REPLICAS[@]}"; do
     result_file="${evidence_dir}/$(basename "${evidence_root}")/result.env"
     grep -q '^ONE_GPU_SMOKE=PASS$' "${result_file}"
     server_log="${evidence_dir}/$(basename "${evidence_root}")/vllm_server.log"
-    grep -q "Using DeepEPHTAll2AllManager" "${server_log}"
-    grep -Eq "backend=HT.*op=dispatch" "${server_log}"
-    grep -Eq "backend=HT.*op=combine" "${server_log}"
+    grep -Fq \
+        "DeepEP runtime not available; using allgather_reducescatter all2all backend without sequence parallelism" \
+        "${server_log}"
+    if grep -q "Using AgRsAll2AllManager all2all manager" "${server_log}"; then
+        agrs_manager_replica_count="$((agrs_manager_replica_count + 1))"
+    fi
+    if grep -Eq "Using DeepEP[A-Za-z0-9_]*All2AllManager" "${server_log}"; then
+        echo "Unexpected DeepEP all2all manager selected" >&2
+        exit 1
+    fi
+    if grep -q 'Auto-configured .*VLLM_ALL2ALL_BACKEND=' "${server_log}"; then
+        echo "Unexpected Step MoE automatic backend selection" >&2
+        exit 1
+    fi
 done
+test "${agrs_manager_replica_count}" -ge 1
+printf 'agrs_manager_replica_count=%s\n' "${agrs_manager_replica_count}" \
+    >>"${ARTIFACT_ROOT}/host_metrics.env"
 
 cleanup
 cleanup_exit=$?

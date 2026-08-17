@@ -2,6 +2,9 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Recorded that `predict-only` ignores total replica count, direct quota reads are RBAC-blocked, and remaining controller commands use `MemoryMax=2G`. |
+| 2026-08-17 | Recorded the distributed AgRs marker scope, coordinated shutdown ordering, and the current 16-GPU request versus 6-GPU quota blocker. |
+| 2026-08-17 | Recorded the active AgRs/NCCL runtime settings, fail-fast checks, and the distinction from the AIC NCCL `alltoall` proxy. |
 | 2026-08-13 | Recorded initial workspace, environment, and execution constraints. |
 | 2026-08-13 | Added measured access facts: B300 quotagroup denial, the only grantable GPU path, Docker-via-sudo requirement, and shell cwd persistence. |
 | 2026-08-13 | Revalidated B300 access and latest vLLM source/image identity after new platform evidence. |
@@ -20,6 +23,51 @@
 | 2026-08-16 | Recorded complete SWA QKV measurement, the bounded annotation overlay, and the DeepEP-only no-retry state. |
 
 # Operational Notes
+
+- Active Step4-Pro runtime wrappers now force
+  `VLLM_ALL2ALL_BACKEND=allgather_reducescatter`,
+  `--all2all-backend allgather_reducescatter`, and
+  `VLLM_ENABLE_SEQUENCE_PARALLEL=0`.
+- The env variable blocks Step MoE automatic backend selection; the CLI value
+  writes the same backend into `parallel_config`, including DP=1 runs.
+- The supported vLLM backend name is not `nccl`. The selected
+  `AgRsAll2AllManager` uses NCCL-backed all-gather dispatch and reduce-scatter
+  combine. Do not write `--all2all-backend nccl`.
+- The active runtime no longer exports explicit `NVSHMEM_*` variables or
+  requires `deep_ep` merely to record package versions. The historical
+  `run_b300_two_node_deepep_legacy_probe.sh` remains unchanged for evidence
+  only and is not an active task launcher.
+- The current AIC simulation's `b300_nccl_alltoall` remains an explicit
+  `PROXY`. It is not a measurement of either DeepEP or the AgRs runtime.
+- The AIC exact operation identity still names DeepEP HT, while active vLLM
+  uses AgRs and the completed simulation uses the NCCL `alltoall` proxy. AIC
+  has no AgRs-specific communication model yet.
+- AgRs has no DeepEP-style per-dispatch/per-combine log marker. Current smoke
+  evidence covers structured backend/manager selection, no automatic or
+  DeepEP selection, and real-batch forward; collective-level trace remains
+  future work.
+- The pinned `Using AgRsAll2AllManager all2all manager` line uses
+  `logger.info_once(..., scope="global")`. Rank 1 must not wait for a local
+  copy of that line. Validate the explicit backend marker and a real-batch
+  forward on each replica, then require at least one AgRs manager marker
+  across the complete job.
+- Two-node teardown uses a two-stage barrier: both replicas first write
+  `remote_validation_ready`; the host arms both; both write
+  `remote_shutdown_armed`; only then does the host send the final shutdown
+  requests concurrently. This keeps rank 0's TCPStore alive until rank 1 is
+  ready to exit.
+- The corrected final two-node payload has not received a live runtime result.
+  RJob `s4p-agrs2b-0817-175947` created no replicas because the platform
+  requested `16` B300 GPUs while queue `b300-train-infra-default` had `6`
+  remaining. Cleanup left exact RJob/Replica counts `0/0`.
+- `brainctl rjob launch --predict-only` is not proof of total replica quota.
+  On 2026-08-17 at 18:28-18:29 +08:00, `--replica 2` and `--replica 8`
+  returned the same seven per-worker B300 candidates and both created
+  RJobs/Replicas `0/0`. Direct reads of
+  `quotagroups.stepmind.com/b300_train_infra` returned `Forbidden`.
+- Re-run one bounded live smoke only after same-shape predict-only passes and
+  a platform event, quota owner, or authorized direct query confirms at least
+  `16` currently available B300 GPUs.
 
 - Repository: `/data/ycfeng/stepfun-performance-optimization/aiconfigurator-step4-pro`.
 - Current branch: `task/step4-pro-latest-b300`.
@@ -41,8 +89,8 @@
 - DeepEP remains frozen at `0/116`. Do not retry it or fill its four EP16/EP32
   dispatch/combine contracts with H800, generic communication, analytic, or
   synthetic rows.
-- Use `MemoryMax=3G` for every remaining controller-side `brainctl` and live
-  launcher scope. Do not raise it back to 5 GiB without explicit owner
+- Use `MemoryMax=2G` for every remaining controller-side `brainctl` and live
+  launcher scope. Do not raise it without explicit owner
   approval.
 - Query only the exact RJob name or the exact
   `rjob.brainpp.cn/rjob-name=<job>` Replica label. Namespace-wide Replica

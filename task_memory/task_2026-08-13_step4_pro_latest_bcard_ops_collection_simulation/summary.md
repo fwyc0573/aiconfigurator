@@ -14,6 +14,12 @@
 | 2026-08-16 | Finalized Phase 11 with the requirement audit, three-repeat/manual-review artifacts, fresh verification, and refreshed hashes. |
 | 2026-08-16 | Refreshed the final publication evidence, regression timings, and affected inventory hashes. |
 | 2026-08-16 | Normalized the review CSV to LF-only output and refreshed final verification evidence and inventory hashes. |
+| 2026-08-17 | Added Phase 12: replaced active DeepEP runtime settings with explicit AgRs/NCCL communication, archived its contracts, and refreshed the deliverable inventory. |
+| 2026-08-17 | Added predict-only, single-B300 PASS, rank-0 AgRs execution, and the blocking two-node lifecycle result. |
+| 2026-08-17 | Synchronized the completed local coordinator/global-marker-scope fixes, fresh `14/14` contracts, and the external 16-GPU quota blocker. |
+| 2026-08-17 | Corrected the final admission rule after proving predict-only is per-worker only and direct quota reads are RBAC-blocked. |
+| 2026-08-17 | Revalidated the stable post-concurrency runtime files, refreshed stale hashes, and corrected the Phase 12 inventory count to `16/16`. |
+| 2026-08-17 | Completed the Phase 13 code/docs review, normalized the current and historical runtime reports, refreshed `347/347` and `401/401` evidence, and expanded the publication inventory to `70/70`. |
 
 # Summary
 
@@ -38,13 +44,48 @@ explicitly deferred at `0/116`. The owner-approved, simulation-only B300 NCCL
 created. MTP1 remains deferred because the pinned Step4Pro source has no native
 MTP1 implementation.
 
+The active whole-model runtime requirement no longer depends on DeepEP. The
+single-node and two-node wrappers now pin
+`allgather_reducescatter`/`AgRsAll2AllManager`, set sequence parallelism to
+`0`, reject every DeepEP manager variant and automatic backend selection, and
+remove explicit active NVSHMEM and `deep_ep` evidence dependencies. The pinned
+implementation uses NCCL-backed `all_gatherv` for dispatch and
+`reduce_scatterv` for combine. This AgRs runtime is distinct from both the
+exact AIC DeepEP operation identity and the completed NCCL `alltoall`
+simulation proxy.
+
+Both exact resource shapes passed the initial B300 predict-only checks. The
+single-B300 smoke passed with scheduling `16s`, model load `8.819692s`, first
+request `13.737685s`, and four-request wall time `0.474799647s`. The original
+two-node run exposed an independent EXIT-handler teardown defect; the approved
+root fix now uses validation-ready, shutdown-arm, armed-acknowledgement, and
+concurrent final-shutdown stages. Its local contracts pass `14/14`. The first
+coordinator live run reached `2/2` Running, recorded rank-0 AgRs/DeepEP/auto
+markers `1/0/0`, completed real requests, and showed no `Broken pipe`; its
+rank-1 gate was then corrected because the manager line is logged once with
+`scope="global"`. The final corrected payload created `0/2` replicas because
+it requested `16` B300 GPUs while the queue had only `6` remaining. Cleanup
+left `0` RJobs and `0` Replicas. The missing final two-node PASS is therefore
+an external admission blocker, not a known DeepEP, NVSHMEM, AgRs, or
+communication-runtime failure. A fresh diagnostic returned the same seven
+per-worker candidates for replica counts `2` and `8`, proving predict-only
+does not validate total replica quota. Direct quota reads are RBAC-forbidden,
+so no new live run was submitted.
+
+The post-concurrency stability check found that the remote runner and its
+two-node contract were written after the preceding summary inventory. Their
+current contents remain within the approved coordinator design and pass the
+combined runtime contracts `14/14` in `0.04s`. The refreshed active-runtime
+inventory now matches `16/16`; the earlier `17/17` statement was a count
+error, not an additional missing deliverable.
+
 The final requirement audit passed for the approved AIC scope. It checked all
 `156` required cases, the LF-only `156 × 87` manual-review table, `468` repeated case
 executions, component and KV accounting, all `709` canonical B300 rows, and
 DeepEP-Parquet absence. A fresh complete run produced the same
-`b68008b8...dd61a` SHA256 as the archived full result. Live vLLM request
-metrics, router observations, and the vLLM-versus-AIC error table remain
-externally owned and were not fabricated.
+`b68008b8...dd61a` SHA256 as the archived full result. Live router
+observations, an AgRs-specific simulator model, and the vLLM-versus-AIC error
+table remain unavailable and were not fabricated.
 
 Compared with legacy H800 V3/V4 work, Latest preserves the pinned mixed
 20-layer Full-MFA plus 58-layer SWA graph, shared-KV physical layout, grouped
@@ -120,7 +161,30 @@ a separate independent sub-agent review.
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_qkv_norm_rope.md` | `9ae9be7d30745684a8100f7b0979cb7a7c030f45bc0bc7320760835352e09a7f` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_deepep_local_ipc.md` | `cfb88a6a8d51234717954937dba9f5a1471b2a383a488c85bdbcb4957399702b` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_mtp_off_simulation.md` | `0bca3b9075d884912d7faf4251a65e41d558d08730265be760fd1d14d68fec2e` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `3440f000bb540f03999f09b2662f709e8d9e4b7ed2e97cdcebbe16c7a8a5e77d` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-14_b300_pinned_vllm_smoke_runtime_trace.md` | `c22115b87481eaa9ae41131bb0f01772ea2c98d6b16a3eb4e5755af54270afb6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_final_review_publication.md` | `5825e4f5b759891975f1d0761dc60797aa660730eaef331f129bbe898df24691` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `4d5926380ab15b549f454c23ebf0445b9de207bdecaafc06707e0b3919474e69` |
+
+### Active Runtime Backend Requirement and Validation
+
+| Path | SHA256 |
+|---|---|
+| `task_memory/step4pro_v4_external_simulator_requirements.md` | `356b47c624e2ef8bced3ad4db82c4cf1fa1e160b053c25b78ab5c89be9ac0c35` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/requirements.md` | `ff609b06dea91fee0552b2a624fdb372277d47c340224fd1469cab73ee6e2e6b` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/plan.md` | `9e61dfcbd74df769de150770ce41e2931946057f087a13ed4e918ae385197fa6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/harness.md` | `00cb24d06509d0d2d74cd0db6ebc12ca9e3c1504167e110b96da8f634586894a` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/design.md` | `5d403f1888cd5ad10cb38039acd35214d392ec3d8ed1c79bcd54706cba51d8f5` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/notes.md` | `4c2b37d0d38b63ea94d15f80eab1b9cd9f552ce39a10298db07a82f5e391c716` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/progress.md` | `6f58014719b91e300a1cdc0b9a17076ee175cfac3791cf1dd69d80c4a4ed8607` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/issues.md` | `b09c6af6f8d25bb31bc483eef2eaedb22cd364e39f9933341de56ad2cfc0be55` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/lessons.md` | `1bf4e07c6f9cdad73a95e37a5fe56e3a52124c8b9492ee70ac63d21c34759bf5` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/future.md` | `ffd019fccf78c700ca9830f9e8c1a63cb7ffdb8518a4fe9f907161edf40d36bb` |
+| `tests/e2e/step4_pro_latest/run_b300_single_smoke.sh` | `47bc6cf8507281ade56f0d1e96913f75386e6b7d30f8212a7e8f9f5012375e1d` |
+| `tests/e2e/step4_pro_latest/run_b300_two_node_smoke.sh` | `22ab5eb03cba75f589b36d73e95af9bfcd6617af86128ebefdc9121a59115cd5` |
+| `tests/e2e/step4_pro_latest/remote_b300_single_smoke.sh` | `7cc139aab85d3db29e53e2b750fd1d302d82d00a84a706368524e041d5d13e15` |
+| `tests/e2e/step4_pro_latest/test_b300_single_smoke_contract.py` | `390c1c74517e921099f85d776e6346473ccc3ad573aff80eda9a4c0695f093f5` |
+| `tests/e2e/step4_pro_latest/test_b300_two_node_smoke_contract.py` | `9b749a806fb5f60e78dd7b4a32967bfaaee14d25b39452ba776579f112f166c6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_non_deepep_runtime_backend.md` | `638484ff7720994cb077f49be07c9a42de37582d4e7e2439e6ac33ed480960b6` |
 
 ## Validation Status
 
@@ -133,8 +197,18 @@ a separate independent sub-agent review.
 | Combined QKV dataset | PASS | `150/150`, providers `75+75`, max error `0.0 ms` |
 | DeepEP HT dataset | DEFERRED | `0/116`; no substitute or historical data |
 | Canonical B300 dataset | PASS | `709` rows across six Parquet files |
-| Final focused tests | PASS | `344/344` in `8.14s` |
-| Full Collector tests | PASS | `401/401` in `31.23s` |
+| Active AgRs runtime configuration | PASS | `3/3` scripts; backend `allgather_reducescatter`; sequence parallel `0` |
+| Active runtime contracts | PASS | `14/14` in `0.04s`; DeepEP/NVSHMEM/package dependencies `0/0/0` |
+| Active runtime source audit | PASS | manager `AgRsAll2AllManager`; dispatch/combine `all_gatherv`/`reduce_scatterv`; automatic backend selection allowed `0` |
+| B300 predict-only | PASS_PER_WORKER_ONLY | initial single-node `4` candidates; latest two-node shape `7`; replica-8 control returned the same `7`; residual RJobs/Replicas `0/0` |
+| B300 total-quota visibility | BLOCKED | direct quota read `Forbidden`; last trusted remainder `6`, required `16` |
+| Phase 12 inventory hash audit | PASS | `16/16` current files match the recorded SHA256 values |
+| Phase 13 publication inventory | PASS | `70/70` recorded paths and SHA256 values match |
+| Single-B300 live smoke | PASS | scheduling `16s`; load `8.819692s`; request `13.737685s`; concurrent wall `0.474799647s` |
+| Two-node AgRs live smoke | BLOCKED_BY_QUOTA | First coordinator run: `2/2` Running, rank-0 AgRs/DeepEP/automatic `1/0/0`, no `Broken pipe`; final corrected run: `0/2` replicas, request `16`, quota remainder `6` |
+| Two-node cleanup | PASS | final exact-name RJobs/Replicas `0/0` |
+| Final focused tests | PASS | `347/347` in `8.21s` |
+| Full Collector tests | PASS | `401/401` in `31.60s` |
 | Post-format reviewer contracts | PASS | `48/48` in `6.40s` |
 | Ruff check/format | PASS | `45/45` task-owned Python files |
 | Shell syntax | PASS | `14/14` scripts |
@@ -159,14 +233,22 @@ a separate independent sub-agent review.
 
 ## Open Items/Future Extensions
 
-1. Keep DeepEP skipped in the current phase. A future phase requires a working
-   shared-host-SHM/NVSHMEM launcher/runtime contract before collecting EP16
-   and EP32 dispatch/combine rows.
-2. Re-run the unchanged MTP-off smoke/full matrix without the proxy after real
-   DeepEP data exists; only then may exact-DeepEP silicon latency, TPOT, and
-   decode `B_max` be reported.
-3. MTP1 structure, measurement, and simulation remain deferred until an
+1. Obtain direct platform or quota-owner evidence that the B300 queue can
+   admit at least `16` GPUs. Then rerun the same-shape predict-only check for
+   per-worker fit and exactly one corrected two-node live wrapper. Acceptance
+   requires both validation-ready markers, both shutdown-arm acknowledgements,
+   at least one job-level AgRs manager marker, a real-batch marker on each
+   replica, DeepEP/automatic markers `0/0`, no `Broken pipe`, and cleanup
+   `0/0`.
+2. Add or calibrate an AgRs-specific AIC communication model before reporting
+   a same-backend vLLM-versus-simulator communication error. The existing
+   NCCL `alltoall` result remains `PROXY`.
+3. DeepEP EP16/EP32 measurement is now optional comparison work rather than an
+   active-runtime prerequisite. If resumed, it still requires a working
+   NVSHMEM launcher/runtime and must replace proxy results before exact
+   DeepEP latency or capacity is reported.
+4. MTP1 structure, measurement, and simulation remain deferred until an
    authoritative Step4Pro implementation is provided.
-4. The whole-model pinned-vLLM B300 smoke/runtime trace remains owned by the
-   separate external session and can be ingested when the task owner supplies
-   its final report.
+5. Preserve the failed and quota-blocked two-node evidence. Do not restore the
+   independent one-node EXIT lifecycle, require a globally scoped manager line
+   from every replica, or add sleeps/blind retries.

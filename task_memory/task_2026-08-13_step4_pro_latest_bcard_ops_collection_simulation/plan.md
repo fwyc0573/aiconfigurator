@@ -2,6 +2,7 @@
 
 | Date       | Summary of Changes                          |
 |------------|---------------------------------------------|
+| 2026-08-17 | Recorded the completed Phase 14 publication: implementation commit `bd91ce3a` pushed with local/tracking/remote SHA equality and ahead/behind `0/0`; live acceptance remains quota-blocked. |
 | 2026-08-17 | Added Phase 14 follow-up hardening: live evidence pull before one RJob delete, strict cleanup/query validation, same-argument predict-only, quota evidence, timeout margin, and completion-marker contracts. |
 | 2026-08-17 | Completed the Phase 13 review and report normalization; final hash/staged-diff verification, commit, push, and remote SHA confirmation remain. |
 | 2026-08-17 | Added the owner-requested final code/docs review and checkpoint commit/push phase without converting the quota-blocked two-node run to PASS. |
@@ -88,7 +89,7 @@ Deliver an auditable, latest-implementation-based `step4-pro-latest` operation d
 | 11. Requirement-completeness audit and publication | Completed | The simulator exposes KV allocation, required component breakdown, normalized unavailable metrics, and three-repeat evidence; the manual-review packet is synchronized; fresh verification passes; only task-owned files enter the single publication commit. |
 | 12. Non-DeepEP vLLM runtime configuration | In progress: locally hardened; final two-node live rerun blocked by B300 quota visibility and availability | Active wrappers pin `allgather_reducescatter`, disable sequence parallelism, reject DeepEP selection, and pass `26/26` focused contracts. Final live acceptance still requires direct confirmation of 16 available B300 GPUs, both nodes validated while the RJob remains live, and strict single-delete cleanup. |
 | 13. Final code/docs review and checkpoint publication | Completed | Commit `0b8d651c` was pushed to `origin/task/step4-pro-latest-b300`; this publication did not convert the quota-blocked two-node runtime to PASS. |
-| 14. Runtime lifecycle and evidence hardening | In progress: implementation, task records, fresh local contracts, and `76/76` inventory audit complete; staged-diff audit, commit, and push remain | The obsolete shutdown-arm protocol is removed. Both replicas remain live after validation, the host pulls and validates both evidence sets, and one exact RJob delete performs teardown. Same-argument predict-only, explicit quota evidence, strict query-aware cleanup, timeout margin, and CUDA-complete forward evidence are locally verified. |
+| 14. Runtime lifecycle and evidence hardening | Completed and published; final live two-node acceptance remains `BLOCKED_BY_QUOTA` under Phase 12 | The obsolete shutdown-arm protocol is removed. Both replicas remain live after validation, the host pulls and validates both evidence sets, and one exact RJob delete performs teardown. Same-argument predict-only, explicit quota evidence, strict query-aware cleanup, timeout margin, and CUDA-complete forward evidence pass locally. Implementation commit `bd91ce3a` is on `origin/task/step4-pro-latest-b300`. |
 
 The bounded SWA annotation compatibility overlay was explicitly authorized and
 completed on 2026-08-16. It passed the source-hash, annotation-scope,
@@ -466,3 +467,10 @@ locally and on `origin/task/step4-pro-latest-b300`.
 7. Update the existing task records and test report, rerun focused/static/hash
    gates, stage only task-owned files, then create and push one follow-up
    commit. The live result remains `BLOCKED_BY_QUOTA`.
+
+**Phase 14 publication evidence:** Commit
+`bd91ce3a41fabde65b2e6f5707907a72b3ffb9a0` published the 23-file
+implementation/docs candidate. Local HEAD, the remote-tracking branch, and
+the direct remote branch query all matched that SHA immediately after push;
+ahead/behind was `0/0`. This closeout documentation records that completed
+publication without changing the quota-blocked live status.

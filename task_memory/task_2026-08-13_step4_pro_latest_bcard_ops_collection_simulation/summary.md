@@ -21,6 +21,7 @@
 | 2026-08-17 | Revalidated the stable post-concurrency runtime files, refreshed stale hashes, and corrected the Phase 12 inventory count to `16/16`. |
 | 2026-08-17 | Completed the Phase 13 code/docs review, normalized the current and historical runtime reports, refreshed `347/347` and `401/401` evidence, and expanded the publication inventory to `70/70`. |
 | 2026-08-17 | Finalized the Phase 14 follow-up candidate with live evidence pull, one-delete teardown, strict cleanup/quota contracts, synchronized forward evidence, fresh `26/26` verification, and a `76`-file inventory. |
+| 2026-08-17 | Recorded Phase 14 implementation commit `bd91ce3a`, exact 23-file staging, successful push, and local/tracking/remote SHA equality with ahead/behind `0/0`. |
 
 # Summary
 
@@ -90,6 +91,12 @@ training graph. The synchronize perturbs timing, so this smoke cannot be
 reported as an uninstrumented performance benchmark. Fresh local verification
 passes runtime contracts `26/26` in `0.21s`, shell syntax `6/6`, and Ruff
 check/format on `5/5` Python files.
+
+Phase 14 implementation commit
+`bd91ce3a41fabde65b2e6f5707907a72b3ffb9a0` published the exact 23-file
+task boundary. Local HEAD, the remote-tracking branch, and the direct remote
+branch query matched that SHA immediately after push; ahead/behind was `0/0`.
+This publication does not change the quota-blocked two-node live result.
 
 The final requirement audit passed for the approved AIC scope. It checked all
 `156` required cases, the LF-only `156 × 87` manual-review table, `468` repeated case
@@ -174,8 +181,8 @@ a separate independent sub-agent review.
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_deepep_local_ipc.md` | `cfb88a6a8d51234717954937dba9f5a1471b2a383a488c85bdbcb4957399702b` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-15_step4_pro_latest_mtp_off_simulation.md` | `0bca3b9075d884912d7faf4251a65e41d558d08730265be760fd1d14d68fec2e` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-14_b300_pinned_vllm_smoke_runtime_trace.md` | `c22115b87481eaa9ae41131bb0f01772ea2c98d6b16a3eb4e5755af54270afb6` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_final_review_publication.md` | `fbe635748a2adc394edd6dc604a035ca18b66de6af0200fb79d2153dac0ac3e6` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `b98b1c06467adb9c05080a6f42e340b79a3ec3e273f13d7758bef21c5c2ce264` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/test_report_2026-08-17_final_review_publication.md` | `0a55960b1ccf5e0dfa4e162ba3e485220aba6bb5a916a6baf5a63422d62af594` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/review.md` | `9bc9f376501c9033addc8367c3afccd58b9d3e994f47ce92693080ec1806e8ff` |
 
 ### Active Runtime Backend Requirement and Validation
 
@@ -183,11 +190,11 @@ a separate independent sub-agent review.
 |---|---|
 | `task_memory/step4pro_v4_external_simulator_requirements.md` | `356b47c624e2ef8bced3ad4db82c4cf1fa1e160b053c25b78ab5c89be9ac0c35` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/requirements.md` | `ff609b06dea91fee0552b2a624fdb372277d47c340224fd1469cab73ee6e2e6b` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/plan.md` | `7f0b30525785672ac2ff29643b550df986808c1d6bdd95875255990bb93b75f6` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/plan.md` | `92b624fcdbf8732b538accb68b00c8d28558bdbbd2bf48d586b520ec667a2912` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/harness.md` | `713ab5d647aa4bdf0a0abdc0dc33de140f79eb27a066834aff942df22762b9ff` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/design.md` | `27213c6df41a029b28c10587ba1d447c7c3e75a6ae9e5708cf4c0201fe97f92f` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/notes.md` | `87291a836ece28cbc219fe6bcdfb642aee64f0aefe090edb622ff6dc2c57298c` |
-| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/progress.md` | `f7b380eef167c66fa71fa5e244f0fe410045c8004b38b7a90aaffb477a30bb0c` |
+| `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/progress.md` | `d13343a56f614cde766ac545b71d94401563101938200994f9ede324797d1cee` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/issues.md` | `406673362a3ecb04f83e68557a21ece7682e1ee7547fd6e136647e309892570a` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/lessons.md` | `5bfa11bef7017d3545771be0e76d8e130d98fab6cc0266c75e34518727b6ee73` |
 | `task_memory/task_2026-08-13_step4_pro_latest_bcard_ops_collection_simulation/future.md` | `b2ee181def9dd6eef0574f537dad6ddfe3ccc18afc0657ab41fc44c1354287c9` |
@@ -221,6 +228,7 @@ a separate independent sub-agent review.
 | B300 predict-only | PASS_PER_WORKER_ONLY | initial single-node `4` candidates; latest two-node shape `7`; replica-8 control returned the same `7`; residual RJobs/Replicas `0/0` |
 | B300 total-quota visibility | BLOCKED | direct quota read `Forbidden`; last trusted remainder `6`, required `16` |
 | Phase 14 publication inventory | PASS | `76/76` recorded paths and SHA256 values match |
+| Phase 14 implementation publication | PASS | commit `bd91ce3a`; staged files `23`; unrelated staged files `0`; local/tracking/remote SHA match; ahead/behind `0/0` |
 | Single-B300 live smoke | PASS | scheduling `16s`; load `8.819692s`; request `13.737685s`; concurrent wall `0.474799647s` |
 | Two-node AgRs live smoke | BLOCKED_BY_QUOTA | Historical coordinator run: `2/2` Running, rank-0 AgRs/DeepEP/automatic `1/0/0`, no `Broken pipe`; last live attempt: `0/2` replicas, request `16`, quota remainder `6`; Phase 14 live submissions `0` |
 | Two-node cleanup | PASS (contract and prior evidence) | exactly one delete required; failed queries reject PASS; prior residual RJobs/Replicas `0/0` |
